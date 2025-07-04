@@ -1,169 +1,28 @@
 
-import { MetricCard } from "@/components/MetricCard";
-import { StatusBadge } from "@/components/StatusBadge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { 
-  Wifi, 
-  Ship, 
-  Users, 
-  AlertTriangle, 
-  Activity,
-  MapPin,
-  Clock,
-  TrendingUp
-} from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
+import { SuperAdminDashboard } from "@/components/dashboards/SuperAdminDashboard";
+import { EmpresaAdminDashboard } from "@/components/dashboards/EmpresaAdminDashboard";
+import { GerenteEmbarcacaoDashboard } from "@/components/dashboards/GerenteEmbarcacaoDashboard";
 
 export default function Dashboard() {
-  const recentHotspots = [
-    { id: 1, name: "Embarcação Atlas", status: "ativo", location: "Porto de Santos", lastUpdate: "2 min atrás" },
-    { id: 2, name: "Navio Esperança", status: "inativo", location: "Porto do Rio", lastUpdate: "15 min atrás" },
-    { id: 3, name: "Lancha Marina", status: "ativo", location: "Marina da Glória", lastUpdate: "5 min atrás" },
-    { id: 4, name: "Iate Poseidon", status: "alerta", location: "Angra dos Reis", lastUpdate: "1 min atrás" }
-  ];
+  const { user } = useAuth();
 
-  const recentAlerts = [
-    { id: 1, message: "Hotspot Navio Esperança está offline há 15 minutos", type: "erro", time: "15:32" },
-    { id: 2, message: "Nova embarcação cadastrada: Iate Poseidon", type: "info", time: "14:20" },
-    { id: 3, message: "Limite de usuários atingido na Embarcação Atlas", type: "aviso", time: "13:45" }
-  ];
+  if (!user) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold">Carregando...</h2>
+          <p className="text-muted-foreground">Verificando suas permissões</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="flex-1 space-y-6 p-6">
-      {/* Header */}
-      <div className="space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground">
-          Visão geral do sistema de gerenciamento de hotspots marítimos
-        </p>
-      </div>
-
-      {/* Métricas principais */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <MetricCard
-          title="Total de Hotspots"
-          value="24"
-          change="+2 este mês"
-          changeType="positive"
-          icon={Wifi}
-        />
-        <MetricCard
-          title="Embarcações Ativas"
-          value="18"
-          change="+12% vs mês anterior"
-          changeType="positive"
-          icon={Ship}
-        />
-        <MetricCard
-          title="Tripulantes Cadastrados"
-          value="342"
-          change="+24 novos"
-          changeType="positive"
-          icon={Users}
-        />
-        <MetricCard
-          title="Alertas Ativos"
-          value="3"
-          change="2 críticos"
-          changeType="negative"
-          icon={AlertTriangle}
-        />
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
-        {/* Status dos Hotspots */}
-        <Card className="col-span-4">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <Activity className="h-5 w-5" />
-                Status dos Hotspots
-              </CardTitle>
-              <Button variant="outline" size="sm">
-                Ver Todos
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {recentHotspots.map((hotspot) => (
-                <div key={hotspot.id} className="flex items-center justify-between p-3 rounded-lg border bg-card/50 hover:bg-card transition-colors">
-                  <div className="flex items-center gap-3">
-                    <div className="h-2 w-2 rounded-full bg-navspot-blue-500"></div>
-                    <div>
-                      <p className="font-medium">{hotspot.name}</p>
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <MapPin className="h-3 w-3" />
-                        {hotspot.location}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <StatusBadge status={hotspot.status as any} />
-                    <div className="text-right">
-                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                        <Clock className="h-3 w-3" />
-                        {hotspot.lastUpdate}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Alertas Recentes */}
-        <Card className="col-span-3">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5" />
-              Alertas Recentes
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {recentAlerts.map((alert) => (
-                <div key={alert.id} className="space-y-2">
-                  <div className="flex items-start gap-3">
-                    <Badge 
-                      variant={alert.type === "erro" ? "destructive" : alert.type === "aviso" ? "secondary" : "default"}
-                      className="mt-0.5"
-                    >
-                      {alert.type}
-                    </Badge>
-                    <div className="flex-1 space-y-1">
-                      <p className="text-sm leading-relaxed">{alert.message}</p>
-                      <p className="text-xs text-muted-foreground">{alert.time}</p>
-                    </div>
-                  </div>
-                  {alert.id !== recentAlerts.length && <div className="border-b"></div>}
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Gráfico de performance */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <TrendingUp className="h-5 w-5" />
-            Performance dos Hotspots (Últimos 7 dias)
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-[300px] flex items-center justify-center text-muted-foreground">
-            <div className="text-center space-y-2">
-              <Activity className="h-12 w-12 mx-auto opacity-50" />
-              <p>Gráfico de performance será implementado</p>
-              <p className="text-sm">Conectando com Recharts...</p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+    <div className="flex-1 p-6">
+      {user.role === 'super_admin' && <SuperAdminDashboard />}
+      {user.role === 'empresa_admin' && <EmpresaAdminDashboard />}
+      {user.role === 'gerente_embarcacao' && <GerenteEmbarcacaoDashboard />}
     </div>
   );
 }
