@@ -12,9 +12,16 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth, UserRole } from "@/contexts/AuthContext";
 
-const allNavigationItems = [
+interface NavigationItem {
+  title: string;
+  url: string;
+  icon: any;
+  roles: UserRole[];
+}
+
+const allNavigationItems: NavigationItem[] = [
   { title: "Dashboard", url: "/", icon: Home, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
   { title: "Hotspots", url: "/hotspots", icon: Wifi, roles: ['super_admin', 'empresa_admin'] },
   { title: "Embarcações", url: "/embarcacoes", icon: Ship, roles: ['super_admin', 'empresa_admin'] },
@@ -35,9 +42,13 @@ export function AppSidebar() {
   };
 
   // Filtrar itens de navegação baseado no role do usuário
-  const navigationItems = allNavigationItems.filter(item => 
-    hasRole(item.roles as any)
-  );
+  const navigationItems = allNavigationItems.filter(item => {
+    const canAccess = hasRole(item.roles);
+    console.log(`Menu item "${item.title}" - User role: ${user?.role}, Required roles: ${item.roles.join(', ')}, Can access: ${canAccess}`);
+    return canAccess;
+  });
+
+  console.log('Itens de navegação filtrados:', navigationItems.map(item => item.title));
 
   return (
     <Sidebar className="border-r">

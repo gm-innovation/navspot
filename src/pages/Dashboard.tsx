@@ -7,6 +7,9 @@ import { GerenteEmbarcacaoDashboard } from "@/components/dashboards/GerenteEmbar
 export default function Dashboard() {
   const { user } = useAuth();
 
+  console.log('Dashboard - Current user:', user);
+  console.log('Dashboard - User role:', user?.role);
+
   if (!user) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -18,11 +21,30 @@ export default function Dashboard() {
     );
   }
 
+  // Renderização condicional baseada no role
+  const renderDashboard = () => {
+    switch (user.role) {
+      case 'super_admin':
+        return <SuperAdminDashboard />;
+      case 'empresa_admin':
+        return <EmpresaAdminDashboard />;
+      case 'gerente_embarcacao':
+        return <GerenteEmbarcacaoDashboard />;
+      default:
+        return (
+          <div className="flex-1 p-6">
+            <div className="text-center">
+              <h2 className="text-2xl font-bold text-red-600">Erro de Permissão</h2>
+              <p className="text-muted-foreground">Role não reconhecido: {user.role}</p>
+            </div>
+          </div>
+        );
+    }
+  };
+
   return (
     <div className="flex-1 p-6">
-      {user.role === 'super_admin' && <SuperAdminDashboard />}
-      {user.role === 'empresa_admin' && <EmpresaAdminDashboard />}
-      {user.role === 'gerente_embarcacao' && <GerenteEmbarcacaoDashboard />}
+      {renderDashboard()}
     </div>
   );
 }
