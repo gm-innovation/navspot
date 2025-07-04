@@ -1,42 +1,49 @@
 
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Eye, EyeOff, Waves } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const navigate = useNavigate();
   const { toast } = useToast();
+  const { login } = useAuth();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
 
-    // Simulação de login
-    setTimeout(() => {
-      if (email && password) {
+    try {
+      const success = await login(email, password);
+      
+      if (success) {
         toast({
           title: "Login realizado com sucesso!",
           description: "Bem-vindo ao NAVSPOT",
         });
-        navigate("/");
       } else {
         toast({
           title: "Erro no login",
-          description: "Por favor, preencha todos os campos",
+          description: "Email ou senha inválidos",
           variant: "destructive"
         });
       }
+    } catch (error) {
+      toast({
+        title: "Erro no login",
+        description: "Ocorreu um erro inesperado",
+        variant: "destructive"
+      });
+    } finally {
       setIsLoading(false);
-    }, 1000);
+    }
   };
 
   return (
@@ -116,6 +123,16 @@ export default function Login() {
                 {isLoading ? "Entrando..." : "Entrar"}
               </Button>
             </form>
+
+            <div className="mt-6 space-y-2 text-sm text-muted-foreground">
+              <p className="font-medium">Usuários de teste:</p>
+              <div className="space-y-1 text-xs">
+                <p>Super Admin: admin@navspot.com</p>
+                <p>Admin Empresa: empresa@navspot.com</p>
+                <p>Gerente: gerente@navspot.com</p>
+                <p className="italic">Qualquer senha funciona</p>
+              </div>
+            </div>
 
             <div className="mt-4 text-center">
               <Button variant="link" className="text-sm text-navspot-blue-600 hover:text-navspot-blue-700">

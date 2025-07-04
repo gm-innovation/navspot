@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "@/components/theme-provider";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import { AuthProvider } from "@/contexts/AuthContext";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Hotspots from "./pages/Hotspots";
@@ -15,6 +16,7 @@ import Alertas from "./pages/Alertas";
 import Configuracoes from "./pages/Configuracoes";
 import NotFound from "./pages/NotFound";
 import { AppLayout } from "./components/AppLayout";
+import { ProtectedRoute } from "./components/ProtectedRoute";
 
 const queryClient = new QueryClient();
 
@@ -25,24 +27,66 @@ const App = () => (
         <Toaster />
         <Sonner />
         <BrowserRouter>
-          <Routes>
-            <Route path="/login" element={<Login />} />
-            <Route path="/" element={
-              <SidebarProvider>
-                <AppLayout>
-                  <Routes>
-                    <Route index element={<Dashboard />} />
-                    <Route path="/hotspots" element={<Hotspots />} />
-                    <Route path="/embarcacoes" element={<Embarcacoes />} />
-                    <Route path="/tripulantes" element={<Tripulantes />} />
-                    <Route path="/alertas" element={<Alertas />} />
-                    <Route path="/configuracoes" element={<Configuracoes />} />
-                  </Routes>
-                </AppLayout>
-              </SidebarProvider>
-            } />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
+          <AuthProvider>
+            <Routes>
+              <Route path="/login" element={<Login />} />
+              <Route path="/" element={
+                <ProtectedRoute>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <Dashboard />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/hotspots" element={
+                <ProtectedRoute allowedRoles={['super_admin', 'empresa_admin']}>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <Hotspots />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/embarcacoes" element={
+                <ProtectedRoute allowedRoles={['super_admin', 'empresa_admin']}>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <Embarcacoes />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/tripulantes" element={
+                <ProtectedRoute>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <Tripulantes />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/alertas" element={
+                <ProtectedRoute>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <Alertas />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/configuracoes" element={
+                <ProtectedRoute>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <Configuracoes />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </AuthProvider>
         </BrowserRouter>
       </TooltipProvider>
     </ThemeProvider>

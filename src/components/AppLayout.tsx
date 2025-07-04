@@ -12,12 +12,15 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface AppLayoutProps {
   children: React.ReactNode;
 }
 
 export function AppLayout({ children }: AppLayoutProps) {
+  const { user, logout } = useAuth();
+
   return (
     <div className="min-h-screen w-full bg-background">
       {/* Header */}
@@ -60,15 +63,20 @@ export function AppLayout({ children }: AppLayoutProps) {
                     <User className="h-4 w-4 text-navspot-blue-600 dark:text-navspot-blue-400" />
                   </div>
                   <div className="flex flex-col">
-                    <span className="text-sm font-medium">Admin NAVSPOT</span>
-                    <span className="text-xs text-muted-foreground">admin@navspot.com</span>
+                    <span className="text-sm font-medium">{user?.name}</span>
+                    <span className="text-xs text-muted-foreground">{user?.email}</span>
                   </div>
                 </div>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem>Perfil</DropdownMenuItem>
                 <DropdownMenuItem>Configurações</DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-red-600">Sair</DropdownMenuItem>
+                <DropdownMenuItem 
+                  className="text-red-600"
+                  onClick={logout}
+                >
+                  Sair
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>

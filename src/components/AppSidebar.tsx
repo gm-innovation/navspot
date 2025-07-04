@@ -12,25 +12,32 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { useAuth } from "@/contexts/AuthContext";
 
-const navigationItems = [
-  { title: "Dashboard", url: "/", icon: Home },
-  { title: "Hotspots", url: "/hotspots", icon: Wifi },
-  { title: "Embarcações", url: "/embarcacoes", icon: Ship },
-  { title: "Tripulantes", url: "/tripulantes", icon: Users },
-  { title: "Alertas", url: "/alertas", icon: Bell },
-  { title: "Configurações", url: "/configuracoes", icon: Settings },
+const allNavigationItems = [
+  { title: "Dashboard", url: "/", icon: Home, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
+  { title: "Hotspots", url: "/hotspots", icon: Wifi, roles: ['super_admin', 'empresa_admin'] },
+  { title: "Embarcações", url: "/embarcacoes", icon: Ship, roles: ['super_admin', 'empresa_admin'] },
+  { title: "Tripulantes", url: "/tripulantes", icon: Users, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
+  { title: "Alertas", url: "/alertas", icon: Bell, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
+  { title: "Configurações", url: "/configuracoes", icon: Settings, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
 ];
 
 export function AppSidebar() {
   const { state } = useSidebar();
   const location = useLocation();
+  const { user, hasRole } = useAuth();
   const isCollapsed = state === "collapsed";
 
   const isActive = (path: string) => {
     if (path === "/") return location.pathname === "/";
     return location.pathname.startsWith(path);
   };
+
+  // Filtrar itens de navegação baseado no role do usuário
+  const navigationItems = allNavigationItems.filter(item => 
+    hasRole(item.roles as any)
+  );
 
   return (
     <Sidebar className="border-r">
@@ -67,6 +74,23 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        
+        {/* Informações do usuário */}
+        {user && !isCollapsed && (
+          <SidebarGroup>
+            <SidebarGroupLabel className="px-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Usuário
+            </SidebarGroupLabel>
+            <SidebarGroupContent>
+              <div className="px-3 py-2 text-sm">
+                <p className="font-medium">{user.name}</p>
+                <p className="text-xs text-muted-foreground capitalize">
+                  {user.role.replace('_', ' ')}
+                </p>
+              </div>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
     </Sidebar>
   );
