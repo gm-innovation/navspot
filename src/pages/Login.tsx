@@ -144,7 +144,7 @@ export default function Login() {
 
         {/* Footer */}
         <div className="text-center text-sm text-navspot-blue-600 dark:text-navspot-blue-300">
-          © 2024 NAVSPOT. Todos os direitos reservados.
+          © 2025 NAVSPOT. Todos os direitos reservados.
         </div>
       </div>
     </div>
