@@ -7,14 +7,27 @@ export type PerfilVelocidade = Tables<'perfis_velocidade'>;
 export type PerfilVelocidadeInsert = TablesInsert<'perfis_velocidade'>;
 export type PerfilVelocidadeUpdate = TablesUpdate<'perfis_velocidade'>;
 
+// Categoria de tipos de usuário/equipamento
+export type TipoUsuarioCategoria = 'tripulante' | 'equipamento';
+
 export const TIPOS_USUARIO = [
-  { value: 'tripulante', label: 'Tripulante' },
-  { value: 'comandante', label: 'Comandante' },
-  { value: 'chemaq', label: 'Chefe de Máquinas' },
-  { value: 'imediato', label: 'Imediato' },
-  { value: 'oficial', label: 'Oficial' },
-  { value: 'convidado', label: 'Convidado' },
+  // Tripulantes
+  { value: 'tripulante', label: 'Tripulante', categoria: 'tripulante' as TipoUsuarioCategoria },
+  { value: 'comandante', label: 'Comandante', categoria: 'tripulante' as TipoUsuarioCategoria },
+  { value: 'chemaq', label: 'Chefe de Máquinas', categoria: 'tripulante' as TipoUsuarioCategoria },
+  { value: 'imediato', label: 'Imediato', categoria: 'tripulante' as TipoUsuarioCategoria },
+  { value: 'oficial', label: 'Oficial', categoria: 'tripulante' as TipoUsuarioCategoria },
+  { value: 'convidado', label: 'Convidado', categoria: 'tripulante' as TipoUsuarioCategoria },
+  // Equipamentos
+  { value: 'camera_streaming', label: 'Câmera/Streaming', categoria: 'equipamento' as TipoUsuarioCategoria, uploadPrioritario: true },
+  { value: 'equipamento_navegacao', label: 'Equipamento de Navegação', categoria: 'equipamento' as TipoUsuarioCategoria },
+  { value: 'equipamento_rede', label: 'Equipamento de Rede', categoria: 'equipamento' as TipoUsuarioCategoria },
 ] as const;
+
+// Helper para filtrar por categoria
+export function getTiposUsuarioByCategoria(categoria: TipoUsuarioCategoria) {
+  return TIPOS_USUARIO.filter(t => t.categoria === categoria);
+}
 
 export const PERIODOS_QUOTA = [
   { value: 'hora', label: 'Por Hora', description: 'Renova a cada hora cheia' },
