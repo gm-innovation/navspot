@@ -1,296 +1,288 @@
 
-
-# Cadastro Simplificado de Tripulantes com Auto-Completação
+# Gerenciamento de Dispositivos por MAC e Deteccao de Compartilhamento
 
 ## Resumo do Requisito
 
-O administrador/gerente quer cadastrar tripulantes de forma simplificada:
-1. **No cadastro inicial**: apenas login, senha e perfil (pré-configurado ou personalizado)
-2. **No primeiro login**: o próprio tripulante completa seus dados pessoais (nome, email, CPF, cargo)
+O sistema precisa de um controle granular de dispositivos por MAC address para:
 
-Isso requer duas mudanças principais:
-- Reformular o formulário de cadastro de tripulantes
-- Criar uma página/portal para o tripulante completar seu perfil
+1. **Seguranca**: Bloquear/desbloquear dispositivos individuais pelo MAC
+2. **Prevencao de fraude**: Detectar quando um tripulante bloqueado tenta usar credenciais de outro em seu dispositivo ja registrado
+3. **Equipamentos de embarcacao**: Cadastrar e gerenciar dispositivos da embarcacao (GPS, radar, cameras, etc.)
+4. **Alerta de compartilhamento**: Gerar alerta quando um dispositivo ja registrado para um tripulante e usado por outro tripulante (potencial compartilhamento de credenciais)
+5. **Gerenciamento**: Permitir que super_admin, empresa_admin e gerente_embarcacao bloqueiem/desbloqueiem dispositivos
 
-## Análise da Estrutura Atual
-
-### Tabela `tripulantes` (campos atuais)
-
-| Campo | Obrigatório | Descrição |
-|-------|-------------|-----------|
-| `nome` | SIM | Nome do tripulante |
-| `login_wifi` | SIM | Login para WiFi |
-| `senha_wifi` | SIM | Senha para WiFi |
-| `embarcacao_id` | SIM | Embarcação vinculada |
-| `perfil_id` | NAO | Perfil de velocidade |
-| `email` | NAO | Email pessoal |
-| `cpf` | NAO | CPF |
-| `cargo` | NAO | Cargo na embarcação |
-| `status` | SIM | ativo/bloqueado/inativo |
-
-### Tabela `perfis_velocidade` (campos disponíveis)
-
-| Campo | Descrição |
-|-------|-----------|
-| `velocidade_download` | Ex: "10M", "5M" |
-| `velocidade_upload` | Ex: "5M", "2M" |
-| `max_dispositivos` | Limite de dispositivos simultâneos |
-| `limite_dados_mb` | Quota de dados (opcional) |
-| `modo_acesso` | permitir_tudo / bloquear_tudo |
-| `herdar_regras_empresa` | Herdar listas de acesso |
-
-## Arquitetura da Solução
+## Arquitetura da Solucao
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                           FLUXO DE CADASTRO                                   │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ADMINISTRADOR/GERENTE                    TRIPULANTE                         │
-│  ────────────────────                     ──────────                         │
-│                                                                              │
-│  1. Acessa "Novo Tripulante"                                                 │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌────────────────────────┐                                                  │
-│  │ Formulário Simplificado│                                                  │
-│  │ ────────────────────── │                                                  │
-│  │ • Login WiFi           │                                                  │
-│  │ • Senha WiFi           │                                                  │
-│  │ • Embarcação           │                                                  │
-│  │ • Modo: [Perfil | Personalizado] │                                        │
-│  │   ├── Perfil: Select de perfis   │                                        │
-│  │   └── Personalizado:             │                                        │
-│  │       • Velocidades              │                                        │
-│  │       • Max dispositivos         │                                        │
-│  │       • Modo acesso              │                                        │
-│  └────────────────────────┘                                                  │
-│           │                                                                  │
-│           ▼                                                                  │
-│  Tripulante criado com                                                       │
-│  nome = login_wifi                         2. Primeiro login WiFi            │
-│  status = "pendente_cadastro"                      │                         │
-│           │                                        ▼                         │
-│           │                              ┌───────────────────────┐           │
-│           └─ QR Code gerado ────────────▶│ Portal de Cadastro    │           │
-│                                          │ (Captive Portal)      │           │
-│                                          │ ───────────────────── │           │
-│                                          │ • Nome completo       │           │
-│                                          │ • Email               │           │
-│                                          │ • CPF                 │           │
-│                                          │ • Cargo               │           │
-│                                          └───────────────────────┘           │
-│                                                    │                         │
-│                                                    ▼                         │
-│                                          status = "ativo"                    │
-│                                          Acesso liberado                     │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                      FLUXO DE DETECCAO E BLOQUEIO                               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  MIKROTIK SYNC                                                                  │
+│  ─────────────                                                                  │
+│                                                                                 │
+│  1. Tripulante B tenta conectar                                                 │
+│     usando MAC AA:BB:CC:DD:EE:FF                                                │
+│           │                                                                     │
+│           ▼                                                                     │
+│  ┌────────────────────────────────────────┐                                     │
+│  │ Verificar: MAC ja registrado           │                                     │
+│  │           para outro tripulante?       │                                     │
+│  └────────────────────────────────────────┘                                     │
+│           │                                                                     │
+│     ┌─────┴─────┐                                                               │
+│     │           │                                                               │
+│   SIM          NAO                                                              │
+│     │           │                                                               │
+│     ▼           ▼                                                               │
+│  ┌────────────────────────┐    ┌────────────────────────┐                       │
+│  │ Gerar ALERTA           │    │ Registrar dispositivo  │                       │
+│  │ "device_sharing"       │    │ para Tripulante B      │                       │
+│  │ severidade: critical   │    │ autorizado: true       │                       │
+│  └────────────────────────┘    └────────────────────────┘                       │
+│           │                                                                     │
+│           ▼                                                                     │
+│  ┌────────────────────────────────────────┐                                     │
+│  │ Verificar: Dispositivo bloqueado?      │                                     │
+│  │            (autorizado = false)        │                                     │
+│  └────────────────────────────────────────┘                                     │
+│           │                                                                     │
+│     ┌─────┴─────┐                                                               │
+│     │           │                                                               │
+│   SIM          NAO                                                              │
+│     │           │                                                               │
+│     ▼           ▼                                                               │
+│  ┌────────────────────────┐    ┌────────────────────────┐                       │
+│  │ Adicionar acao:        │    │ Conexao permitida      │                       │
+│  │ "kick_device"          │    │                        │                       │
+│  │ com razao do bloqueio  │    │                        │                       │
+│  └────────────────────────┘    └────────────────────────┘                       │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Mudanças Necessárias
+## Mudancas no Banco de Dados
 
-### 1. Migração de Banco de Dados
+### 1. Nova coluna em dispositivos_registrados
 
-Adicionar novo status e campo para saber se perfil é customizado:
+| Campo | Tipo | Descricao |
+|-------|------|-----------|
+| `embarcacao_id` | UUID (nullable) | Para dispositivos de embarcacao (sem tripulante) |
+| `bloqueio_motivo` | TEXT (nullable) | Motivo do bloqueio quando autorizado=false |
+| `bloqueado_por` | UUID (nullable) | Usuario que bloqueou (FK para auth.users) |
+| `bloqueado_at` | TIMESTAMP (nullable) | Data/hora do bloqueio |
 
-```sql
--- Adicionar coluna para configurações personalizadas
-ALTER TABLE tripulantes ADD COLUMN config_personalizada jsonb DEFAULT NULL;
+### 2. Novo tipo de alerta
 
--- Atualizar check constraint de status (se existir)
--- Novo status: 'pendente_cadastro' para tripulantes que ainda não completaram dados
+Adicionar ao sistema de alertas:
+
+| tipo | severidade | Descricao |
+|------|------------|-----------|
+| `device_sharing` | critical | MAC usado por tripulante diferente do registrado |
+| `blocked_device_attempt` | warning | Tentativa de conexao com dispositivo bloqueado |
+
+## Componentes a Implementar
+
+### 1. Pagina de Dispositivos Dedicada
+
+**Arquivo:** `src/pages/Dispositivos.tsx`
+
+Uma pagina central para gerenciar todos os dispositivos:
+- Listar todos os dispositivos registrados (com filtros)
+- Ver a qual tripulante/embarcacao pertence
+- Bloquear/desbloquear com um clique
+- Cadastrar dispositivos de embarcacao (sem vinculo a tripulante)
+- Ver historico de uso e consumo
+
+### 2. Atualizar Edge Function mikrotik-sync
+
+**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
+
+Adicionar logica para:
+1. Verificar se MAC ja esta registrado para outro tripulante
+2. Gerar alerta `device_sharing` se detectar compartilhamento
+3. Verificar campo `autorizado` do dispositivo
+4. Adicionar acao `kick_device` se dispositivo bloqueado
+5. Incluir lista de MACs bloqueados na resposta
+
+### 3. Hook para Gerenciamento de Dispositivos
+
+**Arquivo:** `src/hooks/useDispositivosRegistrados.ts` (atualizar)
+
+Adicionar:
+- `useDispositivosAll()` - Listar todos dispositivos (com filtros)
+- `useBlockDispositivo()` - Bloquear com motivo
+- `useDispositivosByEmbarcacao()` - Dispositivos de embarcacao
+- `useDispositivoHistory()` - Historico de sessoes
+
+### 4. Componente de Bloqueio Rapido
+
+Para usar na pagina de Alertas quando receber alerta de compartilhamento:
+- Botao para bloquear dispositivo diretamente do alerta
+- Opcao de bloquear o tripulante que compartilhou
+
+## Interface da Pagina de Dispositivos
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              Dispositivos                                        │
+│  Gerencie todos os dispositivos cadastrados no sistema                          │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌─────────┬─────────┬─────────┬─────────┬─────────┐                            │
+│  │  Total  │Autoriz. │Bloquead.│Tripul.  │Embarc.  │                            │
+│  │   45    │   38    │    4    │   41    │    4    │                            │
+│  └─────────┴─────────┴─────────┴─────────┴─────────┘                            │
+│                                                                                 │
+│  Filtros: [Todos ▼] [Embarcacao ▼] [Tripulante ▼] [Status ▼] [Buscar...]       │
+│                                                                                 │
+│  ┌───────────────────────────────────────────────────────────────────────────┐ │
+│  │ Dispositivo        │ MAC               │ Vinculo       │ Status │ Acoes   │ │
+│  ├───────────────────────────────────────────────────────────────────────────┤ │
+│  │ iPhone de Joao     │ AA:BB:CC:DD:EE:FF │ Joao Silva    │ ✓      │ [···]   │ │
+│  │ Notebook GPS       │ 11:22:33:44:55:66 │ Navio Alpha   │ ✓      │ [···]   │ │
+│  │ Galaxy Suspeito    │ 00:11:22:33:44:55 │ --bloqueado-- │ ✗      │ [···]   │ │
+│  │ Radar Principal    │ AA:11:BB:22:CC:33 │ Navio Beta    │ ✓      │ [···]   │ │
+│  └───────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                 │
+│  [+ Novo Dispositivo]  [+ Equipamento de Embarcacao]                            │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-O campo `config_personalizada` armazenará as configurações quando o admin optar por não usar um perfil pré-definido:
-```json
-{
-  "velocidade_download": "10M",
-  "velocidade_upload": "5M",
-  "max_dispositivos": 2,
-  "modo_acesso": "permitir_tudo"
-}
-```
-
-### 2. Reformular TripulanteForm.tsx
-
-**Antes (campos exigidos):**
-- Nome, Login, Senha, Email, CPF, Cargo, Embarcação, Perfil, Status
-
-**Depois (cadastro simplificado):**
-
-| Campo | Obrigatório | Notas |
-|-------|-------------|-------|
-| Login WiFi | SIM | Auto-gerado ou manual |
-| Senha WiFi | SIM | Auto-gerada |
-| Embarcação | SIM | Select |
-| Modo de Config | SIM | Radio: "Usar Perfil" ou "Personalizado" |
-| Perfil | Condicional | Aparece se "Usar Perfil" |
-| Velocidades | Condicional | Aparecem se "Personalizado" |
-| Max Dispositivos | Condicional | Aparece se "Personalizado" |
-| Modo Acesso | Condicional | Aparece se "Personalizado" |
-
-O campo `nome` será preenchido automaticamente com o login e atualizado pelo tripulante depois.
-
-### 3. Criar Portal de Auto-Cadastro
-
-**Nova rota:** `/completar-cadastro/:token`
-
-**Arquivo:** `src/pages/CompletarCadastro.tsx`
-
-Esta página será acessada via QR Code ou link direto e permite ao tripulante:
-1. Validar suas credenciais (login + senha)
-2. Preencher dados pessoais (nome, email, CPF, cargo)
-3. Aceitar termos de uso (opcional)
-
-### 4. Edge Function para Validação
-
-**Arquivo:** `supabase/functions/tripulante-self-register/index.ts`
-
-Funcionalidades:
-- Validar login e senha do tripulante
-- Aceitar dados pessoais e atualizar registro
-- Mudar status de `pendente_cadastro` para `ativo`
-- Registrar `ultimo_login` e IP
-
-### 5. Atualizar QRCodeModal
-
-Modificar o modal de QR Code para incluir link para o portal de auto-cadastro quando o tripulante estiver com status `pendente_cadastro`.
-
-## Detalhamento Técnico
-
-### Estrutura do Formulário Reformulado
+## Logica de Deteccao no mikrotik-sync
 
 ```typescript
-interface TripulanteFormData {
-  // Campos obrigatórios
-  login_wifi: string;
-  senha_wifi: string;
-  embarcacao_id: string;
-  
-  // Modo de configuração
-  modo_config: 'perfil' | 'personalizado';
-  
-  // Se modo = 'perfil'
-  perfil_id?: string;
-  
-  // Se modo = 'personalizado'
-  velocidade_download?: string;
-  velocidade_upload?: string;
-  max_dispositivos?: number;
-  modo_acesso?: 'permitir_tudo' | 'bloquear_tudo';
-}
-```
+// Pseudocodigo para deteccao de compartilhamento
+for (const activeUser of payload.active_users) {
+  // Verificar se MAC ja esta registrado para OUTRO tripulante
+  const { data: existingDevice } = await supabase
+    .from('dispositivos_registrados')
+    .select('id, tripulante_id, autorizado, tripulante:tripulantes(nome, login_wifi)')
+    .eq('mac_address', activeUser.mac)
+    .maybeSingle()
 
-### Fluxo de Dados ao Salvar
-
-```typescript
-// Se modo = 'perfil'
-{
-  nome: login_wifi,
-  login_wifi,
-  senha_wifi,
-  embarcacao_id,
-  perfil_id,
-  status: 'pendente_cadastro',
-  config_personalizada: null
-}
-
-// Se modo = 'personalizado'
-{
-  nome: login_wifi,
-  login_wifi,
-  senha_wifi,
-  embarcacao_id,
-  perfil_id: null,
-  status: 'pendente_cadastro',
-  config_personalizada: {
-    velocidade_download,
-    velocidade_upload,
-    max_dispositivos,
-    modo_acesso
+  if (existingDevice) {
+    // Dispositivo existe - verificar se pertence ao mesmo tripulante
+    const currentTripulante = await getTripulanteByLogin(activeUser.user)
+    
+    if (existingDevice.tripulante_id !== currentTripulante.id) {
+      // ALERTA: MAC registrado para outro tripulante!
+      await createAlert({
+        tipo: 'device_sharing',
+        severidade: 'critical',
+        mensagem: `Dispositivo ${activeUser.mac} registrado para ${existingDevice.tripulante.nome} ` +
+                  `sendo usado por ${activeUser.user}`,
+        tripulante_id: existingDevice.tripulante_id, // dono original
+        hotspot_id: hotspot.id,
+        embarcacao_id: hotspot.embarcacao_id,
+        empresa_id: embarcacao?.empresa_id
+      })
+    }
+    
+    // Verificar se dispositivo esta bloqueado
+    if (!existingDevice.autorizado) {
+      // Adicionar acao para kickar o dispositivo
+      kickActions.push({
+        type: 'kick_device',
+        payload: {
+          mac: activeUser.mac,
+          user: activeUser.user,
+          reason: 'Dispositivo bloqueado pelo administrador'
+        }
+      })
+      
+      // Criar alerta de tentativa
+      await createAlert({
+        tipo: 'blocked_device_attempt',
+        severidade: 'warning',
+        mensagem: `Tentativa de conexao com dispositivo bloqueado: ${activeUser.mac}`
+      })
+    }
   }
-}
-```
-
-### Portal de Auto-Cadastro
-
-```typescript
-// Validação do tripulante
-POST /tripulante-self-register
-Body: {
-  login: "joao.silva",
-  senha: "abc123",
-  nome: "João da Silva",
-  email: "joao@email.com",
-  cpf: "123.456.789-00",
-  cargo: "Marinheiro"
-}
-
-// Resposta sucesso
-{
-  success: true,
-  message: "Cadastro completado com sucesso"
 }
 ```
 
 ## Arquivos a Criar/Modificar
 
-| Arquivo | Ação | Descrição |
+| Arquivo | Acao | Descricao |
 |---------|------|-----------|
-| Migração SQL | Criar | Adicionar `config_personalizada` e permitir status `pendente_cadastro` |
-| `src/components/forms/TripulanteForm.tsx` | Modificar | Formulário simplificado com toggle perfil/personalizado |
-| `src/pages/CompletarCadastro.tsx` | Criar | Portal público de auto-cadastro |
-| `src/App.tsx` | Modificar | Adicionar rota `/completar-cadastro/:token` |
-| `supabase/functions/tripulante-self-register/index.ts` | Criar | Validação e atualização do tripulante |
-| `supabase/config.toml` | Modificar | Registrar nova edge function |
-| `src/components/modals/QRCodeModal.tsx` | Modificar | Incluir link para portal quando pendente |
+| Migracao SQL | Criar | Adicionar colunas embarcacao_id, bloqueio_motivo, bloqueado_por, bloqueado_at |
+| `src/pages/Dispositivos.tsx` | Criar | Pagina de gerenciamento de dispositivos |
+| `src/App.tsx` | Modificar | Adicionar rota /dispositivos |
+| `src/components/AppSidebar.tsx` | Modificar | Adicionar item Dispositivos no menu |
+| `src/hooks/useDispositivosRegistrados.ts` | Modificar | Adicionar hooks de listagem e bloqueio |
+| `supabase/functions/mikrotik-sync/index.ts` | Modificar | Adicionar deteccao de compartilhamento |
+| `src/pages/Alertas.tsx` | Modificar | Adicionar botao de bloquear dispositivo em alertas device_sharing |
 
-## Considerações de Segurança
-
-1. **Validação de Credenciais**: O portal de auto-cadastro exige login + senha para validar identidade
-2. **Rate Limiting**: Limitar tentativas de cadastro para evitar brute-force
-3. **Token Único**: Opcionalmente, gerar token único por tripulante para o link do portal
-4. **RLS**: Manter políticas RLS para proteger dados entre empresas/embarcações
-
-## Interface do Formulário Simplificado
+## Formulario de Novo Dispositivo de Embarcacao
 
 ```text
 ┌────────────────────────────────────────────────────┐
-│               Novo Tripulante                       │
+│        Novo Equipamento de Embarcacao              │
 │                                                    │
-│  Credenciais WiFi                                  │
-│  ──────────────────────────────────────────────── │
-│  Login WiFi    [joao.silva          ] [Auto]      │
-│  Senha WiFi    [********            ] [Gerar]     │
+│  MAC Address    [AA:BB:CC:DD:EE:FF       ]        │
+│  Nome           [Radar Principal         ]        │
+│  Tipo           [▼ Equipamento           ]        │
+│  Embarcacao     [▼ Navio Alpha           ]        │
+│  Descricao      [_________________________]       │
 │                                                    │
-│  Embarcação                                        │
-│  ──────────────────────────────────────────────── │
-│  [▼ Selecione a embarcação                      ] │
-│                                                    │
-│  Configuração de Acesso                           │
-│  ──────────────────────────────────────────────── │
-│  (●) Usar Perfil Pré-configurado                  │
-│  ( ) Configuração Personalizada                   │
-│                                                    │
-│  Perfil                                           │
-│  [▼ Comandante (10M/5M) - 3 disp                ] │
-│                                                    │
-│  ℹ️ Os dados pessoais (nome, email, CPF) serão   │
-│     preenchidos pelo tripulante no primeiro       │
-│     acesso via QR Code.                           │
+│  [✓] Autorizado a conectar                        │
 │                                                    │
 │           [Cancelar]  [Cadastrar]                 │
 └────────────────────────────────────────────────────┘
 ```
 
-## Ordem de Implementação
+## Fluxo de Alerta e Acao
 
-1. **Migração**: Adicionar coluna `config_personalizada` à tabela
-2. **TripulanteForm**: Reformular com toggle perfil/personalizado
-3. **Edge Function**: Criar função de auto-registro
-4. **CompletarCadastro**: Criar página pública do portal
-5. **Rotas**: Adicionar rota no App.tsx
-6. **QRCodeModal**: Atualizar para mostrar link do portal
-7. **Testes**: Validar fluxo completo
+```text
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        ALERTA: Compartilhamento Detectado                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ⚠️ CRITICO - device_sharing                                   há 2 minutos   │
+│                                                                                 │
+│  Dispositivo AA:BB:CC:DD:EE:FF (iPhone de Joao)                                │
+│  registrado para Joao Silva sendo usado por Pedro Santos                       │
+│                                                                                 │
+│  Embarcacao: Navio Alpha                                                        │
+│  Hotspot: Hotspot-Alpha-01                                                      │
+│                                                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │ Acoes Disponiveis                                                       │   │
+│  ├─────────────────────────────────────────────────────────────────────────┤   │
+│  │ [Bloquear Dispositivo] - Impede este MAC de conectar                    │   │
+│  │ [Bloquear Tripulante] - Bloqueia Pedro Santos (quem usou)               │   │
+│  │ [Desconectar Agora] - Kicka a sessao atual                              │   │
+│  │ [Ignorar] - Marcar como resolvido sem acao                              │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
 
+## Ordem de Implementacao
+
+1. **Migracao SQL**: Adicionar colunas a tabela dispositivos_registrados
+2. **Hooks atualizados**: Adicionar funcionalidades de bloqueio e listagem global
+3. **Pagina Dispositivos**: Criar UI de gerenciamento
+4. **Rotas e Menu**: Adicionar ao App.tsx e AppSidebar.tsx
+5. **mikrotik-sync**: Implementar deteccao de compartilhamento
+6. **Alertas**: Adicionar acoes de bloqueio direto
+7. **Testes**: Simular cenarios de compartilhamento
+
+## Consideracoes de Seguranca
+
+1. **RLS Policies**: Manter politicas existentes para dispositivos
+2. **Auditoria**: Registrar quem bloqueou e quando (bloqueado_por, bloqueado_at)
+3. **Limites de taxa**: Evitar flood de alertas para o mesmo MAC
+4. **Notificacao**: Alertas criticos devem ser vistos por todos os niveis (super_admin, empresa_admin, gerente)
+
+## Beneficios
+
+| Funcionalidade | Beneficio |
+|----------------|-----------|
+| Bloqueio por MAC | Impede dispositivo especifico de conectar, mesmo com credenciais validas |
+| Deteccao de compartilhamento | Identifica uso indevido de credenciais entre tripulantes |
+| Equipamentos de embarcacao | Permite monitorar e controlar equipamentos de rede da embarcacao |
+| Acoes rapidas no alerta | Reduz tempo de resposta a incidentes de seguranca |
+| Historico de bloqueios | Auditoria completa de acoes de seguranca |
