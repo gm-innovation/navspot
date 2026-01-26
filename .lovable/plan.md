@@ -1,322 +1,150 @@
 
-# Sistema de Periodo de Renovacao de Quota com Fuso Horario
 
-## Resumo do Requisito
+# Correções de Interface e Modelo de Dados
 
-O sistema precisa:
+## Pontos Identificados
 
-1. **Periodo da quota**: Definir se o limite de dados renova por hora, dia, semana ou mes
-2. **Renovacao automatica**: Resetar `bytes_consumidos` no inicio de cada periodo
-3. **Fuso horario**: Considerar o timezone correto, pois navios navegam entre diferentes fusos (Brasil tem 3 fusos: -2, -3, -4)
-4. **Flexibilidade**: Permitir configurar fuso por empresa ou embarcacao
+O usuário apontou três problemas nas interfaces atuais:
 
-## Arquitetura da Solucao
+### 1. Formulário de Novo Equipamento de Embarcação
+Falta a opção de **Autorizado** (liberar/bloquear) no momento do cadastro. Atualmente o campo está fixo como `autorizado: true`.
 
-```text
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                      FLUXO DE RENOVACAO DE QUOTA                                │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│  CONFIGURACAO                                                                   │
-│  ─────────────                                                                  │
-│                                                                                 │
-│  ┌────────────────────────────────────────────────────────────────────────┐    │
-│  │ Perfil de Velocidade                                                   │    │
-│  │ ──────────────────────────────────────────────────────────────────────│    │
-│  │ Limite de Dados: [500 MB]                                             │    │
-│  │ Periodo:         [▼ Diario / Semanal / Mensal / Por Hora]             │    │
-│  └────────────────────────────────────────────────────────────────────────┘    │
-│                                                                                 │
-│  ┌────────────────────────────────────────────────────────────────────────┐    │
-│  │ Empresa / Embarcacao                                                   │    │
-│  │ ──────────────────────────────────────────────────────────────────────│    │
-│  │ Fuso Horario: [▼ America/Sao_Paulo (-3) / America/Manaus (-4) / ...]  │    │
-│  └────────────────────────────────────────────────────────────────────────┘    │
-│                                                                                 │
-│  VERIFICACAO NO SYNC                                                           │
-│  ────────────────────                                                          │
-│                                                                                 │
-│  mikrotik-sync recebe dados                                                    │
-│           │                                                                     │
-│           ▼                                                                     │
-│  ┌────────────────────────────────────────┐                                    │
-│  │ Verificar: Novo periodo iniciou?       │                                    │
-│  │ (baseado no fuso da embarcacao)        │                                    │
-│  └────────────────────────────────────────┘                                    │
-│           │                                                                     │
-│     ┌─────┴─────┐                                                              │
-│     │           │                                                              │
-│   SIM          NAO                                                             │
-│     │           │                                                              │
-│     ▼           ▼                                                              │
-│  ┌────────────────────────┐    ┌────────────────────────┐                      │
-│  │ Resetar bytes_consumidos│    │ Continuar contagem    │                      │
-│  │ para zero              │    │ normal                 │                      │
-│  │ Atualizar quota_reset_at│    │                        │                      │
-│  └────────────────────────┘    └────────────────────────┘                      │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
+### 2. Separação entre Hotspots e Embarcações
+O menu mostra "Hotspots" e "Embarcações" separadamente, mas o usuário diz que **cada embarcação É um hotspot**. Isso sugere que a relação deveria ser 1:1, não que uma embarcação pode ter múltiplos hotspots.
 
-## Mudancas no Banco de Dados
+### 3. Formulário de Embarcação
+- **"Herdar da empresa"**: Confuso para o usuário. O fuso horário da embarcação pode ser diferente do da empresa.
+- **"Localização"**: Não faz sentido ter um campo de localização estática para embarcações que navegam.
 
-### 1. Tabela perfis_velocidade
+## Mudanças Propostas
 
-Adicionar colunas:
+### 1. Adicionar Switch de Autorização no Formulário de Dispositivo
 
-| Campo | Tipo | Default | Descricao |
-|-------|------|---------|-----------|
-| `quota_periodo` | TEXT | 'diario' | Periodo de renovacao: 'hora', 'diario', 'semanal', 'mensal' |
-
-### 2. Tabela empresas
-
-Adicionar coluna de fuso horario padrao:
-
-| Campo | Tipo | Default | Descricao |
-|-------|------|---------|-----------|
-| `timezone` | TEXT | 'America/Sao_Paulo' | Fuso horario padrao da empresa |
-
-### 3. Tabela embarcacoes
-
-Adicionar coluna de fuso horario (pode sobrescrever o da empresa):
-
-| Campo | Tipo | Default | Descricao |
-|-------|------|---------|-----------|
-| `timezone` | TEXT | NULL | Fuso especifico da embarcacao (se NULL, usa da empresa) |
-
-### 4. Tabela tripulantes
-
-Adicionar coluna para rastrear ultima renovacao:
-
-| Campo | Tipo | Default | Descricao |
-|-------|------|---------|-----------|
-| `quota_reset_at` | TIMESTAMP | NULL | Data/hora do ultimo reset de quota |
-
-## Fusos Horarios do Brasil
-
-Os navios brasileiros navegam principalmente nestas zonas:
-
-| Fuso | Timezone IANA | Regioes |
-|------|---------------|---------|
-| UTC-2 | America/Noronha | Fernando de Noronha |
-| UTC-3 | America/Sao_Paulo | Sul, Sudeste, Nordeste costeiro |
-| UTC-4 | America/Manaus | Amazonia ocidental |
-
-## Logica de Renovacao
-
-### Verificacao no mikrotik-sync
-
-```typescript
-function shouldResetQuota(
-  tripulante: { quota_reset_at: string | null },
-  perfil: { quota_periodo: string },
-  timezone: string
-): boolean {
-  if (!tripulante.quota_reset_at) return true // Primeira vez
-  
-  const now = new Date()
-  const lastReset = new Date(tripulante.quota_reset_at)
-  
-  // Converter para timezone local
-  const nowLocal = toZonedTime(now, timezone)
-  const lastResetLocal = toZonedTime(lastReset, timezone)
-  
-  switch (perfil.quota_periodo) {
-    case 'hora':
-      // Resetar se hora mudou
-      return nowLocal.getHours() !== lastResetLocal.getHours() ||
-             nowLocal.getDate() !== lastResetLocal.getDate()
-    
-    case 'diario':
-      // Resetar se passou da meia-noite
-      return nowLocal.getDate() !== lastResetLocal.getDate() ||
-             nowLocal.getMonth() !== lastResetLocal.getMonth()
-    
-    case 'semanal':
-      // Resetar se passou domingo->segunda (ou inicio da semana)
-      return getWeekNumber(nowLocal) !== getWeekNumber(lastResetLocal)
-    
-    case 'mensal':
-      // Resetar se mudou de mes
-      return nowLocal.getMonth() !== lastResetLocal.getMonth() ||
-             nowLocal.getFullYear() !== lastResetLocal.getFullYear()
-    
-    default:
-      return false // 'ilimitado' ou desconhecido
-  }
-}
-```
-
-### Execucao do Reset
-
-Quando detectar novo periodo:
-
-```typescript
-if (shouldResetQuota(tripulante, perfil, embarcacaoTimezone)) {
-  await supabase
-    .from('tripulantes')
-    .update({
-      bytes_consumidos: 0,
-      quota_reset_at: new Date().toISOString()
-    })
-    .eq('id', tripulante.id)
-  
-  console.log(`[mikrotik-sync] Quota renovada para ${tripulante.nome}`)
-}
-```
-
-## Interface do Formulario de Perfil
+Modificar `src/pages/Dispositivos.tsx`:
+- Adicionar um Switch para "Autorizado a conectar" no formulário de novo equipamento
+- Permitir que o admin já cadastre o dispositivo bloqueado se necessário
 
 ```text
-┌────────────────────────────────────────────────────────────────────────────────┐
-│                        Perfil de Velocidade                                     │
-├────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                │
-│  Limites de Banda                                                              │
-│  ──────────────────────────────────────────────────────────────────────────── │
-│  Download    [10M           ]     Upload    [5M           ]                   │
-│                                                                                │
-│  Limite de Dados                                                               │
-│  ──────────────────────────────────────────────────────────────────────────── │
-│  Quota       [500           ] MB                                              │
-│  Periodo     [▼ Diario                                    ]                   │
-│              ├─ Por Hora (renova a cada hora cheia)                           │
-│              ├─ Diario (renova a meia-noite)                                  │
-│              ├─ Semanal (renova toda segunda-feira)                           │
-│              └─ Mensal (renova no dia 1)                                      │
-│                                                                                │
-│  ℹ️ O horario de renovacao segue o fuso da embarcacao/empresa.                │
-│                                                                                │
-└────────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────┐
+│        Novo Equipamento de Embarcação              │
+│                                                    │
+│  MAC Address *   [AA:BB:CC:DD:EE:FF       ]       │
+│  Nome            [Radar Principal         ]       │
+│  Tipo            [▼ Equipamento           ]       │
+│  Embarcação *    [▼ Navio Alpha           ]       │
+│                                                    │
+│  Autorizado      [====●] Sim                      │
+│                                                    │
+│           [Cancelar]  [Cadastrar]                 │
+└────────────────────────────────────────────────────┘
 ```
 
-## Interface de Configuracao de Fuso (Empresa)
+### 2. Unificar Hotspot e Embarcação (Relação 1:1)
+
+Dado que **cada embarcação é um hotspot**, faz mais sentido:
+
+**Opção A - Manter separado mas simplificar:**
+- Remover "Hotspots" do menu principal
+- Ao criar/editar uma embarcação, automaticamente criar/atualizar o hotspot vinculado
+- Mostrar as configurações do hotspot dentro da página de embarcações (em uma aba ou seção)
+
+**Opção B - Merge completo:**
+- Mover as colunas técnicas do hotspot (interface_wifi, rede, sync_token, etc.) para dentro de embarcações
+- Eliminar a tabela hotspots
+
+Recomendação: **Opção A** - mantém a separação no banco para flexibilidade futura, mas na interface o usuário gerencia tudo como "Embarcação" com uma aba de "Configurações de Rede".
+
+### 3. Corrigir Formulário de Embarcação
+
+**Remover:**
+- Campo "Localização" (não faz sentido para embarcações em movimento)
+
+**Melhorar "Fuso Horário":**
+- Mudar o texto "Herdar da empresa" para algo mais claro
+- Explicar que é o fuso **predominante** onde a embarcação opera
+- Adicionar tooltip explicativo
 
 ```text
-┌────────────────────────────────────────────────────────────────────────────────┐
-│                        Configuracoes da Empresa                                 │
-├────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                │
-│  Fuso Horario Padrao                                                           │
-│  ──────────────────────────────────────────────────────────────────────────── │
-│  [▼ America/Sao_Paulo (UTC-3) - Brasilia                              ]       │
-│                                                                                │
-│  Opcoes disponiveis:                                                           │
-│  • America/Noronha (UTC-2) - Fernando de Noronha                              │
-│  • America/Sao_Paulo (UTC-3) - Brasilia, SP, RJ                               │
-│  • America/Manaus (UTC-4) - Manaus, Amazonia                                  │
-│  • America/Rio_Branco (UTC-5) - Acre                                          │
-│                                                                                │
-│  ℹ️ Embarcacoes podem ter fuso diferente se navegarem em outras regioes.      │
-│                                                                                │
-└────────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────┐
+│               Editar Embarcação                    │
+│                                                    │
+│  Dados Gerais                                      │
+│  ──────────────────────────────────────────────── │
+│  Nome            [Navio Alpha             ]       │
+│  Tipo            [▼ Navio                 ]       │
+│  Empresa         [▼ Empresa ABC           ]       │
+│  Responsável     [João Silva              ]       │
+│  Email           [joao@empresa.com        ]       │
+│  Status          [▼ Ativo                 ]       │
+│                                                    │
+│  Fuso Horário Predominante                        │
+│  ──────────────────────────────────────────────── │
+│  [▼ America/Sao_Paulo (UTC-3)             ]       │
+│  ℹ️ Fuso onde a embarcação opera na maior parte  │
+│     do tempo. Afeta a renovação de quotas.        │
+│                                                    │
+│  Configurações de Rede (Hotspot)                  │
+│  ──────────────────────────────────────────────── │
+│  Interface WiFi  [▼ wlan1                 ]       │
+│  Rede            [192.168.88.0/24         ]       │
+│  Max Usuários    [50                      ]       │
+│  Intervalo Sync  [5                       ] min   │
+│                                                    │
+│           [Cancelar]  [Salvar]                    │
+└────────────────────────────────────────────────────┘
 ```
 
-## Interface de Configuracao de Fuso (Embarcacao)
+## Arquivos a Modificar
+
+| Arquivo | Mudança |
+|---------|---------|
+| `src/pages/Dispositivos.tsx` | Adicionar Switch de autorização no form |
+| `src/components/forms/EmbarcacaoForm.tsx` | Remover "Localização", melhorar texto do fuso, integrar campos de hotspot |
+| `src/components/AppSidebar.tsx` | Remover "Hotspots" do menu (será parte de Embarcações) |
+| `src/pages/Embarcacoes.tsx` | Modificar para gerenciar hotspot junto com embarcação |
+| `src/hooks/useEmbarcacoes.ts` | Adicionar lógica para criar/atualizar hotspot automaticamente |
+| `src/App.tsx` | Remover rota `/hotspots` ou redirecionar para `/embarcacoes` |
+
+## Fluxo Simplificado
 
 ```text
-┌────────────────────────────────────────────────────────────────────────────────┐
-│                        Configuracoes da Embarcacao                              │
-├────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                │
-│  Fuso Horario                                                                  │
-│  ──────────────────────────────────────────────────────────────────────────── │
-│  [✓] Usar fuso horario da empresa (America/Sao_Paulo)                         │
-│  [ ] Definir fuso horario especifico                                          │
-│      [▼ America/Manaus (UTC-4)                                        ]       │
-│                                                                                │
-│  ℹ️ Configure um fuso especifico se a embarcacao navegar frequentemente       │
-│     em areas com fuso diferente da sede da empresa.                           │
-│                                                                                │
-└────────────────────────────────────────────────────────────────────────────────┘
+ANTES:
+Embarcações ──────► Hotspots
+   (menu)            (menu separado)
+     │                    │
+     ▼                    ▼
+ Cadastrar           Configurar
+ embarcação          hotspot
+
+DEPOIS:
+Embarcações
+   (menu único)
+     │
+     ▼
+ Cadastrar/Editar embarcação
+   ├── Dados gerais
+   ├── Fuso horário
+   └── Config. de rede (hotspot)
+        ├── Interface WiFi
+        ├── Rede
+        └── Sync interval
 ```
 
-## Arquivos a Criar/Modificar
+## Benefícios
 
-| Arquivo | Acao | Descricao |
-|---------|------|-----------|
-| Migracao SQL | Criar | Adicionar quota_periodo, timezone, quota_reset_at |
-| `src/hooks/usePerfisVelocidade.ts` | Modificar | Adicionar constante PERIODOS_QUOTA |
-| `src/pages/PerfisVelocidade.tsx` | Modificar | Adicionar campo de periodo no formulario |
-| `src/hooks/useEmpresas.ts` | Modificar | Adicionar timezone no CRUD |
-| `src/hooks/useEmbarcacoes.ts` | Modificar | Adicionar timezone no CRUD |
-| `src/components/forms/EmbarcacaoForm.tsx` | Modificar | Adicionar campo de timezone |
-| `supabase/functions/mikrotik-sync/index.ts` | Modificar | Implementar logica de renovacao |
+| Mudança | Benefício |
+|---------|-----------|
+| Switch de autorização | Admin pode cadastrar dispositivo já bloqueado |
+| Unificar Hotspot+Embarcação | Interface mais simples e intuitiva |
+| Remover localização | Remove campo que não faz sentido |
+| Melhorar texto do fuso | Deixa claro que é o fuso predominante |
+| Tooltip explicativo | Ajuda o usuário a entender o impacto do fuso |
 
-## Exibicao de Informacao de Quota
+## Ordem de Implementação
 
-Na pagina de Tripulantes ou Dashboard, mostrar:
+1. **Dispositivos**: Adicionar Switch de autorização
+2. **EmbarcacaoForm**: Remover localização, melhorar fuso, adicionar campos de hotspot
+3. **useEmbarcacoes**: Criar hook para gerenciar embarcação + hotspot juntos
+4. **Sidebar/Rotas**: Remover menu e rota de Hotspots
+5. **Embarcacoes**: Adaptar página para o novo fluxo
 
-```text
-┌────────────────────────────────────────────────────────────────────────────────┐
-│  Joao Silva                                                                    │
-│  ──────────────────────────────────────────────────────────────────────────── │
-│  Quota: 450 MB / 500 MB (90%)  [==========-]                                  │
-│  Periodo: Diario                                                              │
-│  Renova em: 2h 15min (meia-noite horario local)                               │
-│  Fuso: America/Sao_Paulo (UTC-3)                                              │
-└────────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Casos de Uso Especiais
-
-### 1. Navio muda de fuso
-
-Se o navio navega de Sao Paulo (-3) para Manaus (-4):
-- O admin pode atualizar o timezone da embarcacao
-- O sistema recalcula o periodo com base no novo fuso
-- Comportamento conservador: se a quota deveria resetar mas o fuso mudou, aguarda proximo ciclo
-
-### 2. Tripulante sem perfil (config personalizada)
-
-Para tripulantes com `config_personalizada`:
-- Adicionar campo `quota_periodo` no JSON
-- Usar timezone da embarcacao normalmente
-
-### 3. Primeiro acesso
-
-Se `quota_reset_at` for NULL:
-- Setar como momento atual
-- Iniciar contagem do zero
-
-## Alerta de Renovacao
-
-Opcionalmente, gerar alerta informativo quando quota renovar:
-
-```typescript
-// Tipo: quota_renewed (info)
-await createAlertIfNotRecent(supabase, {
-  tipo: 'quota_renewed',
-  severidade: 'info',
-  mensagem: `Quota renovada para ${tripulante.nome} - Periodo: ${perfil.quota_periodo}`,
-  tripulante_id: tripulante.id,
-  embarcacao_id: embarcacao.id
-}, 60 * 24) // Apenas 1 alerta por dia por tripulante
-```
-
-## Ordem de Implementacao
-
-1. **Migracao SQL**: Adicionar colunas quota_periodo, timezone, quota_reset_at
-2. **Constantes e hooks**: Adicionar PERIODOS_QUOTA e TIMEZONES_BRASIL
-3. **Formulario de Perfil**: Adicionar campo de periodo
-4. **Formulario de Embarcacao**: Adicionar campo de timezone
-5. **mikrotik-sync**: Implementar logica de renovacao
-6. **UI de exibicao**: Mostrar info de renovacao na lista de tripulantes
-7. **Testes**: Simular mudancas de periodo e fuso
-
-## Consideracoes Tecnicas
-
-1. **Performance**: A verificacao de periodo e feita apenas durante o sync, nao em tempo real
-2. **Precisao**: O reset pode ter delay de alguns minutos (intervalo do sync)
-3. **Timezone library**: Usar funcoes nativas de Date com toLocaleString ou biblioteca como date-fns-tz
-4. **Historico**: O campo `quota_reset_at` serve para auditoria e depuracao
-
-## Beneficios
-
-| Funcionalidade | Beneficio |
-|----------------|-----------|
-| Periodo configuravel | Flexibilidade para diferentes cenarios de uso |
-| Fuso horario | Precisao para embarcacoes em diferentes regioes |
-| Renovacao automatica | Sem necessidade de intervencao manual |
-| Hierarquia de timezone | Empresa define padrao, embarcacao pode sobrescrever |
-| Auditoria | Registro de quando a quota foi renovada |
