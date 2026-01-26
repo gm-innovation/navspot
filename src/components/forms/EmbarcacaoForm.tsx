@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { EmbarcacaoInsert, EmbarcacaoUpdate } from "@/hooks/useEmbarcacoes";
 import { useEmpresas } from "@/hooks/useEmpresas";
+import { TIMEZONES_BRASIL } from "@/hooks/usePerfisVelocidade";
 
 interface EmbarcacaoFormProps {
   open: boolean;
@@ -57,14 +58,19 @@ export function EmbarcacaoForm({
     responsavel_email: initialData?.responsavel_email || "",
     localizacao: initialData?.localizacao || "",
     status: initialData?.status || "ativo",
+    timezone: initialData?.timezone || "",
   });
+
+  const useEmpresaTimezone = !formData.timezone;
+  const selectedEmpresa = empresas?.find(e => e.id === formData.empresa_id);
+  const empresaTimezone = TIMEZONES_BRASIL.find(tz => tz.value === selectedEmpresa?.timezone);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (isEditing && initialData?.id) {
-      onSubmit({ ...formData, id: initialData.id });
+      onSubmit({ ...formData, timezone: formData.timezone || null, id: initialData.id });
     } else {
-      onSubmit(formData as EmbarcacaoInsert);
+      onSubmit({ ...formData, timezone: formData.timezone || null } as EmbarcacaoInsert);
     }
   };
 
@@ -191,12 +197,41 @@ export function EmbarcacaoForm({
                 <SelectTrigger className="col-span-3">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="z-50 bg-background border shadow-lg">
                   <SelectItem value="ativo">Ativo</SelectItem>
                   <SelectItem value="inativo">Inativo</SelectItem>
                 </SelectContent>
               </Select>
             </div>
+
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="timezone" className="text-right">
+                Fuso Horário
+              </Label>
+              <Select
+                value={formData.timezone || "inherit"}
+                onValueChange={(value) => handleChange("timezone", value === "inherit" ? "" : value)}
+              >
+                <SelectTrigger className="col-span-3">
+                  <SelectValue placeholder={empresaTimezone ? `Herdar da empresa (${empresaTimezone.label})` : "Selecione..."} />
+                </SelectTrigger>
+                <SelectContent className="z-50 bg-background border shadow-lg">
+                  <SelectItem value="inherit">
+                    Herdar da empresa {empresaTimezone ? `(${empresaTimezone.label})` : ""}
+                  </SelectItem>
+                  {TIMEZONES_BRASIL.map((tz) => (
+                    <SelectItem key={tz.value} value={tz.value}>
+                      {tz.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {formData.timezone && (
+              <p className="text-xs text-muted-foreground ml-auto col-span-4 text-right">
+                ℹ️ Fuso específico configurado para esta embarcação
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

@@ -202,6 +202,7 @@ export type Database = {
           responsavel_email: string | null
           responsavel_nome: string | null
           status: string
+          timezone: string | null
           tipo: string
           updated_at: string
         }
@@ -214,6 +215,7 @@ export type Database = {
           responsavel_email?: string | null
           responsavel_nome?: string | null
           status?: string
+          timezone?: string | null
           tipo?: string
           updated_at?: string
         }
@@ -226,6 +228,7 @@ export type Database = {
           responsavel_email?: string | null
           responsavel_nome?: string | null
           status?: string
+          timezone?: string | null
           tipo?: string
           updated_at?: string
         }
@@ -249,6 +252,7 @@ export type Database = {
           nome: string
           status: string
           telefone: string | null
+          timezone: string
           updated_at: string
         }
         Insert: {
@@ -260,6 +264,7 @@ export type Database = {
           nome: string
           status?: string
           telefone?: string | null
+          timezone?: string
           updated_at?: string
         }
         Update: {
@@ -271,6 +276,7 @@ export type Database = {
           nome?: string
           status?: string
           telefone?: string | null
+          timezone?: string
           updated_at?: string
         }
         Relationships: []
@@ -399,6 +405,7 @@ export type Database = {
           modo_acesso: string
           nome: string
           prioridade: number
+          quota_periodo: string
           session_timeout_minutos: number | null
           tipo_usuario: string
           velocidade_download: string
@@ -415,6 +422,7 @@ export type Database = {
           modo_acesso?: string
           nome: string
           prioridade?: number
+          quota_periodo?: string
           session_timeout_minutos?: number | null
           tipo_usuario?: string
           velocidade_download?: string
@@ -431,6 +439,7 @@ export type Database = {
           modo_acesso?: string
           nome?: string
           prioridade?: number
+          quota_periodo?: string
           session_timeout_minutos?: number | null
           tipo_usuario?: string
           velocidade_download?: string
@@ -613,6 +622,7 @@ export type Database = {
           login_wifi: string
           nome: string
           perfil_id: string | null
+          quota_reset_at: string | null
           senha_wifi: string
           status: string
           ultimo_login: string | null
@@ -630,6 +640,7 @@ export type Database = {
           login_wifi: string
           nome: string
           perfil_id?: string | null
+          quota_reset_at?: string | null
           senha_wifi: string
           status?: string
           ultimo_login?: string | null
@@ -647,6 +658,7 @@ export type Database = {
           login_wifi?: string
           nome?: string
           perfil_id?: string | null
+          quota_reset_at?: string | null
           senha_wifi?: string
           status?: string
           ultimo_login?: string | null
