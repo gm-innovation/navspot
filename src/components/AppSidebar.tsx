@@ -1,5 +1,4 @@
-
-import { Home, Wifi, Ship, Users, Bell, Settings } from "lucide-react";
+import { Home, Wifi, Ship, Users, Bell, Settings, Gauge } from "lucide-react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   Sidebar,
@@ -26,6 +25,7 @@ const allNavigationItems: NavigationItem[] = [
   { title: "Hotspots", url: "/hotspots", icon: Wifi, roles: ['super_admin', 'empresa_admin'] },
   { title: "Embarcações", url: "/embarcacoes", icon: Ship, roles: ['super_admin', 'empresa_admin'] },
   { title: "Tripulantes", url: "/tripulantes", icon: Users, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
+  { title: "Perfis", url: "/perfis-velocidade", icon: Gauge, roles: ['super_admin', 'empresa_admin'] },
   { title: "Alertas", url: "/alertas", icon: Bell, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
   { title: "Configurações", url: "/configuracoes", icon: Settings, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
 ];

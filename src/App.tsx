@@ -1,4 +1,3 @@
-
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -13,6 +12,7 @@ import Dashboard from "./pages/Dashboard";
 import Hotspots from "./pages/Hotspots";
 import Embarcacoes from "./pages/Embarcacoes";
 import Tripulantes from "./pages/Tripulantes";
+import PerfisVelocidade from "./pages/PerfisVelocidade";
 import Alertas from "./pages/Alertas";
 import Configuracoes from "./pages/Configuracoes";
 import NotFound from "./pages/NotFound";
@@ -64,6 +64,15 @@ const App = () => (
                   <SidebarProvider>
                     <AppLayout>
                       <Tripulantes />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/perfis-velocidade" element={
+                <ProtectedRoute allowedRoles={['super_admin', 'empresa_admin']}>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <PerfisVelocidade />
                     </AppLayout>
                   </SidebarProvider>
                 </ProtectedRoute>
