@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -23,6 +24,11 @@ import {
   Check,
   Eye,
   RefreshCw,
+  Camera,
+  Radio,
+  Navigation,
+  Router,
+  Tv,
 } from "lucide-react";
 import {
   Select,
@@ -59,10 +65,12 @@ import {
   TIPOS_DISPOSITIVO,
   formatBytes,
   formatMacAddress,
+  getDispositivosByCategoria,
 } from "@/hooks/useDispositivosRegistrados";
 import { useEmbarcacoes } from "@/hooks/useEmbarcacoes";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { DispositivoDetailsModal } from "@/components/modals/DispositivoDetailsModal";
 
 type FilterStatus = "all" | "autorizado" | "bloqueado";
 type FilterType = "all" | "tripulante" | "embarcacao";
@@ -72,17 +80,32 @@ const getDeviceIcon = (tipo: string) => {
     case "celular":
       return Smartphone;
     case "notebook":
+    case "passadico":
       return Laptop;
     case "tablet":
       return Tablet;
     case "desktop":
       return Monitor;
+    case "camera":
+      return Camera;
+    case "radar":
+      return Radio;
+    case "gps":
+    case "ecdis":
+      return Navigation;
+    case "roteador":
+      return Router;
+    case "streaming":
+    case "vdr":
+      return Tv;
     default:
       return Wifi;
   }
 };
 
 export default function Dispositivos() {
+  const navigate = useNavigate();
+  
   // Filters state
   const [searchTerm, setSearchTerm] = useState("");
   const [filterStatus, setFilterStatus] = useState<FilterStatus>("all");
@@ -92,6 +115,7 @@ export default function Dispositivos() {
   // Modal states
   const [showNewDevice, setShowNewDevice] = useState(false);
   const [showBlockModal, setShowBlockModal] = useState(false);
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState<DispositivoWithTripulante | null>(null);
   const [blockReason, setBlockReason] = useState("");
 
@@ -402,8 +426,13 @@ export default function Dispositivos() {
                           <MoreHorizontal className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem>
+                      <DropdownMenuContent align="end" className="bg-background border shadow-lg">
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setSelectedDevice(device);
+                            setShowDetailsModal(true);
+                          }}
+                        >
                           <Eye className="h-4 w-4 mr-2" />
                           Ver Detalhes
                         </DropdownMenuItem>
@@ -481,8 +510,21 @@ export default function Dispositivos() {
                 <SelectTrigger>
                   <SelectValue placeholder="Selecione o tipo" />
                 </SelectTrigger>
-                <SelectContent>
-                  {TIPOS_DISPOSITIVO.map((t) => (
+                <SelectContent className="bg-background">
+                  {/* Equipamentos de Embarcação */}
+                  <SelectItem value="_group_embarcacao" disabled className="font-semibold text-xs text-muted-foreground">
+                    — Equipamentos de Embarcação —
+                  </SelectItem>
+                  {getDispositivosByCategoria('embarcacao').map((t) => (
+                    <SelectItem key={t.value} value={t.value}>
+                      {t.label}
+                    </SelectItem>
+                  ))}
+                  {/* Outros */}
+                  <SelectItem value="_group_outro" disabled className="font-semibold text-xs text-muted-foreground mt-2">
+                    — Outros —
+                  </SelectItem>
+                  {getDispositivosByCategoria('outro').map((t) => (
                     <SelectItem key={t.value} value={t.value}>
                       {t.label}
                     </SelectItem>
@@ -580,6 +622,15 @@ export default function Dispositivos() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {/* Details Modal */}
+      <DispositivoDetailsModal
+        dispositivo={selectedDevice}
+        open={showDetailsModal}
+        onOpenChange={setShowDetailsModal}
+        onCreateRule={(mac) => {
+          navigate(`/regras-acesso?mac=${mac}`);
+        }}
+      />
     </div>
   );
 }

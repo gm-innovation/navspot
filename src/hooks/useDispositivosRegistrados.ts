@@ -20,13 +20,32 @@ export interface DispositivoWithTripulante extends DispositivoRegistrado {
   } | null;
 }
 
+// Categoria de tipos de dispositivo
+export type TipoDispositivoCategoria = 'pessoal' | 'embarcacao' | 'outro';
+
 export const TIPOS_DISPOSITIVO = [
-  { value: 'celular', label: 'Celular' },
-  { value: 'notebook', label: 'Notebook' },
-  { value: 'tablet', label: 'Tablet' },
-  { value: 'desktop', label: 'Desktop' },
-  { value: 'outro', label: 'Outro' },
+  // Dispositivos pessoais (tripulantes)
+  { value: 'celular', label: 'Celular', categoria: 'pessoal' as TipoDispositivoCategoria },
+  { value: 'notebook', label: 'Notebook', categoria: 'pessoal' as TipoDispositivoCategoria },
+  { value: 'tablet', label: 'Tablet', categoria: 'pessoal' as TipoDispositivoCategoria },
+  { value: 'desktop', label: 'Desktop', categoria: 'pessoal' as TipoDispositivoCategoria },
+  // Equipamentos de embarcação
+  { value: 'camera', label: 'Câmera de Segurança', categoria: 'embarcacao' as TipoDispositivoCategoria },
+  { value: 'radar', label: 'Radar', categoria: 'embarcacao' as TipoDispositivoCategoria },
+  { value: 'gps', label: 'GPS/AIS', categoria: 'embarcacao' as TipoDispositivoCategoria },
+  { value: 'ecdis', label: 'ECDIS', categoria: 'embarcacao' as TipoDispositivoCategoria },
+  { value: 'vdr', label: 'VDR (Caixa Preta)', categoria: 'embarcacao' as TipoDispositivoCategoria },
+  { value: 'roteador', label: 'Roteador/Switch', categoria: 'embarcacao' as TipoDispositivoCategoria },
+  { value: 'passadico', label: 'Notebook Passadiço', categoria: 'embarcacao' as TipoDispositivoCategoria },
+  { value: 'streaming', label: 'Equipamento Streaming', categoria: 'embarcacao' as TipoDispositivoCategoria },
+  // Outros
+  { value: 'outro', label: 'Outro', categoria: 'outro' as TipoDispositivoCategoria },
 ] as const;
+
+// Helper para obter dispositivos por categoria
+export function getDispositivosByCategoria(categoria: TipoDispositivoCategoria) {
+  return TIPOS_DISPOSITIVO.filter(t => t.categoria === categoria);
+}
 
 // Fetch all dispositivos with tripulante and embarcacao info
 export function useDispositivosRegistrados() {

@@ -14,7 +14,9 @@ import {
   ArrowUp,
   ArrowDown,
   Clock,
-  Calendar
+  Calendar,
+  Ship,
+  User
 } from "lucide-react";
 import {
   Table,
@@ -63,6 +65,7 @@ import { usePerfisVelocidade } from "@/hooks/usePerfisVelocidade";
 import { useTripulantes } from "@/hooks/useTripulantes";
 import { useHotspots } from "@/hooks/useHotspots";
 import { useEmpresas } from "@/hooks/useEmpresas";
+import { useDispositivosRegistrados, formatMacAddress, TIPOS_DISPOSITIVO } from "@/hooks/useDispositivosRegistrados";
 import { useTableRealtime } from "@/hooks/useRealtimeSubscription";
 import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { EmptyState, ErrorState } from "@/components/ui/empty-state";
@@ -70,6 +73,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
 import { Json } from "@/integrations/supabase/types";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DeviceSelectorField } from "@/components/forms/DeviceSelectorField";
 
 export default function RegrasAcesso() {
   // Enable realtime updates
@@ -81,6 +85,7 @@ export default function RegrasAcesso() {
   const { data: tripulantes } = useTripulantes();
   const { data: hotspots } = useHotspots();
   const { data: empresas } = useEmpresas();
+  const { data: dispositivos } = useDispositivosRegistrados();
   
   const createRegra = useCreateRegraAcesso();
   const updateRegra = useUpdateRegraAcesso();
@@ -242,7 +247,18 @@ export default function RegrasAcesso() {
   };
 
   const getAplicacaoLabel = (regra: RegraWithRelations) => {
-    if (regra.mac_address) return `MAC: ${regra.mac_address}`;
+    if (regra.mac_address) {
+      const device = dispositivos?.find(d => d.mac_address === regra.mac_address);
+      if (device) {
+        return (
+          <span className="flex items-center gap-1">
+            {device.tripulante_id ? <User className="h-3 w-3" /> : <Ship className="h-3 w-3" />}
+            {device.nome || formatMacAddress(regra.mac_address)}
+          </span>
+        );
+      }
+      return `MAC: ${formatMacAddress(regra.mac_address)}`;
+    }
     if (regra.tripulante) return `Tripulante: ${regra.tripulante.nome}`;
     if (regra.perfil) return `Perfil: ${regra.perfil.nome}`;
     if (regra.hotspot) return `Hotspot: ${regra.hotspot.nome}`;
@@ -594,20 +610,12 @@ export default function RegrasAcesso() {
                 </Select>
               </div>
 
-              {/* MAC Address */}
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="mac" className="text-right">
-                  MAC Address
-                </Label>
-                <Input
-                  id="mac"
-                  value={formData.mac_address}
-                  onChange={(e) => setFormData(prev => ({ ...prev, mac_address: e.target.value }))}
-                  className="col-span-3"
-                  placeholder="AA:BB:CC:DD:EE:FF (opcional)"
-                  maxLength={17}
-                />
-              </div>
+              {/* MAC Address - Device Selector */}
+              <DeviceSelectorField
+                value={formData.mac_address}
+                onChange={(mac) => setFormData(prev => ({ ...prev, mac_address: mac }))}
+                empresaId={selectedEmpresaId}
+              />
 
               {/* Hotspot */}
               <div className="grid grid-cols-4 items-center gap-4">
