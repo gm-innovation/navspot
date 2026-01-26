@@ -18,7 +18,6 @@ interface SyncPayload {
   sync_token: string
   active_users?: ActiveUser[]
   executed_actions?: string[]
-  // New: device count per user for limit validation
   user_device_counts?: { user: string; count: number; macs: string[] }[]
 }
 
@@ -35,6 +34,11 @@ interface DeviceViolation {
   macs_to_kick: string[]
 }
 
+interface BlockedDevice {
+  mac: string
+  reason: string
+}
+
 // Helper to create alerts without duplicating recent ones
 async function createAlertIfNotRecent(
   supabase: ReturnType<typeof createClient>,
@@ -49,7 +53,6 @@ async function createAlertIfNotRecent(
   },
   dedupeMinutes: number = 30
 ) {
-  // Check for recent duplicate
   const cutoff = new Date(Date.now() - dedupeMinutes * 60 * 1000).toISOString()
   
   const { data: existing } = await supabase
@@ -83,7 +86,6 @@ async function createAlertIfNotRecent(
 }
 
 Deno.serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders })
   }
@@ -94,11 +96,9 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    // Parse request body
     const payload: SyncPayload = await req.json()
     console.log('[mikrotik-sync] Received sync request:', JSON.stringify(payload))
 
-    // Validate sync_token
     if (!payload.sync_token) {
       console.error('[mikrotik-sync] Missing sync_token')
       return new Response(
@@ -107,7 +107,6 @@ Deno.serve(async (req) => {
       )
     }
 
-    // Find hotspot by sync_token
     const { data: hotspot, error: hotspotError } = await supabase
       .from('hotspots')
       .select('id, embarcacao_id, nome, status')
@@ -124,14 +123,12 @@ Deno.serve(async (req) => {
 
     console.log(`[mikrotik-sync] Hotspot found: ${hotspot.nome} (${hotspot.id})`)
 
-    // Get embarcacao for empresa_id
     const { data: embarcacao } = await supabase
       .from('embarcacoes')
       .select('id, empresa_id')
       .eq('id', hotspot.embarcacao_id)
       .single()
 
-    // If hotspot was offline, auto-resolve offline alerts and mark as back online
     if (hotspot.status === 'offline') {
       console.log('[mikrotik-sync] Hotspot was offline, resolving offline alerts')
       await supabase
@@ -142,7 +139,6 @@ Deno.serve(async (req) => {
         .eq('resolvido', false)
     }
 
-    // Update hotspot status and last sync time
     const { error: updateError } = await supabase
       .from('hotspots')
       .update({
@@ -155,7 +151,6 @@ Deno.serve(async (req) => {
       console.error('[mikrotik-sync] Failed to update hotspot status:', updateError)
     }
 
-    // Process executed actions (mark as completed)
     if (payload.executed_actions && payload.executed_actions.length > 0) {
       console.log(`[mikrotik-sync] Processing ${payload.executed_actions.length} executed actions`)
       
@@ -173,14 +168,27 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Track device violations for kick actions
     const deviceViolations: DeviceViolation[] = []
+    const blockedDevices: BlockedDevice[] = []
 
-    // Process active users - update sessions, consumption, and device tracking
+    // Fetch all blocked devices for this embarcacao to include in response
+    const { data: allBlockedDevices } = await supabase
+      .from('dispositivos_registrados')
+      .select('mac_address, bloqueio_motivo')
+      .eq('autorizado', false)
+
+    if (allBlockedDevices) {
+      for (const bd of allBlockedDevices) {
+        blockedDevices.push({
+          mac: bd.mac_address,
+          reason: bd.bloqueio_motivo || 'Dispositivo bloqueado'
+        })
+      }
+    }
+
     if (payload.active_users && payload.active_users.length > 0) {
       console.log(`[mikrotik-sync] Processing ${payload.active_users.length} active users`)
 
-      // Group users by login to count devices
       const userDeviceCounts = new Map<string, string[]>()
       for (const activeUser of payload.active_users) {
         const macs = userDeviceCounts.get(activeUser.user) || []
@@ -189,11 +197,10 @@ Deno.serve(async (req) => {
       }
 
       for (const activeUser of payload.active_users) {
-        // Find tripulante by login_wifi with perfil for device limits and quota
         const { data: tripulante } = await supabase
           .from('tripulantes')
           .select(`
-            id, bytes_consumidos, perfil_id, nome,
+            id, bytes_consumidos, perfil_id, nome, login_wifi,
             perfis_velocidade(id, nome, max_dispositivos, limite_dados_mb)
           `)
           .eq('login_wifi', activeUser.user)
@@ -210,12 +217,9 @@ Deno.serve(async (req) => {
           const maxDevices = perfil?.max_dispositivos || 1
           const userMacs = userDeviceCounts.get(activeUser.user) || []
           
-          // Check device limit violation
           if (userMacs.length > maxDevices) {
-            // Find if we already have a violation for this user
             let violation = deviceViolations.find(v => v.user === activeUser.user)
             if (!violation) {
-              // Kick excess devices (keep the oldest ones based on order received)
               const macsToKick = userMacs.slice(maxDevices)
               violation = {
                 user: activeUser.user,
@@ -226,7 +230,6 @@ Deno.serve(async (req) => {
               deviceViolations.push(violation)
               console.log(`[mikrotik-sync] Device limit violation: ${activeUser.user} has ${userMacs.length} devices, max ${maxDevices}`)
 
-              // Create device limit alert
               await createAlertIfNotRecent(supabase, {
                 tipo: 'device_limit',
                 severidade: 'warning',
@@ -239,7 +242,6 @@ Deno.serve(async (req) => {
             }
           }
 
-          // Check quota limits
           if (perfil?.limite_dados_mb) {
             const limitBytes = perfil.limite_dados_mb * 1024 * 1024
             const totalBytes = activeUser.bytes_in + activeUser.bytes_out
@@ -247,7 +249,6 @@ Deno.serve(async (req) => {
             const percentage = (newTotal / limitBytes) * 100
 
             if (percentage >= 100) {
-              // Quota exceeded
               await createAlertIfNotRecent(supabase, {
                 tipo: 'quota_exceeded',
                 severidade: 'critical',
@@ -256,9 +257,8 @@ Deno.serve(async (req) => {
                 embarcacao_id: hotspot.embarcacao_id,
                 empresa_id: embarcacao?.empresa_id,
                 tripulante_id: tripulante.id
-              }, 60) // Dedupe for 1 hour
+              }, 60)
             } else if (percentage >= 80) {
-              // Quota warning at 80%
               await createAlertIfNotRecent(supabase, {
                 tipo: 'quota_warning',
                 severidade: 'warning',
@@ -267,11 +267,10 @@ Deno.serve(async (req) => {
                 embarcacao_id: hotspot.embarcacao_id,
                 empresa_id: embarcacao?.empresa_id,
                 tripulante_id: tripulante.id
-              }, 120) // Dedupe for 2 hours
+              }, 120)
             }
           }
 
-          // Update tripulante consumption and last login
           const totalBytes = activeUser.bytes_in + activeUser.bytes_out
           await supabase
             .from('tripulantes')
@@ -281,30 +280,73 @@ Deno.serve(async (req) => {
             })
             .eq('id', tripulante.id)
 
-          // Register/update device
+          // Check for device sharing - MAC already registered to ANOTHER tripulante
           const { data: existingDevice } = await supabase
             .from('dispositivos_registrados')
-            .select('id, bytes_consumidos')
+            .select('id, tripulante_id, autorizado, bloqueio_motivo, nome')
             .eq('mac_address', activeUser.mac)
             .maybeSingle()
 
           if (existingDevice) {
-            // Update existing device
-            await supabase
-              .from('dispositivos_registrados')
-              .update({
-                bytes_consumidos: existingDevice.bytes_consumidos + totalBytes,
-                ultimo_uso: new Date().toISOString()
+            // Device exists - check if belongs to same tripulante
+            if (existingDevice.tripulante_id && existingDevice.tripulante_id !== tripulante.id) {
+              // ALERT: MAC registered to another tripulante - potential credential sharing!
+              const { data: originalOwner } = await supabase
+                .from('tripulantes')
+                .select('nome, login_wifi')
+                .eq('id', existingDevice.tripulante_id)
+                .single()
+
+              console.log(`[mikrotik-sync] DEVICE SHARING DETECTED: MAC ${activeUser.mac} registered to ${originalOwner?.nome} being used by ${tripulante.nome}`)
+
+              await createAlertIfNotRecent(supabase, {
+                tipo: 'device_sharing',
+                severidade: 'critical',
+                mensagem: `Dispositivo ${activeUser.mac} (${existingDevice.nome || 'Sem nome'}) registrado para ${originalOwner?.nome || originalOwner?.login_wifi} está sendo usado por ${tripulante.nome || activeUser.user}. Possível compartilhamento de credenciais!`,
+                hotspot_id: hotspot.id,
+                embarcacao_id: hotspot.embarcacao_id,
+                empresa_id: embarcacao?.empresa_id,
+                tripulante_id: existingDevice.tripulante_id // Alert references original owner
+              }, 60)
+            }
+
+            // Check if device is blocked
+            if (!existingDevice.autorizado) {
+              console.log(`[mikrotik-sync] Blocked device attempted connection: ${activeUser.mac}`)
+              
+              // Add to kick actions (will be handled below)
+              blockedDevices.push({
+                mac: activeUser.mac,
+                reason: existingDevice.bloqueio_motivo || 'Dispositivo bloqueado pelo administrador'
               })
-              .eq('id', existingDevice.id)
+
+              await createAlertIfNotRecent(supabase, {
+                tipo: 'blocked_device_attempt',
+                severidade: 'warning',
+                mensagem: `Tentativa de conexão com dispositivo bloqueado: ${activeUser.mac} (${existingDevice.nome || 'Sem nome'})`,
+                hotspot_id: hotspot.id,
+                embarcacao_id: hotspot.embarcacao_id,
+                empresa_id: embarcacao?.empresa_id,
+                tripulante_id: tripulante.id
+              }, 15)
+            } else {
+              // Update existing device consumption
+              await supabase
+                .from('dispositivos_registrados')
+                .update({
+                  bytes_consumidos: (existingDevice as { bytes_consumidos?: number }).bytes_consumidos || 0 + totalBytes,
+                  ultimo_uso: new Date().toISOString()
+                })
+                .eq('id', existingDevice.id)
+            }
           } else {
-            // Auto-register new device
+            // Auto-register new device for this tripulante
             await supabase
               .from('dispositivos_registrados')
               .insert({
                 tripulante_id: tripulante.id,
                 mac_address: activeUser.mac,
-                nome: `Dispositivo de ${activeUser.user}`,
+                nome: `Dispositivo de ${tripulante.nome || activeUser.user}`,
                 tipo: 'outro',
                 autorizado: true,
                 bytes_consumidos: totalBytes,
@@ -313,11 +355,13 @@ Deno.serve(async (req) => {
               .then(res => {
                 if (res.error) {
                   console.log(`[mikrotik-sync] Device ${activeUser.mac} might already exist`)
+                } else {
+                  console.log(`[mikrotik-sync] Auto-registered device ${activeUser.mac} for ${tripulante.nome}`)
                 }
               })
           }
 
-          // Check for active session or create new one
+          // Session management
           const { data: activeSession } = await supabase
             .from('sessoes_wifi')
             .select('id, bytes_in, bytes_out')
@@ -327,7 +371,6 @@ Deno.serve(async (req) => {
             .eq('status', 'ativa')
             .maybeSingle()
 
-          // Get device ID for session
           const { data: device } = await supabase
             .from('dispositivos_registrados')
             .select('id')
@@ -335,7 +378,6 @@ Deno.serve(async (req) => {
             .maybeSingle()
 
           if (activeSession) {
-            // Update existing session
             await supabase
               .from('sessoes_wifi')
               .update({
@@ -346,7 +388,6 @@ Deno.serve(async (req) => {
               })
               .eq('id', activeSession.id)
           } else {
-            // Create new session
             await supabase
               .from('sessoes_wifi')
               .insert({
@@ -375,7 +416,6 @@ Deno.serve(async (req) => {
       const tripulanteIds = tripulantesAtivos?.map(t => t.id) || []
 
       if (tripulanteIds.length > 0) {
-        // Close sessions that are not in the active list
         await supabase
           .from('sessoes_wifi')
           .update({
@@ -401,7 +441,6 @@ Deno.serve(async (req) => {
       console.error('[mikrotik-sync] Failed to fetch pending actions:', pendingError)
     }
 
-    // Format pending actions for MikroTik
     const formattedActions: PendingAction[] = (pendingActions || []).map(action => ({
       id: action.id,
       type: action.tipo,
@@ -423,7 +462,25 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Fetch active access rules for this hotspot (compiled firewall rules)
+    // Add kick actions for blocked devices currently connected
+    if (payload.active_users) {
+      for (const activeUser of payload.active_users) {
+        const blocked = blockedDevices.find(bd => bd.mac === activeUser.mac)
+        if (blocked) {
+          formattedActions.push({
+            id: `auto-kick-blocked-${activeUser.mac}`,
+            type: 'kick_device',
+            payload: {
+              user: activeUser.user,
+              mac: activeUser.mac,
+              reason: blocked.reason
+            }
+          })
+        }
+      }
+    }
+
+    // Fetch active access rules for this hotspot
     let firewallRules: { action: string; domains: string[]; apps: string[] }[] = []
     
     if (embarcacao) {
@@ -465,7 +522,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    console.log(`[mikrotik-sync] Returning ${formattedActions.length} pending actions, ${firewallRules.length} firewall rules`)
+    console.log(`[mikrotik-sync] Returning ${formattedActions.length} pending actions, ${firewallRules.length} firewall rules, ${blockedDevices.length} blocked devices`)
 
     return new Response(
       JSON.stringify({
@@ -473,6 +530,7 @@ Deno.serve(async (req) => {
         pending_actions: formattedActions,
         firewall_rules: firewallRules,
         device_violations: deviceViolations,
+        blocked_devices: blockedDevices,
         server_time: new Date().toISOString()
       }),
       { 
@@ -483,9 +541,6 @@ Deno.serve(async (req) => {
 
   } catch (error) {
     console.error('[mikrotik-sync] Unexpected error:', error)
-    
-    // Create sync failure alert if we can identify the hotspot
-    // Note: Can't easily do this without the hotspot context from the failed request
     
     return new Response(
       JSON.stringify({ 

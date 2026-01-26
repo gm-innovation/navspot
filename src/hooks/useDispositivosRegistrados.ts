@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables, TablesInsert, TablesUpdate } from '@/integrations/supabase/types';
 import { toast } from '@/hooks/use-toast';
+import { useAuth } from '@/contexts/AuthContext';
 
 export type DispositivoRegistrado = Tables<'dispositivos_registrados'>;
 export type DispositivoRegistradoInsert = TablesInsert<'dispositivos_registrados'>;
@@ -12,7 +13,11 @@ export interface DispositivoWithTripulante extends DispositivoRegistrado {
     id: string;
     nome: string;
     cargo: string | null;
-  };
+  } | null;
+  embarcacao?: {
+    id: string;
+    nome: string;
+  } | null;
 }
 
 export const TIPOS_DISPOSITIVO = [
@@ -23,6 +28,7 @@ export const TIPOS_DISPOSITIVO = [
   { value: 'outro', label: 'Outro' },
 ] as const;
 
+// Fetch all dispositivos with tripulante and embarcacao info
 export function useDispositivosRegistrados() {
   return useQuery({
     queryKey: ['dispositivos_registrados'],
@@ -31,7 +37,8 @@ export function useDispositivosRegistrados() {
         .from('dispositivos_registrados')
         .select(`
           *,
-          tripulante:tripulantes(id, nome, cargo)
+          tripulante:tripulantes(id, nome, cargo),
+          embarcacao:embarcacoes(id, nome)
         `)
         .order('created_at', { ascending: false });
 
@@ -57,6 +64,28 @@ export function useDispositivosByTripulante(tripulanteId: string | undefined) {
       return data as DispositivoRegistrado[];
     },
     enabled: !!tripulanteId,
+  });
+}
+
+export function useDispositivosByEmbarcacao(embarcacaoId: string | undefined) {
+  return useQuery({
+    queryKey: ['dispositivos_registrados', 'embarcacao', embarcacaoId],
+    queryFn: async () => {
+      if (!embarcacaoId) return [];
+      
+      const { data, error } = await supabase
+        .from('dispositivos_registrados')
+        .select(`
+          *,
+          tripulante:tripulantes(id, nome, cargo)
+        `)
+        .eq('embarcacao_id', embarcacaoId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      return data as DispositivoWithTripulante[];
+    },
+    enabled: !!embarcacaoId,
   });
 }
 
@@ -179,6 +208,122 @@ export function useToggleDispositivoAutorizacao() {
     onError: (error) => {
       toast({
         title: 'Erro ao alterar autorização',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+}
+
+// Block device with reason and audit
+export function useBlockDispositivo() {
+  const queryClient = useQueryClient();
+  const { session } = useAuth();
+
+  return useMutation({
+    mutationFn: async ({ id, bloqueio_motivo }: { id: string; bloqueio_motivo: string }) => {
+      const { data, error } = await supabase
+        .from('dispositivos_registrados')
+        .update({
+          autorizado: false,
+          bloqueio_motivo,
+          bloqueado_por: session?.user?.id || null,
+          bloqueado_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data as DispositivoRegistrado;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dispositivos_registrados'] });
+      toast({
+        title: 'Dispositivo bloqueado',
+        description: 'O dispositivo foi bloqueado e não poderá se conectar.',
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Erro ao bloquear dispositivo',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+}
+
+// Unblock device clearing audit fields
+export function useUnblockDispositivo() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { data, error } = await supabase
+        .from('dispositivos_registrados')
+        .update({
+          autorizado: true,
+          bloqueio_motivo: null,
+          bloqueado_por: null,
+          bloqueado_at: null,
+        })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data as DispositivoRegistrado;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dispositivos_registrados'] });
+      toast({
+        title: 'Dispositivo desbloqueado',
+        description: 'O dispositivo foi autorizado a conectar novamente.',
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Erro ao desbloquear dispositivo',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+}
+
+// Block device by MAC address (for use from alerts)
+export function useBlockDispositivoByMac() {
+  const queryClient = useQueryClient();
+  const { session } = useAuth();
+
+  return useMutation({
+    mutationFn: async ({ mac_address, bloqueio_motivo }: { mac_address: string; bloqueio_motivo: string }) => {
+      const { data, error } = await supabase
+        .from('dispositivos_registrados')
+        .update({
+          autorizado: false,
+          bloqueio_motivo,
+          bloqueado_por: session?.user?.id || null,
+          bloqueado_at: new Date().toISOString(),
+        })
+        .eq('mac_address', mac_address)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data as DispositivoRegistrado;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dispositivos_registrados'] });
+      toast({
+        title: 'Dispositivo bloqueado',
+        description: 'O dispositivo foi bloqueado com sucesso.',
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Erro ao bloquear dispositivo',
         description: error.message,
         variant: 'destructive',
       });

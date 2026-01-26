@@ -278,7 +278,16 @@ export function getTipoInfo(tipo: string) {
     quota_exceeded: { label: 'Quota Excedida', description: '100% da quota atingida' },
     new_registration: { label: 'Novo Cadastro', description: 'Nova entidade cadastrada' },
     session_anomaly: { label: 'Anomalia', description: 'Comportamento suspeito' },
+    device_sharing: { label: 'Compartilhamento', description: 'MAC usado por outro tripulante' },
+    blocked_device_attempt: { label: 'Dispositivo Bloqueado', description: 'Tentativa de conexão bloqueada' },
   };
 
   return tipoMap[tipo] || { label: tipo, description: 'Alerta do sistema' };
+}
+
+// Helper to extract MAC address from alert message
+export function extractMacFromMessage(message: string): string | null {
+  const macRegex = /([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})/;
+  const match = message.match(macRegex);
+  return match ? match[0] : null;
 }

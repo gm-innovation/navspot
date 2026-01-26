@@ -13,7 +13,10 @@ import {
   Filter,
   Trash2,
   CheckCheck,
-  RefreshCw
+  RefreshCw,
+  Ban,
+  UserX,
+  Wifi,
 } from "lucide-react";
 import { 
   Select,
@@ -22,6 +25,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Checkbox } from "@/components/ui/checkbox";
 import { 
@@ -32,9 +42,11 @@ import {
   useDeleteOldAlertas,
   getSeveridadeInfo,
   getTipoInfo,
+  extractMacFromMessage,
   AlertaFilters,
   Alerta 
 } from "@/hooks/useAlertas";
+import { useBlockDispositivoByMac } from "@/hooks/useDispositivosRegistrados";
 import { useAlertasRealtime } from "@/hooks/useRealtimeSubscription";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -57,6 +69,7 @@ export default function Alertas() {
   const resolveAlerta = useResolveAlerta();
   const resolveMultiple = useResolveMultipleAlertas();
   const deleteOldAlertas = useDeleteOldAlertas();
+  const blockDispositivo = useBlockDispositivoByMac();
 
   // Handlers
   const handleResolve = (id: string) => {
@@ -390,8 +403,48 @@ export default function Alertas() {
                       </div>
                     </div>
                     
-                    <div className="flex-shrink-0">
-                      {!alerta.resolvido && (
+                    <div className="flex-shrink-0 flex items-center gap-1">
+                      {/* Quick actions for device_sharing alerts */}
+                      {!alerta.resolvido && (alerta.tipo === 'device_sharing' || alerta.tipo === 'blocked_device_attempt') && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="outline" size="sm">
+                              Ações
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            {alerta.tipo === 'device_sharing' && (
+                              <>
+                                <DropdownMenuItem
+                                  className="text-red-600"
+                                  onClick={() => {
+                                    const mac = extractMacFromMessage(alerta.mensagem);
+                                    if (mac) {
+                                      blockDispositivo.mutate({
+                                        mac_address: mac,
+                                        bloqueio_motivo: 'Bloqueado devido a compartilhamento de credenciais detectado',
+                                      }, {
+                                        onSuccess: () => handleResolve(alerta.id),
+                                      });
+                                    }
+                                  }}
+                                  disabled={blockDispositivo.isPending}
+                                >
+                                  <Ban className="h-4 w-4 mr-2" />
+                                  Bloquear Dispositivo
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                              </>
+                            )}
+                            <DropdownMenuItem onClick={() => handleResolve(alerta.id)}>
+                              <CheckCircle className="h-4 w-4 mr-2" />
+                              Ignorar / Resolver
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+                      
+                      {!alerta.resolvido && alerta.tipo !== 'device_sharing' && alerta.tipo !== 'blocked_device_attempt' && (
                         <Button 
                           variant="ghost" 
                           size="sm"

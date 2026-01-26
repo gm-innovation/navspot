@@ -132,38 +132,57 @@ export type Database = {
       dispositivos_registrados: {
         Row: {
           autorizado: boolean
+          bloqueado_at: string | null
+          bloqueado_por: string | null
+          bloqueio_motivo: string | null
           bytes_consumidos: number
           created_at: string
+          embarcacao_id: string | null
           id: string
           mac_address: string
           nome: string | null
           tipo: string
-          tripulante_id: string
+          tripulante_id: string | null
           ultimo_uso: string | null
         }
         Insert: {
           autorizado?: boolean
+          bloqueado_at?: string | null
+          bloqueado_por?: string | null
+          bloqueio_motivo?: string | null
           bytes_consumidos?: number
           created_at?: string
+          embarcacao_id?: string | null
           id?: string
           mac_address: string
           nome?: string | null
           tipo?: string
-          tripulante_id: string
+          tripulante_id?: string | null
           ultimo_uso?: string | null
         }
         Update: {
           autorizado?: boolean
+          bloqueado_at?: string | null
+          bloqueado_por?: string | null
+          bloqueio_motivo?: string | null
           bytes_consumidos?: number
           created_at?: string
+          embarcacao_id?: string | null
           id?: string
           mac_address?: string
           nome?: string | null
           tipo?: string
-          tripulante_id?: string
+          tripulante_id?: string | null
           ultimo_uso?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "dispositivos_registrados_embarcacao_id_fkey"
+            columns: ["embarcacao_id"]
+            isOneToOne: false
+            referencedRelation: "embarcacoes"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "dispositivos_registrados_tripulante_id_fkey"
             columns: ["tripulante_id"]
