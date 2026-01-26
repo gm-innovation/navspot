@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { 
   Plus, 
   Gauge, 
@@ -11,7 +12,10 @@ import {
   Trash2, 
   Download,
   Upload,
-  Users
+  Users,
+  Smartphone,
+  Shield,
+  ShieldOff
 } from "lucide-react";
 import {
   Table,
@@ -39,12 +43,21 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { 
   usePerfisVelocidade, 
   useCreatePerfilVelocidade, 
   useUpdatePerfilVelocidade, 
   useDeletePerfilVelocidade,
-  PerfilWithCount 
+  PerfilWithCount,
+  TIPOS_USUARIO,
+  MODOS_ACESSO
 } from "@/hooks/usePerfisVelocidade";
 import { useTableRealtime } from "@/hooks/useRealtimeSubscription";
 import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
@@ -73,6 +86,10 @@ export default function PerfisVelocidade() {
     prioridade: 4,
     session_timeout_minutos: "",
     descricao: "",
+    max_dispositivos: 1,
+    tipo_usuario: "tripulante",
+    modo_acesso: "permitir_tudo",
+    herdar_regras_empresa: true,
   });
 
   useEffect(() => {
@@ -85,6 +102,10 @@ export default function PerfisVelocidade() {
         prioridade: editingPerfil.prioridade,
         session_timeout_minutos: editingPerfil.session_timeout_minutos?.toString() || "",
         descricao: editingPerfil.descricao || "",
+        max_dispositivos: editingPerfil.max_dispositivos,
+        tipo_usuario: editingPerfil.tipo_usuario,
+        modo_acesso: editingPerfil.modo_acesso,
+        herdar_regras_empresa: editingPerfil.herdar_regras_empresa,
       });
     } else {
       setFormData({
@@ -95,6 +116,10 @@ export default function PerfisVelocidade() {
         prioridade: 4,
         session_timeout_minutos: "",
         descricao: "",
+        max_dispositivos: 1,
+        tipo_usuario: "tripulante",
+        modo_acesso: "permitir_tudo",
+        herdar_regras_empresa: true,
       });
     }
   }, [editingPerfil, formOpen]);
@@ -133,6 +158,10 @@ export default function PerfisVelocidade() {
       prioridade: formData.prioridade,
       session_timeout_minutos: formData.session_timeout_minutos ? parseInt(formData.session_timeout_minutos) : null,
       descricao: formData.descricao || null,
+      max_dispositivos: formData.max_dispositivos,
+      tipo_usuario: formData.tipo_usuario,
+      modo_acesso: formData.modo_acesso,
+      herdar_regras_empresa: formData.herdar_regras_empresa,
       empresa_id: user?.empresa_id || "",
     };
 
@@ -147,7 +176,7 @@ export default function PerfisVelocidade() {
     }
   };
 
-  const handleChange = (field: string, value: string | number) => {
+  const handleChange = (field: string, value: string | number | boolean) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
@@ -234,45 +263,62 @@ export default function PerfisVelocidade() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Nome</TableHead>
+                  <TableHead>Tipo</TableHead>
                   <TableHead>Velocidade</TableHead>
-                  <TableHead>Quota</TableHead>
-                  <TableHead>Prioridade</TableHead>
+                  <TableHead>Dispositivos</TableHead>
+                  <TableHead>Modo</TableHead>
                   <TableHead>Tripulantes</TableHead>
                   <TableHead>Ações</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {perfis.map((perfil) => {
-                  const prioridadeInfo = getPrioridadeLabel(perfil.prioridade);
+                  const tipoLabel = TIPOS_USUARIO.find(t => t.value === perfil.tipo_usuario)?.label || perfil.tipo_usuario;
+                  const modoLabel = perfil.modo_acesso === 'permitir_tudo' ? 'Permissivo' : 'Restritivo';
                   return (
                     <TableRow key={perfil.id}>
                       <TableCell>
                         <div>
                           <p className="font-medium">{perfil.nome}</p>
                           {perfil.descricao && (
-                            <p className="text-sm text-muted-foreground">{perfil.descricao}</p>
+                            <p className="text-sm text-muted-foreground line-clamp-1">{perfil.descricao}</p>
+                          )}
+                          {perfil.limite_dados_mb && (
+                            <p className="text-xs text-muted-foreground">Quota: {perfil.limite_dados_mb} MB</p>
                           )}
                         </div>
                       </TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-2 text-sm">
-                          <Download className="h-4 w-4 text-green-600" />
+                        <Badge variant="outline">{tipoLabel}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1 text-sm">
+                          <Download className="h-3 w-3 text-green-600" />
                           <span>{perfil.velocidade_download}</span>
                           <span className="text-muted-foreground">/</span>
-                          <Upload className="h-4 w-4 text-blue-600" />
+                          <Upload className="h-3 w-3 text-blue-600" />
                           <span>{perfil.velocidade_upload}</span>
                         </div>
                       </TableCell>
                       <TableCell>
-                        {perfil.limite_dados_mb ? (
-                          <span className="text-sm">{perfil.limite_dados_mb} MB</span>
-                        ) : (
-                          <span className="text-sm text-muted-foreground">Ilimitado</span>
-                        )}
+                        <div className="flex items-center gap-1">
+                          <Smartphone className="h-4 w-4 text-muted-foreground" />
+                          <span className="text-sm">{perfil.max_dispositivos}</span>
+                        </div>
                       </TableCell>
                       <TableCell>
-                        <Badge variant="secondary" className={prioridadeInfo.color}>
-                          {prioridadeInfo.label} ({perfil.prioridade})
+                        <Badge 
+                          variant="secondary"
+                          className={perfil.modo_acesso === 'permitir_tudo' 
+                            ? "bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400" 
+                            : "bg-orange-100 text-orange-800 dark:bg-orange-900/20 dark:text-orange-400"
+                          }
+                        >
+                          {perfil.modo_acesso === 'permitir_tudo' ? (
+                            <><Shield className="h-3 w-3 mr-1" />{modoLabel}</>
+                          ) : (
+                            <><ShieldOff className="h-3 w-3 mr-1" />{modoLabel}</>
+                          )}
                         </Badge>
                       </TableCell>
                       <TableCell>
@@ -422,6 +468,84 @@ export default function PerfisVelocidade() {
                   className="col-span-3"
                   placeholder="Descrição opcional..."
                 />
+              </div>
+
+              {/* Novos campos */}
+              <div className="col-span-4 border-t pt-4 mt-2">
+                <p className="text-sm font-medium mb-3">Configurações Avançadas</p>
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="tipo_usuario" className="text-right">
+                  Tipo Usuário
+                </Label>
+                <Select
+                  value={formData.tipo_usuario}
+                  onValueChange={(value) => handleChange("tipo_usuario", value)}
+                >
+                  <SelectTrigger className="col-span-3">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="z-50 bg-background border shadow-lg">
+                    {TIPOS_USUARIO.map(tipo => (
+                      <SelectItem key={tipo.value} value={tipo.value}>
+                        {tipo.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="max_dispositivos" className="text-right">
+                  Max Disp.
+                </Label>
+                <Input
+                  id="max_dispositivos"
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={formData.max_dispositivos}
+                  onChange={(e) => handleChange("max_dispositivos", parseInt(e.target.value) || 1)}
+                  className="col-span-3"
+                />
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="modo_acesso" className="text-right">
+                  Modo Acesso
+                </Label>
+                <Select
+                  value={formData.modo_acesso}
+                  onValueChange={(value) => handleChange("modo_acesso", value)}
+                >
+                  <SelectTrigger className="col-span-3">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="z-50 bg-background border shadow-lg">
+                    {MODOS_ACESSO.map(modo => (
+                      <SelectItem key={modo.value} value={modo.value}>
+                        {modo.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="herdar_regras" className="text-right text-sm">
+                  Herdar Regras
+                </Label>
+                <div className="col-span-3 flex items-center gap-2">
+                  <Switch
+                    id="herdar_regras"
+                    checked={formData.herdar_regras_empresa}
+                    onCheckedChange={(checked) => handleChange("herdar_regras_empresa", checked)}
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    {formData.herdar_regras_empresa ? "Herda regras da empresa" : "Regras independentes"}
+                  </span>
+                </div>
               </div>
             </div>
             <DialogFooter>

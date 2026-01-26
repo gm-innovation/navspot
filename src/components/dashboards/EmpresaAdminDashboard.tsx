@@ -13,12 +13,18 @@ import {
   Activity,
   MapPin,
   UserPlus,
-  Wifi
+  Wifi,
+  Shield,
+  Smartphone,
+  List
 } from "lucide-react";
 import { useEmbarcacoes } from "@/hooks/useEmbarcacoes";
 import { useHotspots } from "@/hooks/useHotspots";
 import { useTripulantes } from "@/hooks/useTripulantes";
 import { useRecentAlerts } from "@/hooks/useDashboard";
+import { useListasAcesso } from "@/hooks/useListasAcesso";
+import { useRegrasAcesso } from "@/hooks/useRegrasAcesso";
+import { useDispositivosRegistrados } from "@/hooks/useDispositivosRegistrados";
 import { useDashboardRealtime } from "@/hooks/useRealtimeSubscription";
 
 export function EmpresaAdminDashboard() {
@@ -30,12 +36,16 @@ export function EmpresaAdminDashboard() {
   const { data: hotspots, isLoading: hotspotsLoading } = useHotspots();
   const { data: tripulantes, isLoading: tripulantesLoading } = useTripulantes();
   const { data: alertas, isLoading: alertasLoading } = useRecentAlerts(5);
+  const { data: listas } = useListasAcesso();
+  const { data: regras } = useRegrasAcesso();
+  const { data: dispositivos } = useDispositivosRegistrados();
 
   const totalTripulantes = tripulantes?.length || 0;
   const tripulantesAtivos = tripulantes?.filter(t => t.status === 'ativo').length || 0;
   const hotspotsOnline = hotspots?.filter(h => h.status === 'online').length || 0;
   const hotspotsOffline = hotspots?.filter(h => h.status === 'offline').length || 0;
   const alertasCriticos = alertas?.filter(a => a.severidade === 'critical').length || 0;
+  const dispositivosAutorizados = dispositivos?.filter(d => d.autorizado).length || 0;
 
   const isLoading = embarcacoesLoading || hotspotsLoading || tripulantesLoading;
 
@@ -197,8 +207,8 @@ export function EmpresaAdminDashboard() {
         </Card>
       </div>
 
-      {/* Ações Rápidas */}
-      <div className="grid gap-4 md:grid-cols-2">
+      {/* Ações Rápidas e Controle de Acesso */}
+      <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -226,20 +236,64 @@ export function EmpresaAdminDashboard() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Users className="h-5 w-5" />
-              Gerenciar Tripulantes
+              <Shield className="h-5 w-5" />
+              Controle de Acesso
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-sm text-muted-foreground mb-4">
-              {tripulantesAtivos} tripulantes ativos de {totalTripulantes} cadastrados
-            </p>
-            <Button className="w-full" asChild>
-              <Link to="/tripulantes">
-                <UserPlus className="h-4 w-4 mr-2" />
-                Gerenciar Tripulantes
-              </Link>
-            </Button>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Listas de Acesso</span>
+                <span className="text-sm font-medium">{listas?.length || 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Regras Ativas</span>
+                <span className="text-sm font-medium text-primary">
+                  {regras?.filter(r => r.ativo).length || 0}
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" className="flex-1" asChild>
+                  <Link to="/listas-acesso">
+                    <List className="h-4 w-4 mr-1" />
+                    Listas
+                  </Link>
+                </Button>
+                <Button variant="outline" size="sm" className="flex-1" asChild>
+                  <Link to="/regras-acesso">
+                    <Shield className="h-4 w-4 mr-1" />
+                    Regras
+                  </Link>
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Smartphone className="h-5 w-5" />
+              Dispositivos
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Total Registrados</span>
+                <span className="text-sm font-medium">{dispositivos?.length || 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Autorizados</span>
+                <span className="text-sm font-medium text-green-600">{dispositivosAutorizados}</span>
+              </div>
+              <Button className="w-full" asChild>
+                <Link to="/tripulantes">
+                  <UserPlus className="h-4 w-4 mr-2" />
+                  Ver Tripulantes
+                </Link>
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
