@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,15 +17,27 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { Separator } from "@/components/ui/separator";
 import { EmbarcacaoInsert, EmbarcacaoUpdate } from "@/hooks/useEmbarcacoes";
 import { useEmpresas } from "@/hooks/useEmpresas";
 import { TIMEZONES_BRASIL } from "@/hooks/usePerfisVelocidade";
+import { HelpCircle, Ship, Wifi } from "lucide-react";
+import { HotspotInsert, HotspotUpdate } from "@/hooks/useHotspots";
 
 interface EmbarcacaoFormProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSubmit: (data: EmbarcacaoInsert | (EmbarcacaoUpdate & { id: string })) => void;
+  onSubmit: (data: {
+    embarcacao: EmbarcacaoInsert | (EmbarcacaoUpdate & { id: string });
+    hotspot?: Partial<HotspotInsert | HotspotUpdate>;
+  }) => void;
   initialData?: EmbarcacaoUpdate & { id: string };
+  initialHotspot?: HotspotUpdate & { id: string };
   isLoading?: boolean;
 }
 
@@ -40,37 +52,97 @@ const tiposEmbarcacao = [
   "rebocador",
 ];
 
+const INTERFACE_WIFI_OPTIONS = [
+  { value: "wlan1", label: "wlan1" },
+  { value: "wlan2", label: "wlan2" },
+  { value: "bridge1", label: "bridge1" },
+];
+
 export function EmbarcacaoForm({
   open,
   onOpenChange,
   onSubmit,
   initialData,
+  initialHotspot,
   isLoading,
 }: EmbarcacaoFormProps) {
   const { data: empresas } = useEmpresas();
   const isEditing = !!initialData;
 
   const [formData, setFormData] = useState({
-    nome: initialData?.nome || "",
-    tipo: initialData?.tipo || "navio",
-    empresa_id: initialData?.empresa_id || "",
-    responsavel_nome: initialData?.responsavel_nome || "",
-    responsavel_email: initialData?.responsavel_email || "",
-    localizacao: initialData?.localizacao || "",
-    status: initialData?.status || "ativo",
-    timezone: initialData?.timezone || "",
+    nome: "",
+    tipo: "navio",
+    empresa_id: "",
+    responsavel_nome: "",
+    responsavel_email: "",
+    status: "ativo",
+    timezone: "",
   });
 
-  const useEmpresaTimezone = !formData.timezone;
-  const selectedEmpresa = empresas?.find(e => e.id === formData.empresa_id);
-  const empresaTimezone = TIMEZONES_BRASIL.find(tz => tz.value === selectedEmpresa?.timezone);
+  const [hotspotData, setHotspotData] = useState({
+    interface_wifi: "wlan1",
+    rede: "192.168.88.0/24",
+    max_usuarios: 50,
+    sync_interval_minutes: 5,
+  });
+
+  // Update form when initialData changes
+  useEffect(() => {
+    if (initialData) {
+      setFormData({
+        nome: initialData.nome || "",
+        tipo: initialData.tipo || "navio",
+        empresa_id: initialData.empresa_id || "",
+        responsavel_nome: initialData.responsavel_nome || "",
+        responsavel_email: initialData.responsavel_email || "",
+        status: initialData.status || "ativo",
+        timezone: initialData.timezone || "",
+      });
+    } else {
+      setFormData({
+        nome: "",
+        tipo: "navio",
+        empresa_id: "",
+        responsavel_nome: "",
+        responsavel_email: "",
+        status: "ativo",
+        timezone: "",
+      });
+    }
+  }, [initialData]);
+
+  useEffect(() => {
+    if (initialHotspot) {
+      setHotspotData({
+        interface_wifi: initialHotspot.interface_wifi || "wlan1",
+        rede: initialHotspot.rede || "192.168.88.0/24",
+        max_usuarios: initialHotspot.max_usuarios || 50,
+        sync_interval_minutes: initialHotspot.sync_interval_minutes || 5,
+      });
+    } else {
+      setHotspotData({
+        interface_wifi: "wlan1",
+        rede: "192.168.88.0/24",
+        max_usuarios: 50,
+        sync_interval_minutes: 5,
+      });
+    }
+  }, [initialHotspot]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (isEditing && initialData?.id) {
-      onSubmit({ ...formData, timezone: formData.timezone || null, id: initialData.id });
+      onSubmit({
+        embarcacao: { ...formData, timezone: formData.timezone || null, id: initialData.id },
+        hotspot: initialHotspot?.id 
+          ? { ...hotspotData, id: initialHotspot.id }
+          : hotspotData,
+      });
     } else {
-      onSubmit({ ...formData, timezone: formData.timezone || null } as EmbarcacaoInsert);
+      onSubmit({
+        embarcacao: { ...formData, timezone: formData.timezone || null } as EmbarcacaoInsert,
+        hotspot: hotspotData,
+      });
     }
   };
 
@@ -78,161 +150,254 @@ export function EmbarcacaoForm({
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
+  const handleHotspotChange = (field: string, value: string | number) => {
+    setHotspotData((prev) => ({ ...prev, [field]: value }));
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[500px]">
+      <DialogContent className="sm:max-w-[550px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <Ship className="h-5 w-5" />
             {isEditing ? "Editar Embarcação" : "Nova Embarcação"}
           </DialogTitle>
           <DialogDescription>
             {isEditing
-              ? "Atualize os dados da embarcação."
+              ? "Atualize os dados da embarcação e suas configurações de rede."
               : "Preencha os dados para cadastrar uma nova embarcação."}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit}>
-          <div className="grid gap-4 py-4">
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="nome" className="text-right">
-                Nome
-              </Label>
-              <Input
-                id="nome"
-                value={formData.nome}
-                onChange={(e) => handleChange("nome", e.target.value)}
-                className="col-span-3"
-                required
-              />
+          <div className="space-y-6 py-4">
+            {/* Dados Gerais */}
+            <div className="space-y-4">
+              <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Dados Gerais</h3>
+              
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="nome" className="text-right">
+                  Nome
+                </Label>
+                <Input
+                  id="nome"
+                  value={formData.nome}
+                  onChange={(e) => handleChange("nome", e.target.value)}
+                  className="col-span-3"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="tipo" className="text-right">
+                  Tipo
+                </Label>
+                <Select
+                  value={formData.tipo}
+                  onValueChange={(value) => handleChange("tipo", value)}
+                >
+                  <SelectTrigger className="col-span-3">
+                    <SelectValue placeholder="Selecione o tipo" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {tiposEmbarcacao.map((tipo) => (
+                      <SelectItem key={tipo} value={tipo}>
+                        {tipo.charAt(0).toUpperCase() + tipo.slice(1)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="empresa_id" className="text-right">
+                  Empresa
+                </Label>
+                <Select
+                  value={formData.empresa_id}
+                  onValueChange={(value) => handleChange("empresa_id", value)}
+                >
+                  <SelectTrigger className="col-span-3">
+                    <SelectValue placeholder="Selecione a empresa" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {empresas?.map((empresa) => (
+                      <SelectItem key={empresa.id} value={empresa.id}>
+                        {empresa.nome}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="responsavel_nome" className="text-right">
+                  Responsável
+                </Label>
+                <Input
+                  id="responsavel_nome"
+                  value={formData.responsavel_nome}
+                  onChange={(e) => handleChange("responsavel_nome", e.target.value)}
+                  className="col-span-3"
+                />
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="responsavel_email" className="text-right">
+                  Email
+                </Label>
+                <Input
+                  id="responsavel_email"
+                  type="email"
+                  value={formData.responsavel_email}
+                  onChange={(e) => handleChange("responsavel_email", e.target.value)}
+                  className="col-span-3"
+                />
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="status" className="text-right">
+                  Status
+                </Label>
+                <Select
+                  value={formData.status}
+                  onValueChange={(value) => handleChange("status", value)}
+                >
+                  <SelectTrigger className="col-span-3">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="z-50 bg-background border shadow-lg">
+                    <SelectItem value="ativo">Ativo</SelectItem>
+                    <SelectItem value="inativo">Inativo</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
 
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="tipo" className="text-right">
-                Tipo
-              </Label>
-              <Select
-                value={formData.tipo}
-                onValueChange={(value) => handleChange("tipo", value)}
-              >
-                <SelectTrigger className="col-span-3">
-                  <SelectValue placeholder="Selecione o tipo" />
-                </SelectTrigger>
-                <SelectContent>
-                  {tiposEmbarcacao.map((tipo) => (
-                    <SelectItem key={tipo} value={tipo}>
-                      {tipo.charAt(0).toUpperCase() + tipo.slice(1)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <Separator />
 
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="empresa_id" className="text-right">
-                Empresa
-              </Label>
-              <Select
-                value={formData.empresa_id}
-                onValueChange={(value) => handleChange("empresa_id", value)}
-              >
-                <SelectTrigger className="col-span-3">
-                  <SelectValue placeholder="Selecione a empresa" />
-                </SelectTrigger>
-                <SelectContent>
-                  {empresas?.map((empresa) => (
-                    <SelectItem key={empresa.id} value={empresa.id}>
-                      {empresa.nome}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {/* Fuso Horário */}
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+                  Fuso Horário Predominante
+                </h3>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <HelpCircle className="h-4 w-4 text-muted-foreground cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    <p>
+                      Fuso onde a embarcação opera na maior parte do tempo. 
+                      Afeta a renovação de quotas de dados (ex: meia-noite local).
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </div>
 
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="responsavel_nome" className="text-right">
-                Responsável
-              </Label>
-              <Input
-                id="responsavel_nome"
-                value={formData.responsavel_nome}
-                onChange={(e) => handleChange("responsavel_nome", e.target.value)}
-                className="col-span-3"
-              />
-            </div>
-
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="responsavel_email" className="text-right">
-                Email
-              </Label>
-              <Input
-                id="responsavel_email"
-                type="email"
-                value={formData.responsavel_email}
-                onChange={(e) => handleChange("responsavel_email", e.target.value)}
-                className="col-span-3"
-              />
-            </div>
-
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="localizacao" className="text-right">
-                Localização
-              </Label>
-              <Input
-                id="localizacao"
-                value={formData.localizacao}
-                onChange={(e) => handleChange("localizacao", e.target.value)}
-                className="col-span-3"
-                placeholder="Porto de Santos"
-              />
-            </div>
-
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="status" className="text-right">
-                Status
-              </Label>
-              <Select
-                value={formData.status}
-                onValueChange={(value) => handleChange("status", value)}
-              >
-                <SelectTrigger className="col-span-3">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="z-50 bg-background border shadow-lg">
-                  <SelectItem value="ativo">Ativo</SelectItem>
-                  <SelectItem value="inativo">Inativo</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="timezone" className="text-right">
-                Fuso Horário
-              </Label>
-              <Select
-                value={formData.timezone || "inherit"}
-                onValueChange={(value) => handleChange("timezone", value === "inherit" ? "" : value)}
-              >
-                <SelectTrigger className="col-span-3">
-                  <SelectValue placeholder={empresaTimezone ? `Herdar da empresa (${empresaTimezone.label})` : "Selecione..."} />
-                </SelectTrigger>
-                <SelectContent className="z-50 bg-background border shadow-lg">
-                  <SelectItem value="inherit">
-                    Herdar da empresa {empresaTimezone ? `(${empresaTimezone.label})` : ""}
-                  </SelectItem>
-                  {TIMEZONES_BRASIL.map((tz) => (
-                    <SelectItem key={tz.value} value={tz.value}>
-                      {tz.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {formData.timezone && (
-              <p className="text-xs text-muted-foreground ml-auto col-span-4 text-right">
-                ℹ️ Fuso específico configurado para esta embarcação
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="timezone" className="text-right">
+                  Fuso
+                </Label>
+                <Select
+                  value={formData.timezone || ""}
+                  onValueChange={(value) => handleChange("timezone", value)}
+                >
+                  <SelectTrigger className="col-span-3">
+                    <SelectValue placeholder="Selecione o fuso horário" />
+                  </SelectTrigger>
+                  <SelectContent className="z-50 bg-background border shadow-lg">
+                    {TIMEZONES_BRASIL.map((tz) => (
+                      <SelectItem key={tz.value} value={tz.value}>
+                        {tz.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <p className="text-xs text-muted-foreground text-right">
+                ℹ️ A embarcação pode mudar de fuso durante navegação. Configure o fuso predominante.
               </p>
-            )}
+            </div>
+
+            <Separator />
+
+            {/* Configurações de Rede (Hotspot) */}
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <Wifi className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+                  Configurações de Rede (Hotspot)
+                </h3>
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="interface_wifi" className="text-right">
+                  Interface WiFi
+                </Label>
+                <Select
+                  value={hotspotData.interface_wifi}
+                  onValueChange={(value) => handleHotspotChange("interface_wifi", value)}
+                >
+                  <SelectTrigger className="col-span-3">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {INTERFACE_WIFI_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="rede" className="text-right">
+                  Rede
+                </Label>
+                <Input
+                  id="rede"
+                  value={hotspotData.rede}
+                  onChange={(e) => handleHotspotChange("rede", e.target.value)}
+                  className="col-span-3"
+                  placeholder="192.168.88.0/24"
+                />
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="max_usuarios" className="text-right">
+                  Max Usuários
+                </Label>
+                <Input
+                  id="max_usuarios"
+                  type="number"
+                  min={1}
+                  value={hotspotData.max_usuarios}
+                  onChange={(e) => handleHotspotChange("max_usuarios", parseInt(e.target.value) || 50)}
+                  className="col-span-3"
+                />
+              </div>
+
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="sync_interval" className="text-right">
+                  Intervalo Sync
+                </Label>
+                <div className="col-span-3 flex items-center gap-2">
+                  <Input
+                    id="sync_interval"
+                    type="number"
+                    min={1}
+                    max={60}
+                    value={hotspotData.sync_interval_minutes}
+                    onChange={(e) => handleHotspotChange("sync_interval_minutes", parseInt(e.target.value) || 5)}
+                    className="w-20"
+                  />
+                  <span className="text-sm text-muted-foreground">minutos</span>
+                </div>
+              </div>
+            </div>
           </div>
+
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancelar
