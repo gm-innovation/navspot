@@ -129,6 +129,100 @@ export type Database = {
           },
         ]
       }
+      audit_logs: {
+        Row: {
+          acao: string
+          created_at: string | null
+          dados_anteriores: Json | null
+          dados_novos: Json | null
+          id: string
+          ip_address: unknown
+          registro_id: string | null
+          tabela: string
+          tripulante_id: string | null
+          user_agent: string | null
+          user_id: string | null
+        }
+        Insert: {
+          acao: string
+          created_at?: string | null
+          dados_anteriores?: Json | null
+          dados_novos?: Json | null
+          id?: string
+          ip_address?: unknown
+          registro_id?: string | null
+          tabela: string
+          tripulante_id?: string | null
+          user_agent?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          acao?: string
+          created_at?: string | null
+          dados_anteriores?: Json | null
+          dados_novos?: Json | null
+          id?: string
+          ip_address?: unknown
+          registro_id?: string | null
+          tabela?: string
+          tripulante_id?: string | null
+          user_agent?: string | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "audit_logs_tripulante_id_fkey"
+            columns: ["tripulante_id"]
+            isOneToOne: false
+            referencedRelation: "tripulantes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      consentimentos: {
+        Row: {
+          aceito: boolean
+          aceito_em: string | null
+          created_at: string | null
+          id: string
+          ip_address: unknown
+          tipo: string
+          tripulante_id: string
+          user_agent: string | null
+          versao: string
+        }
+        Insert: {
+          aceito: boolean
+          aceito_em?: string | null
+          created_at?: string | null
+          id?: string
+          ip_address?: unknown
+          tipo: string
+          tripulante_id: string
+          user_agent?: string | null
+          versao: string
+        }
+        Update: {
+          aceito?: boolean
+          aceito_em?: string | null
+          created_at?: string | null
+          id?: string
+          ip_address?: unknown
+          tipo?: string
+          tripulante_id?: string
+          user_agent?: string | null
+          versao?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "consentimentos_tripulante_id_fkey"
+            columns: ["tripulante_id"]
+            isOneToOne: false
+            referencedRelation: "tripulantes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       dispositivos_registrados: {
         Row: {
           autorizado: boolean
@@ -377,6 +471,62 @@ export type Database = {
             columns: ["embarcacao_id"]
             isOneToOne: false
             referencedRelation: "embarcacoes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      lgpd_config: {
+        Row: {
+          cnpj: string | null
+          created_at: string | null
+          dpo_email: string | null
+          dpo_nome: string | null
+          dpo_telefone: string | null
+          empresa_id: string
+          endereco_sede: string | null
+          id: string
+          politica_privacidade_versao: string | null
+          razao_social: string | null
+          retencao_logs_meses: number | null
+          termos_uso_versao: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          cnpj?: string | null
+          created_at?: string | null
+          dpo_email?: string | null
+          dpo_nome?: string | null
+          dpo_telefone?: string | null
+          empresa_id: string
+          endereco_sede?: string | null
+          id?: string
+          politica_privacidade_versao?: string | null
+          razao_social?: string | null
+          retencao_logs_meses?: number | null
+          termos_uso_versao?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          cnpj?: string | null
+          created_at?: string | null
+          dpo_email?: string | null
+          dpo_nome?: string | null
+          dpo_telefone?: string | null
+          empresa_id?: string
+          endereco_sede?: string | null
+          id?: string
+          politica_privacidade_versao?: string | null
+          razao_social?: string | null
+          retencao_logs_meses?: number | null
+          termos_uso_versao?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lgpd_config_empresa_id_fkey"
+            columns: ["empresa_id"]
+            isOneToOne: true
+            referencedRelation: "empresas"
             referencedColumns: ["id"]
           },
         ]
@@ -718,6 +868,56 @@ export type Database = {
           },
         ]
       }
+      solicitacoes_lgpd: {
+        Row: {
+          atendido_em: string | null
+          atendido_por: string | null
+          created_at: string | null
+          dados_exportados: Json | null
+          descricao: string | null
+          id: string
+          prazo_legal: string | null
+          resposta: string | null
+          status: string | null
+          tipo: string
+          tripulante_id: string | null
+        }
+        Insert: {
+          atendido_em?: string | null
+          atendido_por?: string | null
+          created_at?: string | null
+          dados_exportados?: Json | null
+          descricao?: string | null
+          id?: string
+          prazo_legal?: string | null
+          resposta?: string | null
+          status?: string | null
+          tipo: string
+          tripulante_id?: string | null
+        }
+        Update: {
+          atendido_em?: string | null
+          atendido_por?: string | null
+          created_at?: string | null
+          dados_exportados?: Json | null
+          descricao?: string | null
+          id?: string
+          prazo_legal?: string | null
+          resposta?: string | null
+          status?: string | null
+          tipo?: string
+          tripulante_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "solicitacoes_lgpd_tripulante_id_fkey"
+            columns: ["tripulante_id"]
+            isOneToOne: false
+            referencedRelation: "tripulantes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tripulantes: {
         Row: {
           bytes_consumidos: number
@@ -837,6 +1037,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      cleanup_old_logs: { Args: never; Returns: undefined }
       get_user_embarcacao_id: { Args: { _user_id: string }; Returns: string }
       get_user_empresa_id: { Args: { _user_id: string }; Returns: string }
       get_user_role: {

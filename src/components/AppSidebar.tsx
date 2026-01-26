@@ -1,4 +1,4 @@
-import { Home, Ship, Users, Bell, Settings, Gauge, List, ShieldCheck, UserCog, Smartphone, Building2, FileBarChart, Activity, HeartPulse } from "lucide-react";
+import { Home, Ship, Users, Bell, Settings, Gauge, List, ShieldCheck, UserCog, Smartphone, Building2, FileBarChart, Activity, HeartPulse, Shield } from "lucide-react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   Sidebar,
@@ -33,6 +33,7 @@ const allNavigationItems: NavigationItem[] = [
   { title: "Regras de Acesso", url: "/regras-acesso", icon: ShieldCheck, roles: ['super_admin', 'empresa_admin'] },
   { title: "Relatórios", url: "/relatorios", icon: FileBarChart, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
   { title: "Usuários", url: "/usuarios", icon: UserCog, roles: ['super_admin', 'empresa_admin'] },
+  { title: "LGPD", url: "/lgpd", icon: Shield, roles: ['super_admin', 'empresa_admin'] },
   { title: "Alertas", url: "/alertas", icon: Bell, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
   { title: "Configurações", url: "/configuracoes", icon: Settings, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
 ];
