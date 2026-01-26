@@ -2,21 +2,16 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/StatusBadge";
 import { 
   Search, 
   Filter, 
   Plus, 
-  MapPin, 
-  Users, 
   Wifi,
   Settings,
-  RefreshCw,
   AlertTriangle,
   Code,
-  Trash2,
-  Loader2
+  Trash2
 } from "lucide-react";
 import {
   Table,
@@ -44,12 +39,17 @@ import {
   useGenerateHotspotScript,
   HotspotWithDetails 
 } from "@/hooks/useHotspots";
+import { useHotspotsRealtime } from "@/hooks/useRealtimeSubscription";
 import { HotspotForm } from "@/components/forms/HotspotForm";
 import { ScriptModal } from "@/components/modals/ScriptModal";
+import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
+import { EmptyState, ErrorState } from "@/components/ui/empty-state";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 export default function Hotspots() {
+  // Enable realtime updates
+  useHotspotsRealtime();
   const { data: hotspots, isLoading, error } = useHotspots();
   const createHotspot = useCreateHotspot();
   const updateHotspot = useUpdateHotspot();
@@ -148,17 +148,16 @@ export default function Hotspots() {
   };
 
   if (isLoading) {
-    return (
-      <div className="flex-1 flex items-center justify-center p-6">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <PageLoadingSkeleton />;
   }
 
   if (error) {
     return (
-      <div className="flex-1 flex items-center justify-center p-6">
-        <p className="text-destructive">Erro ao carregar hotspots: {error.message}</p>
+      <div className="flex-1 p-6">
+        <ErrorState 
+          message={error.message} 
+          onRetry={() => window.location.reload()} 
+        />
       </div>
     );
   }
@@ -317,19 +316,13 @@ export default function Hotspots() {
               </TableBody>
             </Table>
           ) : (
-            <div className="flex flex-col items-center justify-center py-12">
-              <Wifi className="h-12 w-12 text-muted-foreground mb-4" />
-              <h3 className="text-lg font-semibold">Nenhum hotspot encontrado</h3>
-              <p className="text-muted-foreground mb-4">
-                {searchTerm ? "Tente ajustar sua busca." : "Comece adicionando seu primeiro hotspot."}
-              </p>
-              {!searchTerm && (
-                <Button onClick={handleCreate}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  Novo Hotspot
-                </Button>
-              )}
-            </div>
+            <EmptyState
+              icon={Wifi}
+              title="Nenhum hotspot encontrado"
+              description={searchTerm ? "Tente ajustar sua busca." : "Comece adicionando seu primeiro hotspot."}
+              actionLabel={!searchTerm ? "Novo Hotspot" : undefined}
+              onAction={!searchTerm ? handleCreate : undefined}
+            />
           )}
         </CardContent>
       </Card>

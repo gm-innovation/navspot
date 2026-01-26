@@ -9,7 +9,6 @@ import {
   Gauge, 
   Settings, 
   Trash2, 
-  Loader2,
   Download,
   Upload,
   Users
@@ -47,9 +46,14 @@ import {
   useDeletePerfilVelocidade,
   PerfilWithCount 
 } from "@/hooks/usePerfisVelocidade";
+import { useTableRealtime } from "@/hooks/useRealtimeSubscription";
+import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
+import { EmptyState, ErrorState } from "@/components/ui/empty-state";
 import { useAuth } from "@/contexts/AuthContext";
 
 export default function PerfisVelocidade() {
+  // Enable realtime updates
+  useTableRealtime('perfis_velocidade', ['perfis_velocidade']);
   const { user } = useAuth();
   const { data: perfis, isLoading, error } = usePerfisVelocidade();
   const createPerfil = useCreatePerfilVelocidade();
@@ -154,17 +158,16 @@ export default function PerfisVelocidade() {
   };
 
   if (isLoading) {
-    return (
-      <div className="flex-1 flex items-center justify-center p-6">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <PageLoadingSkeleton />;
   }
 
   if (error) {
     return (
-      <div className="flex-1 flex items-center justify-center p-6">
-        <p className="text-destructive">Erro ao carregar perfis: {error.message}</p>
+      <div className="flex-1 p-6">
+        <ErrorState 
+          message={error.message} 
+          onRetry={() => window.location.reload()} 
+        />
       </div>
     );
   }
@@ -299,15 +302,13 @@ export default function PerfisVelocidade() {
               </TableBody>
             </Table>
           ) : (
-            <div className="flex flex-col items-center justify-center py-12">
-              <Gauge className="h-12 w-12 text-muted-foreground mb-4" />
-              <h3 className="text-lg font-semibold">Nenhum perfil cadastrado</h3>
-              <p className="text-muted-foreground mb-4">Crie perfis de velocidade para seus tripulantes.</p>
-              <Button onClick={handleCreate}>
-                <Plus className="h-4 w-4 mr-2" />
-                Novo Perfil
-              </Button>
-            </div>
+            <EmptyState
+              icon={Gauge}
+              title="Nenhum perfil cadastrado"
+              description="Crie perfis de velocidade para seus tripulantes."
+              actionLabel="Novo Perfil"
+              onAction={handleCreate}
+            />
           )}
         </CardContent>
       </Card>

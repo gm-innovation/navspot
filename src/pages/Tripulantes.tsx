@@ -14,9 +14,9 @@ import {
   Settings,
   Trash2,
   Ban,
-  Loader2,
   LogOut,
-  RotateCcw
+  RotateCcw,
+  QrCode
 } from "lucide-react";
 import {
   Table,
@@ -51,11 +51,17 @@ import {
   useCreateTripulanteAction,
   TripulanteWithDetails 
 } from "@/hooks/useTripulantes";
+import { useTripulantesRealtime } from "@/hooks/useRealtimeSubscription";
 import { TripulanteForm } from "@/components/forms/TripulanteForm";
+import { QRCodeModal } from "@/components/modals/QRCodeModal";
+import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
+import { EmptyState, ErrorState } from "@/components/ui/empty-state";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 export default function Tripulantes() {
+  // Enable realtime updates
+  useTripulantesRealtime();
   const { data: tripulantes, isLoading, error } = useTripulantes();
   const createTripulante = useCreateTripulante();
   const updateTripulante = useUpdateTripulante();
@@ -67,6 +73,8 @@ export default function Tripulantes() {
   const [editingTripulante, setEditingTripulante] = useState<TripulanteWithDetails | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [tripulanteToDelete, setTripulanteToDelete] = useState<TripulanteWithDetails | null>(null);
+  const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [qrTripulante, setQrTripulante] = useState<TripulanteWithDetails | null>(null);
 
   const filteredTripulantes = tripulantes?.filter(tripulante =>
     tripulante.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -156,6 +164,11 @@ export default function Tripulantes() {
     });
   };
 
+  const handleShowQR = (tripulante: TripulanteWithDetails) => {
+    setQrTripulante(tripulante);
+    setQrModalOpen(true);
+  };
+
   const formatLastLogin = (dateStr: string | null) => {
     if (!dateStr) return "Nunca";
     try {
@@ -185,17 +198,16 @@ export default function Tripulantes() {
   }).length || 0;
 
   if (isLoading) {
-    return (
-      <div className="flex-1 flex items-center justify-center p-6">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <PageLoadingSkeleton />;
   }
 
   if (error) {
     return (
-      <div className="flex-1 flex items-center justify-center p-6">
-        <p className="text-destructive">Erro ao carregar tripulantes: {error.message}</p>
+      <div className="flex-1 p-6">
+        <ErrorState 
+          message={error.message} 
+          onRetry={() => window.location.reload()} 
+        />
       </div>
     );
   }
@@ -357,10 +369,15 @@ export default function Tripulantes() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => handleShowQR(tripulante)}>
+                            <QrCode className="h-4 w-4 mr-2" />
+                            QR Code
+                          </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => handleEdit(tripulante)}>
                             <Settings className="h-4 w-4 mr-2" />
                             Editar
                           </DropdownMenuItem>
+                          <DropdownMenuSeparator />
                           <DropdownMenuItem onClick={() => handleBlock(tripulante)}>
                             <Ban className="h-4 w-4 mr-2" />
                             {tripulante.status === "bloqueado" ? "Desbloquear" : "Bloquear"}
@@ -389,19 +406,13 @@ export default function Tripulantes() {
               </TableBody>
             </Table>
           ) : (
-            <div className="flex flex-col items-center justify-center py-12">
-              <Users className="h-12 w-12 text-muted-foreground mb-4" />
-              <h3 className="text-lg font-semibold">Nenhum tripulante encontrado</h3>
-              <p className="text-muted-foreground mb-4">
-                {searchTerm ? "Tente ajustar sua busca." : "Comece adicionando seu primeiro tripulante."}
-              </p>
-              {!searchTerm && (
-                <Button onClick={handleCreate}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  Novo Tripulante
-                </Button>
-              )}
-            </div>
+            <EmptyState
+              icon={Users}
+              title="Nenhum tripulante encontrado"
+              description={searchTerm ? "Tente ajustar sua busca." : "Comece adicionando seu primeiro tripulante."}
+              actionLabel={!searchTerm ? "Novo Tripulante" : undefined}
+              onAction={!searchTerm ? handleCreate : undefined}
+            />
           )}
         </CardContent>
       </Card>
@@ -413,6 +424,13 @@ export default function Tripulantes() {
         onSubmit={handleSubmit}
         initialData={editingTripulante || undefined}
         isLoading={createTripulante.isPending || updateTripulante.isPending}
+      />
+
+      {/* QR Code Modal */}
+      <QRCodeModal
+        open={qrModalOpen}
+        onOpenChange={setQrModalOpen}
+        tripulante={qrTripulante}
       />
 
       {/* Delete Confirmation Dialog */}
