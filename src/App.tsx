@@ -13,6 +13,8 @@ import Hotspots from "./pages/Hotspots";
 import Embarcacoes from "./pages/Embarcacoes";
 import Tripulantes from "./pages/Tripulantes";
 import PerfisVelocidade from "./pages/PerfisVelocidade";
+import ListasAcesso from "./pages/ListasAcesso";
+import RegrasAcesso from "./pages/RegrasAcesso";
 import Alertas from "./pages/Alertas";
 import Configuracoes from "./pages/Configuracoes";
 import NotFound from "./pages/NotFound";
@@ -73,6 +75,24 @@ const App = () => (
                   <SidebarProvider>
                     <AppLayout>
                       <PerfisVelocidade />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/listas-acesso" element={
+                <ProtectedRoute allowedRoles={['super_admin', 'empresa_admin']}>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <ListasAcesso />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/regras-acesso" element={
+                <ProtectedRoute allowedRoles={['super_admin', 'empresa_admin']}>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <RegrasAcesso />
                     </AppLayout>
                   </SidebarProvider>
                 </ProtectedRoute>
