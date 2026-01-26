@@ -1,1 +1,7 @@
 project_id = "focqrhkozhdefohroqyi"
+
+[functions.mikrotik-sync]
+verify_jwt = false
+
+[functions.mikrotik-script-generator]
+verify_jwt = false
