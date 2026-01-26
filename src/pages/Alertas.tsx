@@ -1,4 +1,4 @@
-
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -9,91 +9,112 @@ import {
   CheckCircle,
   XCircle,
   AlertCircle,
-  Settings
+  Settings,
+  Filter,
+  Trash2,
+  CheckCheck,
+  RefreshCw
 } from "lucide-react";
+import { 
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Checkbox } from "@/components/ui/checkbox";
+import { 
+  useAlertas, 
+  useAlertasStats, 
+  useResolveAlerta, 
+  useResolveMultipleAlertas,
+  useDeleteOldAlertas,
+  getSeveridadeInfo,
+  getTipoInfo,
+  AlertaFilters,
+  Alerta 
+} from "@/hooks/useAlertas";
+import { useAlertasRealtime } from "@/hooks/useRealtimeSubscription";
+import { formatDistanceToNow } from "date-fns";
+import { ptBR } from "date-fns/locale";
 
 export default function Alertas() {
-  const alertas = [
-    {
-      id: 1,
-      tipo: "crítico",
-      titulo: "Hotspot Offline",
-      descricao: "Navio Esperança está sem conexão há 15 minutos",
-      embarcacao: "Esperança Transportes",
-      timestamp: "15:32 - Hoje",
-      status: "ativo",
-      acao: "Notificação enviada por email"
-    },
-    {
-      id: 2,
-      tipo: "aviso",
-      titulo: "Limite de Usuários",
-      descricao: "Iate Poseidon atingiu 90% da capacidade (23/25 usuários)",
-      embarcacao: "Poseidon Luxury",
-      timestamp: "14:45 - Hoje",
-      status: "ativo",
-      acao: "WhatsApp enviado"
-    },
-    {
-      id: 3,
-      tipo: "info",
-      titulo: "Nova Embarcação",
-      descricao: "Embarcação Marina Express foi cadastrada no sistema",
-      embarcacao: "Marina Express",
-      timestamp: "13:20 - Hoje",
-      status: "resolvido",
-      acao: "Log registrado"
-    },
-    {
-      id: 4,
-      tipo: "crítico",
-      titulo: "Falha de Sincronização",
-      descricao: "Erro ao sincronizar dados com a API WiFi Manager",
-      embarcacao: "Sistema Geral",
-      timestamp: "12:15 - Hoje",
-      status: "resolvido",
-      acao: "Webhook disparado"
-    },
-    {
-      id: 5,
-      tipo: "aviso",
-      titulo: "Sinal Fraco",
-      descricao: "Qualidade do sinal do Atlas Marine está em 45%",
-      embarcacao: "Atlas Marine",
-      timestamp: "11:30 - Hoje",
-      status: "ativo",
-      acao: "Alerta no painel"
-    }
-  ];
+  // Enable realtime updates
+  useAlertasRealtime();
 
-  const getAlertIcon = (tipo: string) => {
-    switch (tipo) {
-      case "crítico":
+  // Filters state
+  const [filters, setFilters] = useState<AlertaFilters>({
+    severidade: null,
+    resolvido: null,
+    dateRange: 'today',
+  });
+  const [selectedAlertas, setSelectedAlertas] = useState<string[]>([]);
+
+  // Queries and mutations
+  const { data: alertas, isLoading, refetch } = useAlertas(filters);
+  const { data: stats, isLoading: statsLoading } = useAlertasStats();
+  const resolveAlerta = useResolveAlerta();
+  const resolveMultiple = useResolveMultipleAlertas();
+  const deleteOldAlertas = useDeleteOldAlertas();
+
+  // Handlers
+  const handleResolve = (id: string) => {
+    resolveAlerta.mutate(id);
+  };
+
+  const handleResolveSelected = () => {
+    if (selectedAlertas.length > 0) {
+      resolveMultiple.mutate(selectedAlertas, {
+        onSuccess: () => setSelectedAlertas([]),
+      });
+    }
+  };
+
+  const handleDeleteOld = () => {
+    deleteOldAlertas.mutate(30);
+  };
+
+  const handleSelectAlerta = (id: string, checked: boolean) => {
+    setSelectedAlertas(prev => 
+      checked ? [...prev, id] : prev.filter(i => i !== id)
+    );
+  };
+
+  const handleSelectAll = (checked: boolean) => {
+    if (checked && alertas) {
+      setSelectedAlertas(alertas.filter(a => !a.resolvido).map(a => a.id));
+    } else {
+      setSelectedAlertas([]);
+    }
+  };
+
+  const getAlertIcon = (severidade: string) => {
+    switch (severidade) {
+      case "critical":
         return <XCircle className="h-5 w-5 text-red-500" />;
-      case "aviso":
+      case "warning":
         return <AlertTriangle className="h-5 w-5 text-yellow-500" />;
       case "info":
         return <AlertCircle className="h-5 w-5 text-blue-500" />;
       default:
-        return <Bell className="h-5 w-5 text-gray-500" />;
+        return <Bell className="h-5 w-5 text-muted-foreground" />;
     }
   };
 
-  const getAlertBadgeColor = (tipo: string) => {
-    switch (tipo) {
-      case "crítico":
-        return "bg-red-100 text-red-800 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400";
-      case "aviso":
-        return "bg-yellow-100 text-yellow-800 hover:bg-yellow-100 dark:bg-yellow-900/20 dark:text-yellow-400";
-      case "info":
-        return "bg-blue-100 text-blue-800 hover:bg-blue-100 dark:bg-blue-900/20 dark:text-blue-400";
-      default:
-        return "bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-400";
+  const formatTimestamp = (timestamp: string) => {
+    try {
+      return formatDistanceToNow(new Date(timestamp), { 
+        addSuffix: true, 
+        locale: ptBR 
+      });
+    } catch {
+      return timestamp;
     }
   };
 
-  const alertasAtivos = alertas.filter(a => a.status === "ativo").length;
-  const alertasCriticos = alertas.filter(a => a.tipo === "crítico" && a.status === "ativo").length;
+  const alertasNaoResolvidos = alertas?.filter(a => !a.resolvido) || [];
+  const hasSelectedNonResolved = selectedAlertas.length > 0;
 
   return (
     <div className="flex-1 space-y-6 p-6">
@@ -105,10 +126,16 @@ export default function Alertas() {
             Monitore todos os alertas e histórico de ações do sistema
           </p>
         </div>
-        <Button variant="outline">
-          <Settings className="h-4 w-4 mr-2" />
-          Configurar Alertas
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => refetch()}>
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Atualizar
+          </Button>
+          <Button variant="outline">
+            <Settings className="h-4 w-4 mr-2" />
+            Configurar Alertas
+          </Button>
+        </div>
       </div>
 
       {/* Dashboard de alertas */}
@@ -116,16 +143,24 @@ export default function Alertas() {
         <Card>
           <CardContent className="flex items-center justify-between p-6">
             <div>
-              <p className="text-2xl font-bold">{alertas.length}</p>
+              {statsLoading ? (
+                <Skeleton className="h-8 w-12" />
+              ) : (
+                <p className="text-2xl font-bold">{stats?.total || 0}</p>
+              )}
               <p className="text-sm text-muted-foreground">Total Hoje</p>
             </div>
-            <Bell className="h-8 w-8 text-navspot-blue-500" />
+            <Bell className="h-8 w-8 text-primary" />
           </CardContent>
         </Card>
         <Card>
           <CardContent className="flex items-center justify-between p-6">
             <div>
-              <p className="text-2xl font-bold text-red-600">{alertasCriticos}</p>
+              {statsLoading ? (
+                <Skeleton className="h-8 w-12" />
+              ) : (
+                <p className="text-2xl font-bold text-red-600">{stats?.criticos || 0}</p>
+              )}
               <p className="text-sm text-muted-foreground">Críticos</p>
             </div>
             <XCircle className="h-8 w-8 text-red-500" />
@@ -134,7 +169,11 @@ export default function Alertas() {
         <Card>
           <CardContent className="flex items-center justify-between p-6">
             <div>
-              <p className="text-2xl font-bold text-yellow-600">2</p>
+              {statsLoading ? (
+                <Skeleton className="h-8 w-12" />
+              ) : (
+                <p className="text-2xl font-bold text-yellow-600">{stats?.avisos || 0}</p>
+              )}
               <p className="text-sm text-muted-foreground">Avisos</p>
             </div>
             <AlertTriangle className="h-8 w-8 text-yellow-500" />
@@ -143,7 +182,11 @@ export default function Alertas() {
         <Card>
           <CardContent className="flex items-center justify-between p-6">
             <div>
-              <p className="text-2xl font-bold text-green-600">{alertas.filter(a => a.status === "resolvido").length}</p>
+              {statsLoading ? (
+                <Skeleton className="h-8 w-12" />
+              ) : (
+                <p className="text-2xl font-bold text-green-600">{stats?.resolvidos || 0}</p>
+              )}
               <p className="text-sm text-muted-foreground">Resolvidos</p>
             </div>
             <CheckCircle className="h-8 w-8 text-green-500" />
@@ -151,68 +194,226 @@ export default function Alertas() {
         </Card>
       </div>
 
+      {/* Filters */}
+      <Card>
+        <CardContent className="flex flex-wrap items-center gap-4 p-4">
+          <div className="flex items-center gap-2">
+            <Filter className="h-4 w-4 text-muted-foreground" />
+            <span className="text-sm font-medium">Filtros:</span>
+          </div>
+          
+          <Select
+            value={filters.severidade || 'all'}
+            onValueChange={(v) => setFilters(prev => ({ 
+              ...prev, 
+              severidade: v === 'all' ? null : v as 'info' | 'warning' | 'critical' 
+            }))}
+          >
+            <SelectTrigger className="w-[140px]">
+              <SelectValue placeholder="Severidade" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todas</SelectItem>
+              <SelectItem value="critical">Crítico</SelectItem>
+              <SelectItem value="warning">Aviso</SelectItem>
+              <SelectItem value="info">Info</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Select
+            value={filters.resolvido === null ? 'all' : filters.resolvido ? 'resolvido' : 'ativo'}
+            onValueChange={(v) => setFilters(prev => ({ 
+              ...prev, 
+              resolvido: v === 'all' ? null : v === 'resolvido' 
+            }))}
+          >
+            <SelectTrigger className="w-[140px]">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos</SelectItem>
+              <SelectItem value="ativo">Ativos</SelectItem>
+              <SelectItem value="resolvido">Resolvidos</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Select
+            value={filters.dateRange || 'today'}
+            onValueChange={(v) => setFilters(prev => ({ 
+              ...prev, 
+              dateRange: v as 'today' | 'week' | 'month' | 'all' 
+            }))}
+          >
+            <SelectTrigger className="w-[150px]">
+              <SelectValue placeholder="Período" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="today">Hoje</SelectItem>
+              <SelectItem value="week">Últimos 7 dias</SelectItem>
+              <SelectItem value="month">Últimos 30 dias</SelectItem>
+              <SelectItem value="all">Todos</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <div className="ml-auto flex gap-2">
+            {hasSelectedNonResolved && (
+              <Button 
+                variant="secondary" 
+                size="sm"
+                onClick={handleResolveSelected}
+                disabled={resolveMultiple.isPending}
+              >
+                <CheckCheck className="h-4 w-4 mr-2" />
+                Resolver ({selectedAlertas.length})
+              </Button>
+            )}
+            <Button 
+              variant="ghost" 
+              size="sm"
+              onClick={handleDeleteOld}
+              disabled={deleteOldAlertas.isPending}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Limpar Antigos
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Lista de alertas */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5" />
-            Histórico de Alertas
-          </CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5" />
+              Histórico de Alertas
+            </CardTitle>
+            {alertasNaoResolvidos.length > 0 && (
+              <div className="flex items-center gap-2">
+                <Checkbox 
+                  id="select-all"
+                  checked={selectedAlertas.length === alertasNaoResolvidos.length && alertasNaoResolvidos.length > 0}
+                  onCheckedChange={handleSelectAll}
+                />
+                <label htmlFor="select-all" className="text-sm text-muted-foreground">
+                  Selecionar todos
+                </label>
+              </div>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
-          <div className="space-y-4">
-            {alertas.map((alerta) => (
-              <div key={alerta.id} className="flex items-start gap-4 p-4 rounded-lg border bg-card/50 hover:bg-card transition-colors">
-                <div className="flex-shrink-0 mt-1">
-                  {getAlertIcon(alerta.tipo)}
-                </div>
-                
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Badge 
-                      variant="secondary"
-                      className={getAlertBadgeColor(alerta.tipo)}
-                    >
-                      {alerta.tipo.charAt(0).toUpperCase() + alerta.tipo.slice(1)}
-                    </Badge>
-                    <Badge 
-                      variant={alerta.status === "ativo" ? "destructive" : "default"}
-                      className={alerta.status === "resolvido" ? 
-                        "bg-green-100 text-green-800 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400" : 
-                        ""
-                      }
-                    >
-                      {alerta.status === "ativo" ? "Ativo" : "Resolvido"}
-                    </Badge>
+          {isLoading ? (
+            <div className="space-y-4">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="flex gap-4 p-4 rounded-lg border">
+                  <Skeleton className="h-5 w-5 rounded-full" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-4 w-24" />
+                    <Skeleton className="h-4 w-full" />
+                    <Skeleton className="h-3 w-32" />
                   </div>
-                  
-                  <h3 className="font-semibold text-foreground mb-1">
-                    {alerta.titulo}
-                  </h3>
-                  <p className="text-muted-foreground text-sm mb-2">
-                    {alerta.descricao}
-                  </p>
-                  
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    <div className="flex items-center gap-1">
-                      <Clock className="h-3 w-3" />
-                      {alerta.timestamp}
+                </div>
+              ))}
+            </div>
+          ) : alertas && alertas.length > 0 ? (
+            <div className="space-y-4">
+              {alertas.map((alerta) => {
+                const severidadeInfo = getSeveridadeInfo(alerta.severidade);
+                const tipoInfo = getTipoInfo(alerta.tipo);
+                
+                return (
+                  <div 
+                    key={alerta.id} 
+                    className="flex items-start gap-4 p-4 rounded-lg border bg-card/50 hover:bg-card transition-colors"
+                  >
+                    {!alerta.resolvido && (
+                      <Checkbox
+                        checked={selectedAlertas.includes(alerta.id)}
+                        onCheckedChange={(checked) => handleSelectAlerta(alerta.id, checked as boolean)}
+                      />
+                    )}
+                    
+                    <div className="flex-shrink-0 mt-1">
+                      {getAlertIcon(alerta.severidade)}
                     </div>
-                    <span>•</span>
-                    <span>{alerta.embarcacao}</span>
-                    <span>•</span>
-                    <span>{alerta.acao}</span>
+                    
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Badge 
+                          variant="secondary"
+                          className={severidadeInfo.color}
+                        >
+                          {severidadeInfo.label}
+                        </Badge>
+                        <Badge 
+                          variant={alerta.resolvido ? "default" : "destructive"}
+                          className={alerta.resolvido ? 
+                            "bg-green-100 text-green-800 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400" : 
+                            ""
+                          }
+                        >
+                          {alerta.resolvido ? "Resolvido" : "Ativo"}
+                        </Badge>
+                        <Badge variant="outline" className="text-xs">
+                          {tipoInfo.label}
+                        </Badge>
+                      </div>
+                      
+                      <p className="text-muted-foreground text-sm mb-2">
+                        {alerta.mensagem}
+                      </p>
+                      
+                      <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                        <div className="flex items-center gap-1">
+                          <Clock className="h-3 w-3" />
+                          {formatTimestamp(alerta.created_at)}
+                        </div>
+                        {alerta.embarcacoes?.nome && (
+                          <>
+                            <span>•</span>
+                            <span>{alerta.embarcacoes.nome}</span>
+                          </>
+                        )}
+                        {alerta.hotspots?.nome && (
+                          <>
+                            <span>•</span>
+                            <span>{alerta.hotspots.nome}</span>
+                          </>
+                        )}
+                        {alerta.tripulantes?.nome && (
+                          <>
+                            <span>•</span>
+                            <span>{alerta.tripulantes.nome}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    
+                    <div className="flex-shrink-0">
+                      {!alerta.resolvido && (
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => handleResolve(alerta.id)}
+                          disabled={resolveAlerta.isPending}
+                        >
+                          <CheckCircle className="h-4 w-4 mr-1" />
+                          Resolver
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                </div>
-                
-                <div className="flex-shrink-0">
-                  <Button variant="ghost" size="sm">
-                    <Settings className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-center py-12 text-muted-foreground">
+              <Bell className="h-12 w-12 mx-auto mb-4 opacity-50" />
+              <p className="font-medium">Nenhum alerta encontrado</p>
+              <p className="text-sm">Ajuste os filtros ou aguarde novos alertas.</p>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -246,7 +447,7 @@ export default function Alertas() {
                 <p className="font-medium">Webhook</p>
                 <p className="text-sm text-muted-foreground">Integração via webhook</p>
               </div>
-              <Badge className="bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-400">
+              <Badge className="bg-muted text-muted-foreground">
                 Configurar
               </Badge>
             </div>

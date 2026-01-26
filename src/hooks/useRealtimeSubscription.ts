@@ -134,3 +134,22 @@ export function useDashboardRealtime() {
     { table: 'alertas', queryKey: ['dashboard-stats', 'recent-alerts'] },
   ]);
 }
+
+// Hook for alertas realtime updates
+export function useAlertasRealtime() {
+  useRealtimeSubscription([
+    {
+      table: 'alertas',
+      queryKey: ['alertas'],
+      showToast: true,
+      toastMessages: {
+        INSERT: 'Novo alerta recebido!',
+        UPDATE: 'Alerta atualizado',
+      },
+    },
+    {
+      table: 'alertas',
+      queryKey: ['alertas-stats'],
+    },
+  ]);
+}
