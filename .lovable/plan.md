@@ -1,386 +1,408 @@
 
-# Plano: Sistema de Relatorios Gerenciais Completo
+# Plano: Painel de Monitoramento em Tempo Real
 
 ## Visao Geral
 
-Este plano implementa um sistema completo de relatorios gerenciais com dashboards personalizados por nivel de acesso (Super Admin, Empresa Admin e Gerente de Embarcacao), incluindo graficos de consumo, exportacao em CSV/PDF e filtros por periodo.
+Este plano implementa um painel de monitoramento dedicado com atualizacao automatica via WebSocket (Supabase Realtime) para exibir sessoes ativas, consumo ao vivo e status dos hotspots em tempo real.
 
 ---
 
 ## Arquitetura do Sistema
 
 ```text
-+------------------------------------------+
-|           PAGINA DE RELATORIOS           |
-+------------------------------------------+
-|  Filtros: Periodo | Empresa | Embarcacao |
-+------------------------------------------+
-|                                          |
-|  +----------------------------------+    |
-|  |     GRAFICOS INTERATIVOS        |    |
-|  |  (Recharts - AreaChart, PieChart)|    |
-|  +----------------------------------+    |
-|                                          |
-|  +----------------------------------+    |
-|  |     TABELAS DE DADOS            |    |
-|  |  (Consumo, Sessoes, Alertas)    |    |
-|  +----------------------------------+    |
-|                                          |
-|  [Exportar CSV] [Exportar PDF]           |
-+------------------------------------------+
++----------------------------------------------------------+
+|              PAINEL DE MONITORAMENTO EM TEMPO REAL        |
++----------------------------------------------------------+
+|  [Auto-refresh: ON/OFF]  [Ultima atualizacao: 14:32:05]  |
++----------------------------------------------------------+
+|                                                          |
+|  METRICAS AO VIVO                                        |
+|  +--------+ +--------+ +--------+ +--------+             |
+|  |Sessoes | |Consumo | |Hotspots| |Banda   |             |
+|  |Ativas  | |Atual   | |Online  | |Atual   |             |
+|  |  156   | | 2.3 GB | |  12/15 | | 45 Mb/s|             |
+|  +--------+ +--------+ +--------+ +--------+             |
+|                                                          |
+|  +--------------------------------------------------+   |
+|  |          GRAFICO DE CONSUMO EM TEMPO REAL         |   |
+|  |  [Linha fluindo com ultimos 60 segundos]          |   |
+|  +--------------------------------------------------+   |
+|                                                          |
+|  +--------------------------------------------------+   |
+|  |               SESSOES ATIVAS                      |   |
+|  | Tripulante | Dispositivo | Hotspot | Duracao | Consumo
+|  |------------|-------------|---------|---------|--------
+|  | Joao Silva | iPhone 14   | WiFi-01 | 2h 15m  | 1.2 GB
+|  | Maria...   | Samsung...  | WiFi-02 | 45m     | 350 MB
+|  | [Atualizacao automatica a cada mudanca]           |   |
+|  +--------------------------------------------------+   |
+|                                                          |
+|  +-------------------------+ +-------------------------+ |
+|  |   HOTSPOTS ATIVOS       | |   EVENTOS RECENTES      | |
+|  | Nome    | Status | Sync | | [Evento] [Hora] [Tipo]  | |
+|  | WiFi-01 | Online | 5s   | | Sessao iniciada  14:32  | |
+|  | WiFi-02 | Online | 3s   | | Hotspot offline  14:30  | |
+|  | WiFi-03 | Alerta | 45s  | | Quota atingida   14:28  | |
+|  +-------------------------+ +-------------------------+ |
++----------------------------------------------------------+
 ```
 
 ---
 
-## 1. Nova Pagina de Relatorios
+## 1. Nova Pagina de Monitoramento
 
-### Arquivo: `src/pages/Relatorios.tsx`
+### Arquivo: `src/pages/Monitoramento.tsx`
 
-Criar pagina dedicada para relatorios com renderizacao condicional baseada no papel do usuario:
-
-- **Super Admin**: Visao global de todas as empresas e embarcacoes
-- **Empresa Admin**: Visao das embarcacoes e tripulantes da empresa
-- **Gerente Embarcacao**: Visao detalhada da sua embarcacao
+Criar pagina dedicada para monitoramento em tempo real com:
+- Header com toggle de auto-refresh e indicador de ultima atualizacao
+- Grid de metricas ao vivo (sessoes ativas, consumo atual, hotspots online)
+- Grafico de consumo em tempo real (ultimos 60 segundos)
+- Tabela de sessoes ativas com atualizacao automatica
+- Lista de hotspots com status e tempo desde ultima sincronizacao
+- Feed de eventos recentes (sessoes iniciadas/encerradas, alertas)
 
 ---
 
-## 2. Hooks para Dados de Relatorios
+## 2. Hooks para Dados em Tempo Real
 
-### Arquivo: `src/hooks/useRelatorios.ts`
+### Arquivo: `src/hooks/useMonitoramento.ts`
 
-Criar hooks especificos para buscar dados agregados:
+Criar hooks especificos para monitoramento:
 
 ```text
-useRelatorioConsumo(filtros)
-- Retorna consumo agregado por tripulante/dispositivo/periodo
-- Agrupa bytes_consumidos de tripulantes e dispositivos_registrados
+useSessoesAtivas()
+- Retorna sessoes_wifi onde status = 'ativa'
+- Inclui dados do tripulante, dispositivo e hotspot
+- Subscreve a tabela sessoes_wifi via Realtime
 
-useRelatorioSessoes(filtros)
-- Retorna sessoes_wifi agrupadas por periodo
-- Calcula duracao media, bytes in/out
+useConsumoAoVivo()
+- Calcula consumo agregado em tempo real
+- Agrupa bytes_in/bytes_out por periodo
+- Atualiza a cada mudanca em sessoes_wifi
 
-useRelatorioAlertas(filtros)
-- Retorna alertas agrupados por tipo/severidade/periodo
-- Estatisticas de resolucao
+useHotspotsStatus()
+- Retorna status de todos os hotspots
+- Calcula tempo desde ultima sincronizacao
+- Subscreve a tabela hotspots via Realtime
 
-useRelatorioEmpresas(filtros) [Super Admin]
-- Retorna metricas agregadas por empresa
-- Total embarcacoes, tripulantes, consumo
-
-useRelatorioEmbarcacoes(filtros) [Super Admin / Empresa Admin]
-- Retorna metricas agregadas por embarcacao
-- Total tripulantes, hotspots, consumo
+useEventosFeed()
+- Combina alertas e mudancas em sessoes
+- Ordena por timestamp descendente
+- Limita aos ultimos 20 eventos
 ```
 
 ---
 
-## 3. Componentes de Graficos
+## 3. Hook de Subscricao Realtime Especializado
 
-### Arquivo: `src/components/reports/ConsumoChart.tsx`
+### Arquivo: `src/hooks/useMonitoramentoRealtime.ts`
 
-Grafico de area mostrando consumo de dados ao longo do tempo:
-- Eixo X: Periodo (dias/semanas/meses)
-- Eixo Y: Bytes consumidos
-- Linhas: Download vs Upload
+Expandir o padrao existente para monitoramento:
 
-### Arquivo: `src/components/reports/SessoesChart.tsx`
-
-Grafico de barras mostrando quantidade de sessoes:
-- Agrupado por dia/semana
-- Colorido por status (ativa, encerrada)
-
-### Arquivo: `src/components/reports/AlertasChart.tsx`
-
-Grafico de pizza mostrando distribuicao de alertas:
-- Por severidade (critico, aviso, info)
-- Por tipo (quota, offline, device_sharing)
-
-### Arquivo: `src/components/reports/TopConsumidoresChart.tsx`
-
-Grafico de barras horizontais:
-- Top 10 tripulantes/equipamentos por consumo
-- Mostra nome e bytes consumidos
+```typescript
+export function useMonitoramentoRealtime() {
+  // Subscreve a multiplas tabelas simultaneamente
+  // com callbacks especificos para cada evento
+  
+  // sessoes_wifi: INSERT (nova sessao), UPDATE (consumo), DELETE (encerrada)
+  // hotspots: UPDATE (status, ultima_sincronizacao)
+  // alertas: INSERT (novo alerta)
+  // tripulantes: UPDATE (bytes_consumidos)
+}
+```
 
 ---
 
-## 4. Dashboards por Papel
+## 4. Componentes do Painel
 
-### 4.1 Super Admin Dashboard de Relatorios
+### 4.1 Metricas ao Vivo
+
+**Arquivo:** `src/components/monitoring/LiveMetricsGrid.tsx`
+
+Cards com animacao de "pulso" quando atualizados:
+- Sessoes Ativas (contador)
+- Consumo Atual (bytes/segundo estimado)
+- Hotspots Online (X de Y)
+- Banda Total (Mb/s)
+
+### 4.2 Grafico de Consumo em Tempo Real
+
+**Arquivo:** `src/components/monitoring/LiveConsumptionChart.tsx`
+
+Grafico de linha que mostra:
+- Ultimos 60 segundos de consumo
+- Download vs Upload
+- Animacao suave de transicao
+- Usa recharts com dados em buffer circular
+
+### 4.3 Tabela de Sessoes Ativas
+
+**Arquivo:** `src/components/monitoring/ActiveSessionsTable.tsx`
+
+Tabela com atualizacao automatica:
+- Tripulante (nome, cargo)
+- Dispositivo (nome, MAC)
+- Hotspot
+- Duracao (contador ao vivo)
+- Consumo (bytes_in + bytes_out)
+- Indicador visual de atividade recente
+
+### 4.4 Status dos Hotspots
+
+**Arquivo:** `src/components/monitoring/HotspotsStatusPanel.tsx`
+
+Lista compacta com:
+- Nome do hotspot
+- Badge de status (online/offline/alerta)
+- Tempo desde ultima sincronizacao (atualiza a cada segundo)
+- Contador de sessoes ativas no hotspot
+
+### 4.5 Feed de Eventos
+
+**Arquivo:** `src/components/monitoring/EventsFeed.tsx`
+
+Lista de eventos em tempo real:
+- Novas sessoes iniciadas
+- Sessoes encerradas
+- Alertas gerados
+- Mudancas de status de hotspots
+- Timestamp relativo ("ha 2 segundos")
+
+---
+
+## 5. Integracao com Supabase Realtime
+
+### Estrategia de Subscricao
+
+O sistema utilizara o Supabase Realtime ja configurado, expandindo o padrao existente em `useRealtimeSubscription.ts`:
 
 ```text
-+------------------------------------------+
-| RELATORIOS - SUPER ADMIN                 |
-+------------------------------------------+
-| [Periodo: v] [Empresa: v] [Exportar v]   |
-+------------------------------------------+
-|                                          |
-| METRICAS GLOBAIS                         |
-| +--------+ +--------+ +--------+         |
-| |Empresas| |Embarc. | |Consumo |         |
-| |   15   | |   42   | | 1.2 TB |         |
-| +--------+ +--------+ +--------+         |
-|                                          |
-| CONSUMO POR EMPRESA (Grafico de Barras)  |
-| [================================]       |
-|                                          |
-| TOP 5 EMBARCACOES (Tabela)               |
-| | Embarcacao | Empresa | Consumo |       |
-| |------------|---------|---------|       |
-| | Navio A    | Emp X   | 120 GB  |       |
-|                                          |
-| ALERTAS POR EMPRESA (Pizza)              |
-| [Grafico circular por severidade]        |
-+------------------------------------------+
+Canal: 'monitoramento'
+Tabelas subscritas:
+1. sessoes_wifi
+   - INSERT: Adicionar sessao a lista
+   - UPDATE: Atualizar consumo/duracao
+   - DELETE: Remover da lista
+
+2. hotspots
+   - UPDATE: Atualizar status e ultima_sincronizacao
+
+3. alertas
+   - INSERT: Adicionar ao feed de eventos
+
+4. tripulantes
+   - UPDATE: Atualizar bytes_consumidos
 ```
 
-### 4.2 Empresa Admin Dashboard de Relatorios
+### Gerenciamento de Estado
 
-```text
-+------------------------------------------+
-| RELATORIOS - MINHA EMPRESA               |
-+------------------------------------------+
-| [Periodo: v] [Embarcacao: v] [Exportar]  |
-+------------------------------------------+
-|                                          |
-| METRICAS DA EMPRESA                      |
-| +--------+ +--------+ +--------+         |
-| |Embarc. | |Tripul. | |Consumo |         |
-| |   8    | |  156   | | 450 GB |         |
-| +--------+ +--------+ +--------+         |
-|                                          |
-| CONSUMO AO LONGO DO TEMPO (Area Chart)   |
-| [Grafico de area com download/upload]    |
-|                                          |
-| TOP CONSUMIDORES (Barras Horizontais)    |
-| [Tripulante/Equipamento vs Consumo]      |
-|                                          |
-| SESSOES POR EMBARCACAO (Tabela)          |
-| | Embarcacao | Sessoes | Duracao Media | |
-+------------------------------------------+
-```
-
-### 4.3 Gerente Embarcacao Dashboard de Relatorios
-
-```text
-+------------------------------------------+
-| RELATORIOS - MINHA EMBARCACAO            |
-+------------------------------------------+
-| [Periodo: v] [Exportar CSV] [Exportar PDF]|
-+------------------------------------------+
-|                                          |
-| METRICAS DA EMBARCACAO                   |
-| +--------+ +--------+ +--------+         |
-| |Tripul. | |Sessoes | |Consumo |         |
-| |   24   | |  1,234 | | 85 GB  |         |
-| +--------+ +--------+ +--------+         |
-|                                          |
-| CONSUMO DIARIO (Area Chart)              |
-| [Ultimos 7/30 dias]                      |
-|                                          |
-| TOP 10 TRIPULANTES (Tabela)              |
-| | Nome | Cargo | Consumo | Quota |       |
-|                                          |
-| ALERTAS RECENTES (Lista)                 |
-| [Alertas filtrados por embarcacao]       |
-+------------------------------------------+
-```
+Usar React Query para cache e invalidacao automatica, combinado com subscricoes Realtime para updates instantaneos.
 
 ---
 
-## 5. Funcionalidade de Exportacao
-
-### Arquivo: `src/utils/exportUtils.ts`
-
-Funcoes utilitarias para exportacao:
-
-```text
-exportToCSV(data, filename)
-- Converte array de objetos para CSV
-- Trigger download automatico
-
-exportToPDF(data, titulo, colunas)
-- Usa biblioteca para gerar PDF
-- Inclui cabecalho com logo e data
-- Formata tabelas automaticamente
-```
-
-### Implementacao de PDF
-
-Adicionar dependencia `jspdf` e `jspdf-autotable` para geracao de PDF no cliente.
-
----
-
-## 6. Filtros Avancados
-
-### Componente: `src/components/reports/ReportFilters.tsx`
-
-Filtros disponiveis:
-- **Periodo**: Hoje, Ultimos 7 dias, Ultimos 30 dias, Personalizado
-- **Empresa**: Dropdown (apenas Super Admin)
-- **Embarcacao**: Dropdown (Super Admin e Empresa Admin)
-- **Tipo de Relatorio**: Consumo, Sessoes, Alertas
-
-### Seletor de Datas Personalizado
-
-Usar componente DatePicker existente do shadcn para selecao de intervalo customizado.
-
----
-
-## 7. Integracao com Menu
+## 6. Integracao com Menu e Rotas
 
 ### Arquivo: `src/components/AppSidebar.tsx`
 
-Adicionar item de menu "Relatorios" com icone `FileBarChart`:
+Adicionar item de menu "Monitoramento" com icone `Activity`:
 
 ```text
-{ title: "Relatorios", url: "/relatorios", icon: FileBarChart, 
+{ title: "Monitoramento", url: "/monitoramento", icon: Activity, 
   roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] }
 ```
 
 ### Arquivo: `src/App.tsx`
 
-Adicionar rota protegida para `/relatorios`.
+Adicionar rota protegida para `/monitoramento`.
 
 ---
 
-## 8. Resumo de Arquivos a Criar/Modificar
+## 7. Resumo de Arquivos a Criar/Modificar
 
 | Arquivo | Acao | Descricao |
 |---------|------|-----------|
-| `src/pages/Relatorios.tsx` | Criar | Pagina principal de relatorios |
-| `src/hooks/useRelatorios.ts` | Criar | Hooks para dados agregados |
-| `src/components/reports/ConsumoChart.tsx` | Criar | Grafico de consumo |
-| `src/components/reports/SessoesChart.tsx` | Criar | Grafico de sessoes |
-| `src/components/reports/AlertasChart.tsx` | Criar | Grafico de alertas |
-| `src/components/reports/TopConsumidoresChart.tsx` | Criar | Top consumidores |
-| `src/components/reports/ReportFilters.tsx` | Criar | Filtros de relatorio |
-| `src/components/reports/ReportCard.tsx` | Criar | Card de metrica |
-| `src/components/reports/ExportButtons.tsx` | Criar | Botoes de exportacao |
-| `src/utils/exportUtils.ts` | Criar | Funcoes de exportacao |
-| `src/components/AppSidebar.tsx` | Modificar | Adicionar menu Relatorios |
-| `src/App.tsx` | Modificar | Adicionar rota /relatorios |
+| `src/pages/Monitoramento.tsx` | Criar | Pagina principal de monitoramento |
+| `src/hooks/useMonitoramento.ts` | Criar | Hooks para dados ao vivo |
+| `src/hooks/useMonitoramentoRealtime.ts` | Criar | Subscricoes Realtime especializadas |
+| `src/components/monitoring/LiveMetricsGrid.tsx` | Criar | Cards de metricas ao vivo |
+| `src/components/monitoring/LiveConsumptionChart.tsx` | Criar | Grafico de consumo em tempo real |
+| `src/components/monitoring/ActiveSessionsTable.tsx` | Criar | Tabela de sessoes ativas |
+| `src/components/monitoring/HotspotsStatusPanel.tsx` | Criar | Status dos hotspots |
+| `src/components/monitoring/EventsFeed.tsx` | Criar | Feed de eventos recentes |
+| `src/components/AppSidebar.tsx` | Modificar | Adicionar menu Monitoramento |
+| `src/App.tsx` | Modificar | Adicionar rota /monitoramento |
 
 ---
 
-## 9. Detalhes Tecnicos
+## 8. Detalhes Tecnicos
 
-### Hook useRelatorioConsumo
+### Interface SessaoAtiva
 
 ```typescript
-interface ConsumoFilters {
-  dataInicio: Date;
-  dataFim: Date;
-  empresaId?: string;
-  embarcacaoId?: string;
-  agruparPor: 'dia' | 'semana' | 'mes';
+interface SessaoAtiva {
+  id: string;
+  tripulante: {
+    id: string;
+    nome: string;
+    cargo: string | null;
+  };
+  dispositivo: {
+    id: string | null;
+    nome: string | null;
+    mac_address: string | null;
+  };
+  hotspot: {
+    id: string;
+    nome: string;
+    embarcacao_nome: string;
+  };
+  inicio: Date;
+  duracao_segundos: number; // calculado
+  bytes_in: number;
+  bytes_out: number;
+  ip_address: string | null;
 }
+```
 
-interface ConsumoData {
-  periodo: string;
+### Buffer Circular para Grafico
+
+```typescript
+interface ConsumoSnapshot {
+  timestamp: Date;
   bytes_download: number;
   bytes_upload: number;
-  total_bytes: number;
+}
+
+// Manter ultimos 60 snapshots (1 por segundo)
+const MAX_SNAPSHOTS = 60;
+```
+
+### Animacao de Atualizacao
+
+Usar CSS transitions para indicar visualmente quando um dado foi atualizado:
+
+```typescript
+// Classe aplicada por 2 segundos apos atualizacao
+.recently-updated {
+  animation: pulse 0.5s ease-in-out;
+  background-color: hsl(var(--primary) / 0.1);
 }
 ```
 
-### Calculo de Consumo Agregado
+### Contador de Duracao ao Vivo
 
-Os dados de consumo vem de duas fontes:
-1. `tripulantes.bytes_consumidos` - consumo individual
-2. `dispositivos_registrados.bytes_consumidos` - consumo por dispositivo
-3. `sessoes_wifi.bytes_in / bytes_out` - consumo por sessao
-
-### Graficos com Recharts
-
-Utilizar componentes ja existentes em `src/components/ui/chart.tsx`:
-- `ChartContainer`
-- `ChartTooltip`
-- `ChartLegend`
-
-### Formatacao de Bytes
-
-Funcao utilitaria para converter bytes em unidades legiveis:
+Para exibir duracao que atualiza a cada segundo:
 
 ```typescript
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+function useLiveDuration(startTime: Date) {
+  const [duration, setDuration] = useState(0);
+  
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDuration(Math.floor((Date.now() - startTime.getTime()) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [startTime]);
+  
+  return duration;
 }
 ```
 
 ---
 
-## 10. Ordem de Implementacao
+## 9. Ordem de Implementacao
 
-1. **Criar hooks de dados** (`useRelatorios.ts`)
+1. **Criar hooks de dados** (`useMonitoramento.ts`, `useMonitoramentoRealtime.ts`)
    - Base para todos os componentes
 
-2. **Criar utilitarios** (`exportUtils.ts`, formatacao)
-   - Funcoes reutilizaveis
+2. **Criar componentes de metricas**
+   - LiveMetricsGrid (cards simples)
 
-3. **Criar componentes de graficos**
-   - ConsumoChart, SessoesChart, AlertasChart, TopConsumidoresChart
+3. **Criar tabela de sessoes**
+   - ActiveSessionsTable com duracao ao vivo
 
-4. **Criar componentes de UI**
-   - ReportFilters, ReportCard, ExportButtons
+4. **Criar painel de hotspots**
+   - HotspotsStatusPanel com tempo de sync
 
-5. **Criar pagina principal** (`Relatorios.tsx`)
-   - Integrar todos os componentes
+5. **Criar feed de eventos**
+   - EventsFeed com updates em tempo real
 
-6. **Integrar no menu e rotas**
+6. **Criar grafico de consumo**
+   - LiveConsumptionChart com buffer circular
+
+7. **Criar pagina principal**
+   - Monitoramento.tsx integrando todos os componentes
+
+8. **Integrar no menu e rotas**
    - AppSidebar.tsx, App.tsx
 
 ---
 
-## 11. Permissoes e Seguranca
+## 10. Permissoes e Seguranca
 
 Os dados serao filtrados automaticamente pelas politicas RLS existentes:
-- Super Admin: ve todos os dados
-- Empresa Admin: ve apenas dados da sua empresa
-- Gerente: ve apenas dados da sua embarcacao
+- Super Admin: ve todas as sessoes de todas as empresas
+- Empresa Admin: ve apenas sessoes da sua empresa
+- Gerente: ve apenas sessoes da sua embarcacao
 
-Nao e necessario implementar filtragem adicional no frontend, pois o Supabase ja aplica as restricoes.
+Nao e necessario implementar filtragem adicional no frontend, pois o Supabase ja aplica as restricoes via RLS.
 
 ---
 
-## 12. Dependencias Adicionais
+## 11. Consideracoes de Performance
+
+### Otimizacoes Implementadas
+
+1. **Debounce em atualizacoes**: Agrupar multiplas atualizacoes Realtime em um unico re-render
+
+2. **Virtualizacao de lista**: Para embarcacoes com muitas sessoes ativas
+
+3. **Buffer limitado**: Grafico mantem apenas ultimos 60 pontos
+
+4. **Subscricao seletiva**: Subscrever apenas as tabelas necessarias baseado no role
+
+5. **Cleanup de subscricoes**: Remover canais ao desmontar componentes
+
+### Intervalo de Atualizacao
+
+- Metricas: Instantaneo via Realtime
+- Grafico: Snapshot a cada segundo
+- Duracao: Contador local a cada segundo
+- Tempo de sync: Calculo local a cada segundo
+
+---
+
+## 12. Estados Visuais
+
+### Indicadores de Status
 
 ```text
-jspdf: ^2.5.1 - Geracao de PDF
-jspdf-autotable: ^3.8.1 - Tabelas em PDF
+Hotspot Online:  ● Verde + "Online"
+Hotspot Offline: ● Vermelho + "Offline"
+Hotspot Alerta:  ● Amarelo + "Alerta"
+
+Sessao Recente:  Destaque por 5 segundos apos inicio
+Consumo Alto:    Badge vermelho quando > threshold
 ```
 
-Recharts ja esta instalado (^2.12.7).
+### Animacoes
+
+- Fade-in para novas sessoes
+- Slide-out para sessoes encerradas
+- Pulse para metricas atualizadas
+- Transicao suave no grafico
 
 ---
 
-## 13. Exemplos de Queries SQL (para referencia)
+## 13. Toggle de Auto-Refresh
 
-### Consumo por Periodo
-```sql
-SELECT 
-  DATE_TRUNC('day', created_at) as periodo,
-  SUM(bytes_in) as download,
-  SUM(bytes_out) as upload
-FROM sessoes_wifi
-WHERE inicio BETWEEN :dataInicio AND :dataFim
-GROUP BY periodo
-ORDER BY periodo;
+Permitir ao usuario pausar as atualizacoes automaticas:
+
+```typescript
+const [autoRefresh, setAutoRefresh] = useState(true);
+
+// Quando desativado:
+// - Para de subscrever a Realtime
+// - Para os intervalos de contador
+// - Mostra indicador visual "Pausado"
 ```
-
-### Top Consumidores
-```sql
-SELECT 
-  t.nome,
-  t.cargo,
-  t.bytes_consumidos
-FROM tripulantes t
-WHERE t.embarcacao_id = :embarcacaoId
-ORDER BY t.bytes_consumidos DESC
-LIMIT 10;
-```
-
-Estas queries serao implementadas usando o SDK do Supabase no hook.
-
