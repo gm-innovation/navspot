@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.mikrotik-script-generator]
 verify_jwt = false
+
+[functions.mikrotik-config-update]
+verify_jwt = false
