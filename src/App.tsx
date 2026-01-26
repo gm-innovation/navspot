@@ -20,6 +20,7 @@ import Alertas from "./pages/Alertas";
 import Configuracoes from "./pages/Configuracoes";
 import Relatorios from "./pages/Relatorios";
 import Usuarios from "./pages/Usuarios";
+import StatusServico from "./pages/StatusServico";
 import CompletarCadastro from "./pages/CompletarCadastro";
 import NotFound from "./pages/NotFound";
 import { AppLayout } from "./components/AppLayout";
@@ -52,6 +53,15 @@ const App = () => (
                   <SidebarProvider>
                     <AppLayout>
                       <Monitoramento />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/status-servico" element={
+                <ProtectedRoute>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <StatusServico />
                     </AppLayout>
                   </SidebarProvider>
                 </ProtectedRoute>

@@ -281,6 +281,47 @@ export type Database = {
         }
         Relationships: []
       }
+      hotspot_status_history: {
+        Row: {
+          created_at: string
+          duration_seconds: number | null
+          ended_at: string | null
+          hotspot_id: string
+          id: string
+          reason: string | null
+          started_at: string
+          status: string
+        }
+        Insert: {
+          created_at?: string
+          duration_seconds?: number | null
+          ended_at?: string | null
+          hotspot_id: string
+          id?: string
+          reason?: string | null
+          started_at?: string
+          status: string
+        }
+        Update: {
+          created_at?: string
+          duration_seconds?: number | null
+          ended_at?: string | null
+          hotspot_id?: string
+          id?: string
+          reason?: string | null
+          started_at?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "hotspot_status_history_hotspot_id_fkey"
+            columns: ["hotspot_id"]
+            isOneToOne: false
+            referencedRelation: "hotspots"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       hotspots: {
         Row: {
           created_at: string
