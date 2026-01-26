@@ -1,288 +1,322 @@
 
-# Gerenciamento de Dispositivos por MAC e Deteccao de Compartilhamento
+# Sistema de Periodo de Renovacao de Quota com Fuso Horario
 
 ## Resumo do Requisito
 
-O sistema precisa de um controle granular de dispositivos por MAC address para:
+O sistema precisa:
 
-1. **Seguranca**: Bloquear/desbloquear dispositivos individuais pelo MAC
-2. **Prevencao de fraude**: Detectar quando um tripulante bloqueado tenta usar credenciais de outro em seu dispositivo ja registrado
-3. **Equipamentos de embarcacao**: Cadastrar e gerenciar dispositivos da embarcacao (GPS, radar, cameras, etc.)
-4. **Alerta de compartilhamento**: Gerar alerta quando um dispositivo ja registrado para um tripulante e usado por outro tripulante (potencial compartilhamento de credenciais)
-5. **Gerenciamento**: Permitir que super_admin, empresa_admin e gerente_embarcacao bloqueiem/desbloqueiem dispositivos
+1. **Periodo da quota**: Definir se o limite de dados renova por hora, dia, semana ou mes
+2. **Renovacao automatica**: Resetar `bytes_consumidos` no inicio de cada periodo
+3. **Fuso horario**: Considerar o timezone correto, pois navios navegam entre diferentes fusos (Brasil tem 3 fusos: -2, -3, -4)
+4. **Flexibilidade**: Permitir configurar fuso por empresa ou embarcacao
 
 ## Arquitetura da Solucao
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                      FLUXO DE DETECCAO E BLOQUEIO                               │
+│                      FLUXO DE RENOVACAO DE QUOTA                                │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  MIKROTIK SYNC                                                                  │
+│  CONFIGURACAO                                                                   │
 │  ─────────────                                                                  │
 │                                                                                 │
-│  1. Tripulante B tenta conectar                                                 │
-│     usando MAC AA:BB:CC:DD:EE:FF                                                │
+│  ┌────────────────────────────────────────────────────────────────────────┐    │
+│  │ Perfil de Velocidade                                                   │    │
+│  │ ──────────────────────────────────────────────────────────────────────│    │
+│  │ Limite de Dados: [500 MB]                                             │    │
+│  │ Periodo:         [▼ Diario / Semanal / Mensal / Por Hora]             │    │
+│  └────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                 │
+│  ┌────────────────────────────────────────────────────────────────────────┐    │
+│  │ Empresa / Embarcacao                                                   │    │
+│  │ ──────────────────────────────────────────────────────────────────────│    │
+│  │ Fuso Horario: [▼ America/Sao_Paulo (-3) / America/Manaus (-4) / ...]  │    │
+│  └────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                 │
+│  VERIFICACAO NO SYNC                                                           │
+│  ────────────────────                                                          │
+│                                                                                 │
+│  mikrotik-sync recebe dados                                                    │
 │           │                                                                     │
 │           ▼                                                                     │
-│  ┌────────────────────────────────────────┐                                     │
-│  │ Verificar: MAC ja registrado           │                                     │
-│  │           para outro tripulante?       │                                     │
-│  └────────────────────────────────────────┘                                     │
+│  ┌────────────────────────────────────────┐                                    │
+│  │ Verificar: Novo periodo iniciou?       │                                    │
+│  │ (baseado no fuso da embarcacao)        │                                    │
+│  └────────────────────────────────────────┘                                    │
 │           │                                                                     │
-│     ┌─────┴─────┐                                                               │
-│     │           │                                                               │
-│   SIM          NAO                                                              │
-│     │           │                                                               │
-│     ▼           ▼                                                               │
-│  ┌────────────────────────┐    ┌────────────────────────┐                       │
-│  │ Gerar ALERTA           │    │ Registrar dispositivo  │                       │
-│  │ "device_sharing"       │    │ para Tripulante B      │                       │
-│  │ severidade: critical   │    │ autorizado: true       │                       │
-│  └────────────────────────┘    └────────────────────────┘                       │
-│           │                                                                     │
-│           ▼                                                                     │
-│  ┌────────────────────────────────────────┐                                     │
-│  │ Verificar: Dispositivo bloqueado?      │                                     │
-│  │            (autorizado = false)        │                                     │
-│  └────────────────────────────────────────┘                                     │
-│           │                                                                     │
-│     ┌─────┴─────┐                                                               │
-│     │           │                                                               │
-│   SIM          NAO                                                              │
-│     │           │                                                               │
-│     ▼           ▼                                                               │
-│  ┌────────────────────────┐    ┌────────────────────────┐                       │
-│  │ Adicionar acao:        │    │ Conexao permitida      │                       │
-│  │ "kick_device"          │    │                        │                       │
-│  │ com razao do bloqueio  │    │                        │                       │
-│  └────────────────────────┘    └────────────────────────┘                       │
+│     ┌─────┴─────┐                                                              │
+│     │           │                                                              │
+│   SIM          NAO                                                             │
+│     │           │                                                              │
+│     ▼           ▼                                                              │
+│  ┌────────────────────────┐    ┌────────────────────────┐                      │
+│  │ Resetar bytes_consumidos│    │ Continuar contagem    │                      │
+│  │ para zero              │    │ normal                 │                      │
+│  │ Atualizar quota_reset_at│    │                        │                      │
+│  └────────────────────────┘    └────────────────────────┘                      │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Mudancas no Banco de Dados
 
-### 1. Nova coluna em dispositivos_registrados
+### 1. Tabela perfis_velocidade
 
-| Campo | Tipo | Descricao |
-|-------|------|-----------|
-| `embarcacao_id` | UUID (nullable) | Para dispositivos de embarcacao (sem tripulante) |
-| `bloqueio_motivo` | TEXT (nullable) | Motivo do bloqueio quando autorizado=false |
-| `bloqueado_por` | UUID (nullable) | Usuario que bloqueou (FK para auth.users) |
-| `bloqueado_at` | TIMESTAMP (nullable) | Data/hora do bloqueio |
+Adicionar colunas:
 
-### 2. Novo tipo de alerta
+| Campo | Tipo | Default | Descricao |
+|-------|------|---------|-----------|
+| `quota_periodo` | TEXT | 'diario' | Periodo de renovacao: 'hora', 'diario', 'semanal', 'mensal' |
 
-Adicionar ao sistema de alertas:
+### 2. Tabela empresas
 
-| tipo | severidade | Descricao |
-|------|------------|-----------|
-| `device_sharing` | critical | MAC usado por tripulante diferente do registrado |
-| `blocked_device_attempt` | warning | Tentativa de conexao com dispositivo bloqueado |
+Adicionar coluna de fuso horario padrao:
 
-## Componentes a Implementar
+| Campo | Tipo | Default | Descricao |
+|-------|------|---------|-----------|
+| `timezone` | TEXT | 'America/Sao_Paulo' | Fuso horario padrao da empresa |
 
-### 1. Pagina de Dispositivos Dedicada
+### 3. Tabela embarcacoes
 
-**Arquivo:** `src/pages/Dispositivos.tsx`
+Adicionar coluna de fuso horario (pode sobrescrever o da empresa):
 
-Uma pagina central para gerenciar todos os dispositivos:
-- Listar todos os dispositivos registrados (com filtros)
-- Ver a qual tripulante/embarcacao pertence
-- Bloquear/desbloquear com um clique
-- Cadastrar dispositivos de embarcacao (sem vinculo a tripulante)
-- Ver historico de uso e consumo
+| Campo | Tipo | Default | Descricao |
+|-------|------|---------|-----------|
+| `timezone` | TEXT | NULL | Fuso especifico da embarcacao (se NULL, usa da empresa) |
 
-### 2. Atualizar Edge Function mikrotik-sync
+### 4. Tabela tripulantes
 
-**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
+Adicionar coluna para rastrear ultima renovacao:
 
-Adicionar logica para:
-1. Verificar se MAC ja esta registrado para outro tripulante
-2. Gerar alerta `device_sharing` se detectar compartilhamento
-3. Verificar campo `autorizado` do dispositivo
-4. Adicionar acao `kick_device` se dispositivo bloqueado
-5. Incluir lista de MACs bloqueados na resposta
+| Campo | Tipo | Default | Descricao |
+|-------|------|---------|-----------|
+| `quota_reset_at` | TIMESTAMP | NULL | Data/hora do ultimo reset de quota |
 
-### 3. Hook para Gerenciamento de Dispositivos
+## Fusos Horarios do Brasil
 
-**Arquivo:** `src/hooks/useDispositivosRegistrados.ts` (atualizar)
+Os navios brasileiros navegam principalmente nestas zonas:
 
-Adicionar:
-- `useDispositivosAll()` - Listar todos dispositivos (com filtros)
-- `useBlockDispositivo()` - Bloquear com motivo
-- `useDispositivosByEmbarcacao()` - Dispositivos de embarcacao
-- `useDispositivoHistory()` - Historico de sessoes
+| Fuso | Timezone IANA | Regioes |
+|------|---------------|---------|
+| UTC-2 | America/Noronha | Fernando de Noronha |
+| UTC-3 | America/Sao_Paulo | Sul, Sudeste, Nordeste costeiro |
+| UTC-4 | America/Manaus | Amazonia ocidental |
 
-### 4. Componente de Bloqueio Rapido
+## Logica de Renovacao
 
-Para usar na pagina de Alertas quando receber alerta de compartilhamento:
-- Botao para bloquear dispositivo diretamente do alerta
-- Opcao de bloquear o tripulante que compartilhou
-
-## Interface da Pagina de Dispositivos
-
-```text
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              Dispositivos                                        │
-│  Gerencie todos os dispositivos cadastrados no sistema                          │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│  ┌─────────┬─────────┬─────────┬─────────┬─────────┐                            │
-│  │  Total  │Autoriz. │Bloquead.│Tripul.  │Embarc.  │                            │
-│  │   45    │   38    │    4    │   41    │    4    │                            │
-│  └─────────┴─────────┴─────────┴─────────┴─────────┘                            │
-│                                                                                 │
-│  Filtros: [Todos ▼] [Embarcacao ▼] [Tripulante ▼] [Status ▼] [Buscar...]       │
-│                                                                                 │
-│  ┌───────────────────────────────────────────────────────────────────────────┐ │
-│  │ Dispositivo        │ MAC               │ Vinculo       │ Status │ Acoes   │ │
-│  ├───────────────────────────────────────────────────────────────────────────┤ │
-│  │ iPhone de Joao     │ AA:BB:CC:DD:EE:FF │ Joao Silva    │ ✓      │ [···]   │ │
-│  │ Notebook GPS       │ 11:22:33:44:55:66 │ Navio Alpha   │ ✓      │ [···]   │ │
-│  │ Galaxy Suspeito    │ 00:11:22:33:44:55 │ --bloqueado-- │ ✗      │ [···]   │ │
-│  │ Radar Principal    │ AA:11:BB:22:CC:33 │ Navio Beta    │ ✓      │ [···]   │ │
-│  └───────────────────────────────────────────────────────────────────────────┘ │
-│                                                                                 │
-│  [+ Novo Dispositivo]  [+ Equipamento de Embarcacao]                            │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Logica de Deteccao no mikrotik-sync
+### Verificacao no mikrotik-sync
 
 ```typescript
-// Pseudocodigo para deteccao de compartilhamento
-for (const activeUser of payload.active_users) {
-  // Verificar se MAC ja esta registrado para OUTRO tripulante
-  const { data: existingDevice } = await supabase
-    .from('dispositivos_registrados')
-    .select('id, tripulante_id, autorizado, tripulante:tripulantes(nome, login_wifi)')
-    .eq('mac_address', activeUser.mac)
-    .maybeSingle()
-
-  if (existingDevice) {
-    // Dispositivo existe - verificar se pertence ao mesmo tripulante
-    const currentTripulante = await getTripulanteByLogin(activeUser.user)
+function shouldResetQuota(
+  tripulante: { quota_reset_at: string | null },
+  perfil: { quota_periodo: string },
+  timezone: string
+): boolean {
+  if (!tripulante.quota_reset_at) return true // Primeira vez
+  
+  const now = new Date()
+  const lastReset = new Date(tripulante.quota_reset_at)
+  
+  // Converter para timezone local
+  const nowLocal = toZonedTime(now, timezone)
+  const lastResetLocal = toZonedTime(lastReset, timezone)
+  
+  switch (perfil.quota_periodo) {
+    case 'hora':
+      // Resetar se hora mudou
+      return nowLocal.getHours() !== lastResetLocal.getHours() ||
+             nowLocal.getDate() !== lastResetLocal.getDate()
     
-    if (existingDevice.tripulante_id !== currentTripulante.id) {
-      // ALERTA: MAC registrado para outro tripulante!
-      await createAlert({
-        tipo: 'device_sharing',
-        severidade: 'critical',
-        mensagem: `Dispositivo ${activeUser.mac} registrado para ${existingDevice.tripulante.nome} ` +
-                  `sendo usado por ${activeUser.user}`,
-        tripulante_id: existingDevice.tripulante_id, // dono original
-        hotspot_id: hotspot.id,
-        embarcacao_id: hotspot.embarcacao_id,
-        empresa_id: embarcacao?.empresa_id
-      })
-    }
+    case 'diario':
+      // Resetar se passou da meia-noite
+      return nowLocal.getDate() !== lastResetLocal.getDate() ||
+             nowLocal.getMonth() !== lastResetLocal.getMonth()
     
-    // Verificar se dispositivo esta bloqueado
-    if (!existingDevice.autorizado) {
-      // Adicionar acao para kickar o dispositivo
-      kickActions.push({
-        type: 'kick_device',
-        payload: {
-          mac: activeUser.mac,
-          user: activeUser.user,
-          reason: 'Dispositivo bloqueado pelo administrador'
-        }
-      })
-      
-      // Criar alerta de tentativa
-      await createAlert({
-        tipo: 'blocked_device_attempt',
-        severidade: 'warning',
-        mensagem: `Tentativa de conexao com dispositivo bloqueado: ${activeUser.mac}`
-      })
-    }
+    case 'semanal':
+      // Resetar se passou domingo->segunda (ou inicio da semana)
+      return getWeekNumber(nowLocal) !== getWeekNumber(lastResetLocal)
+    
+    case 'mensal':
+      // Resetar se mudou de mes
+      return nowLocal.getMonth() !== lastResetLocal.getMonth() ||
+             nowLocal.getFullYear() !== lastResetLocal.getFullYear()
+    
+    default:
+      return false // 'ilimitado' ou desconhecido
   }
 }
+```
+
+### Execucao do Reset
+
+Quando detectar novo periodo:
+
+```typescript
+if (shouldResetQuota(tripulante, perfil, embarcacaoTimezone)) {
+  await supabase
+    .from('tripulantes')
+    .update({
+      bytes_consumidos: 0,
+      quota_reset_at: new Date().toISOString()
+    })
+    .eq('id', tripulante.id)
+  
+  console.log(`[mikrotik-sync] Quota renovada para ${tripulante.nome}`)
+}
+```
+
+## Interface do Formulario de Perfil
+
+```text
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                        Perfil de Velocidade                                     │
+├────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                │
+│  Limites de Banda                                                              │
+│  ──────────────────────────────────────────────────────────────────────────── │
+│  Download    [10M           ]     Upload    [5M           ]                   │
+│                                                                                │
+│  Limite de Dados                                                               │
+│  ──────────────────────────────────────────────────────────────────────────── │
+│  Quota       [500           ] MB                                              │
+│  Periodo     [▼ Diario                                    ]                   │
+│              ├─ Por Hora (renova a cada hora cheia)                           │
+│              ├─ Diario (renova a meia-noite)                                  │
+│              ├─ Semanal (renova toda segunda-feira)                           │
+│              └─ Mensal (renova no dia 1)                                      │
+│                                                                                │
+│  ℹ️ O horario de renovacao segue o fuso da embarcacao/empresa.                │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Interface de Configuracao de Fuso (Empresa)
+
+```text
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                        Configuracoes da Empresa                                 │
+├────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                │
+│  Fuso Horario Padrao                                                           │
+│  ──────────────────────────────────────────────────────────────────────────── │
+│  [▼ America/Sao_Paulo (UTC-3) - Brasilia                              ]       │
+│                                                                                │
+│  Opcoes disponiveis:                                                           │
+│  • America/Noronha (UTC-2) - Fernando de Noronha                              │
+│  • America/Sao_Paulo (UTC-3) - Brasilia, SP, RJ                               │
+│  • America/Manaus (UTC-4) - Manaus, Amazonia                                  │
+│  • America/Rio_Branco (UTC-5) - Acre                                          │
+│                                                                                │
+│  ℹ️ Embarcacoes podem ter fuso diferente se navegarem em outras regioes.      │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Interface de Configuracao de Fuso (Embarcacao)
+
+```text
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                        Configuracoes da Embarcacao                              │
+├────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                │
+│  Fuso Horario                                                                  │
+│  ──────────────────────────────────────────────────────────────────────────── │
+│  [✓] Usar fuso horario da empresa (America/Sao_Paulo)                         │
+│  [ ] Definir fuso horario especifico                                          │
+│      [▼ America/Manaus (UTC-4)                                        ]       │
+│                                                                                │
+│  ℹ️ Configure um fuso especifico se a embarcacao navegar frequentemente       │
+│     em areas com fuso diferente da sede da empresa.                           │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Arquivos a Criar/Modificar
 
 | Arquivo | Acao | Descricao |
 |---------|------|-----------|
-| Migracao SQL | Criar | Adicionar colunas embarcacao_id, bloqueio_motivo, bloqueado_por, bloqueado_at |
-| `src/pages/Dispositivos.tsx` | Criar | Pagina de gerenciamento de dispositivos |
-| `src/App.tsx` | Modificar | Adicionar rota /dispositivos |
-| `src/components/AppSidebar.tsx` | Modificar | Adicionar item Dispositivos no menu |
-| `src/hooks/useDispositivosRegistrados.ts` | Modificar | Adicionar hooks de listagem e bloqueio |
-| `supabase/functions/mikrotik-sync/index.ts` | Modificar | Adicionar deteccao de compartilhamento |
-| `src/pages/Alertas.tsx` | Modificar | Adicionar botao de bloquear dispositivo em alertas device_sharing |
+| Migracao SQL | Criar | Adicionar quota_periodo, timezone, quota_reset_at |
+| `src/hooks/usePerfisVelocidade.ts` | Modificar | Adicionar constante PERIODOS_QUOTA |
+| `src/pages/PerfisVelocidade.tsx` | Modificar | Adicionar campo de periodo no formulario |
+| `src/hooks/useEmpresas.ts` | Modificar | Adicionar timezone no CRUD |
+| `src/hooks/useEmbarcacoes.ts` | Modificar | Adicionar timezone no CRUD |
+| `src/components/forms/EmbarcacaoForm.tsx` | Modificar | Adicionar campo de timezone |
+| `supabase/functions/mikrotik-sync/index.ts` | Modificar | Implementar logica de renovacao |
 
-## Formulario de Novo Dispositivo de Embarcacao
+## Exibicao de Informacao de Quota
+
+Na pagina de Tripulantes ou Dashboard, mostrar:
 
 ```text
-┌────────────────────────────────────────────────────┐
-│        Novo Equipamento de Embarcacao              │
-│                                                    │
-│  MAC Address    [AA:BB:CC:DD:EE:FF       ]        │
-│  Nome           [Radar Principal         ]        │
-│  Tipo           [▼ Equipamento           ]        │
-│  Embarcacao     [▼ Navio Alpha           ]        │
-│  Descricao      [_________________________]       │
-│                                                    │
-│  [✓] Autorizado a conectar                        │
-│                                                    │
-│           [Cancelar]  [Cadastrar]                 │
-└────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│  Joao Silva                                                                    │
+│  ──────────────────────────────────────────────────────────────────────────── │
+│  Quota: 450 MB / 500 MB (90%)  [==========-]                                  │
+│  Periodo: Diario                                                              │
+│  Renova em: 2h 15min (meia-noite horario local)                               │
+│  Fuso: America/Sao_Paulo (UTC-3)                                              │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Fluxo de Alerta e Acao
+## Casos de Uso Especiais
 
-```text
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                        ALERTA: Compartilhamento Detectado                        │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│  ⚠️ CRITICO - device_sharing                                   há 2 minutos   │
-│                                                                                 │
-│  Dispositivo AA:BB:CC:DD:EE:FF (iPhone de Joao)                                │
-│  registrado para Joao Silva sendo usado por Pedro Santos                       │
-│                                                                                 │
-│  Embarcacao: Navio Alpha                                                        │
-│  Hotspot: Hotspot-Alpha-01                                                      │
-│                                                                                 │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │ Acoes Disponiveis                                                       │   │
-│  ├─────────────────────────────────────────────────────────────────────────┤   │
-│  │ [Bloquear Dispositivo] - Impede este MAC de conectar                    │   │
-│  │ [Bloquear Tripulante] - Bloqueia Pedro Santos (quem usou)               │   │
-│  │ [Desconectar Agora] - Kicka a sessao atual                              │   │
-│  │ [Ignorar] - Marcar como resolvido sem acao                              │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
+### 1. Navio muda de fuso
+
+Se o navio navega de Sao Paulo (-3) para Manaus (-4):
+- O admin pode atualizar o timezone da embarcacao
+- O sistema recalcula o periodo com base no novo fuso
+- Comportamento conservador: se a quota deveria resetar mas o fuso mudou, aguarda proximo ciclo
+
+### 2. Tripulante sem perfil (config personalizada)
+
+Para tripulantes com `config_personalizada`:
+- Adicionar campo `quota_periodo` no JSON
+- Usar timezone da embarcacao normalmente
+
+### 3. Primeiro acesso
+
+Se `quota_reset_at` for NULL:
+- Setar como momento atual
+- Iniciar contagem do zero
+
+## Alerta de Renovacao
+
+Opcionalmente, gerar alerta informativo quando quota renovar:
+
+```typescript
+// Tipo: quota_renewed (info)
+await createAlertIfNotRecent(supabase, {
+  tipo: 'quota_renewed',
+  severidade: 'info',
+  mensagem: `Quota renovada para ${tripulante.nome} - Periodo: ${perfil.quota_periodo}`,
+  tripulante_id: tripulante.id,
+  embarcacao_id: embarcacao.id
+}, 60 * 24) // Apenas 1 alerta por dia por tripulante
 ```
 
 ## Ordem de Implementacao
 
-1. **Migracao SQL**: Adicionar colunas a tabela dispositivos_registrados
-2. **Hooks atualizados**: Adicionar funcionalidades de bloqueio e listagem global
-3. **Pagina Dispositivos**: Criar UI de gerenciamento
-4. **Rotas e Menu**: Adicionar ao App.tsx e AppSidebar.tsx
-5. **mikrotik-sync**: Implementar deteccao de compartilhamento
-6. **Alertas**: Adicionar acoes de bloqueio direto
-7. **Testes**: Simular cenarios de compartilhamento
+1. **Migracao SQL**: Adicionar colunas quota_periodo, timezone, quota_reset_at
+2. **Constantes e hooks**: Adicionar PERIODOS_QUOTA e TIMEZONES_BRASIL
+3. **Formulario de Perfil**: Adicionar campo de periodo
+4. **Formulario de Embarcacao**: Adicionar campo de timezone
+5. **mikrotik-sync**: Implementar logica de renovacao
+6. **UI de exibicao**: Mostrar info de renovacao na lista de tripulantes
+7. **Testes**: Simular mudancas de periodo e fuso
 
-## Consideracoes de Seguranca
+## Consideracoes Tecnicas
 
-1. **RLS Policies**: Manter politicas existentes para dispositivos
-2. **Auditoria**: Registrar quem bloqueou e quando (bloqueado_por, bloqueado_at)
-3. **Limites de taxa**: Evitar flood de alertas para o mesmo MAC
-4. **Notificacao**: Alertas criticos devem ser vistos por todos os niveis (super_admin, empresa_admin, gerente)
+1. **Performance**: A verificacao de periodo e feita apenas durante o sync, nao em tempo real
+2. **Precisao**: O reset pode ter delay de alguns minutos (intervalo do sync)
+3. **Timezone library**: Usar funcoes nativas de Date com toLocaleString ou biblioteca como date-fns-tz
+4. **Historico**: O campo `quota_reset_at` serve para auditoria e depuracao
 
 ## Beneficios
 
 | Funcionalidade | Beneficio |
 |----------------|-----------|
-| Bloqueio por MAC | Impede dispositivo especifico de conectar, mesmo com credenciais validas |
-| Deteccao de compartilhamento | Identifica uso indevido de credenciais entre tripulantes |
-| Equipamentos de embarcacao | Permite monitorar e controlar equipamentos de rede da embarcacao |
-| Acoes rapidas no alerta | Reduz tempo de resposta a incidentes de seguranca |
-| Historico de bloqueios | Auditoria completa de acoes de seguranca |
+| Periodo configuravel | Flexibilidade para diferentes cenarios de uso |
+| Fuso horario | Precisao para embarcacoes em diferentes regioes |
+| Renovacao automatica | Sem necessidade de intervencao manual |
+| Hierarquia de timezone | Empresa define padrao, embarcacao pode sobrescrever |
+| Auditoria | Registro de quando a quota foi renovada |
