@@ -17,3 +17,6 @@ verify_jwt = false
 
 [functions.tripulante-self-register]
 verify_jwt = false
+
+[functions.send-alert-notification]
+verify_jwt = false
