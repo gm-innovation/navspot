@@ -7,7 +7,6 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AuthProvider } from "@/contexts/AuthContext";
 import Login from "./pages/Login";
-import Cadastro from "./pages/Cadastro";
 import Dashboard from "./pages/Dashboard";
 import Hotspots from "./pages/Hotspots";
 import Embarcacoes from "./pages/Embarcacoes";
@@ -17,6 +16,7 @@ import ListasAcesso from "./pages/ListasAcesso";
 import RegrasAcesso from "./pages/RegrasAcesso";
 import Alertas from "./pages/Alertas";
 import Configuracoes from "./pages/Configuracoes";
+import Usuarios from "./pages/Usuarios";
 import NotFound from "./pages/NotFound";
 import { AppLayout } from "./components/AppLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
@@ -33,7 +33,6 @@ const App = () => (
           <AuthProvider>
             <Routes>
               <Route path="/login" element={<Login />} />
-              <Route path="/cadastro" element={<Cadastro />} />
               <Route path="/" element={
                 <ProtectedRoute>
                   <SidebarProvider>
@@ -111,6 +110,15 @@ const App = () => (
                   <SidebarProvider>
                     <AppLayout>
                       <Configuracoes />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/usuarios" element={
+                <ProtectedRoute allowedRoles={['super_admin', 'empresa_admin']}>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <Usuarios />
                     </AppLayout>
                   </SidebarProvider>
                 </ProtectedRoute>

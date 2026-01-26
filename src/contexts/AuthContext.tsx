@@ -8,7 +8,7 @@ export type UserRole = 'super_admin' | 'empresa_admin' | 'gerente_embarcacao';
 export interface AppUser {
   id: string;
   email: string;
-  role: UserRole;
+  role: UserRole | null;
   empresa_id?: string;
   embarcacao_id?: string;
 }
@@ -17,10 +17,10 @@ interface AuthContextType {
   user: AppUser | null;
   session: Session | null;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  signup: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
   isAuthenticated: boolean;
   isLoading: boolean;
+  isPendingApproval: boolean;
   hasRole: (roles: UserRole[]) => boolean;
 }
 
@@ -79,12 +79,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         embarcacao_id: roleData.embarcacao_id || undefined,
       });
     } else {
-      // User exists but has no role assigned
-      console.warn('User has no role assigned:', supabaseUser.id);
+      // User exists but has no role assigned - pending approval
+      console.warn('User has no role assigned (pending approval):', supabaseUser.id);
       setUser({
         id: supabaseUser.id,
         email: supabaseUser.email || '',
-        role: 'gerente_embarcacao', // Default role - will have limited access
+        role: null, // Pending approval - no access
       });
     }
   };
@@ -146,40 +146,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signup = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const redirectUrl = `${window.location.origin}/`;
-      
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          emailRedirectTo: redirectUrl,
-        },
-      });
-
-      if (error) {
-        console.error('Signup error:', error);
-        
-        // Handle specific error cases
-        if (error.message.includes('already registered')) {
-          return { success: false, error: 'Este email já está cadastrado' };
-        }
-        
-        return { success: false, error: error.message };
-      }
-
-      if (data.user) {
-        return { success: true };
-      }
-
-      return { success: false, error: 'Erro desconhecido no cadastro' };
-    } catch (error) {
-      console.error('Signup exception:', error);
-      return { success: false, error: 'Erro inesperado no cadastro' };
-    }
-  };
-
   const logout = async () => {
     try {
       await supabase.auth.signOut();
@@ -192,17 +158,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const hasRole = (roles: UserRole[]): boolean => {
-    return user ? roles.includes(user.role) : false;
+    return user && user.role ? roles.includes(user.role) : false;
   };
+
+  const isPendingApproval = !!session && !!user && user.role === null;
 
   const value = {
     user,
     session,
     login,
-    signup,
     logout,
-    isAuthenticated: !!session && !!user,
+    isAuthenticated: !!session && !!user && user.role !== null,
     isLoading,
+    isPendingApproval,
     hasRole,
   };
 
