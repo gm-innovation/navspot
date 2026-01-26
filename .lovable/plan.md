@@ -1,39 +1,62 @@
 
 
-# Plano: Correção Completa do Sistema de Alertas e Notificações
+# Plano: Conformidade com Marco Civil da Internet e LGPD
 
-## Diagnóstico Detalhado
+## Diagnóstico Atual
 
-Após análise do código, identifiquei **múltiplos problemas graves**:
+Após análise detalhada do sistema NAVSPOT, identifiquei as seguintes lacunas de conformidade:
 
-### Problemas Encontrados
+### Marco Civil da Internet (Lei 12.965/2014)
 
-| Componente | Status | Descrição |
-|-----------|--------|-----------|
-| Botão "Atualizar" | Funcionando | Chama `refetch()` corretamente |
-| Botão "Configurar Alertas" | **NÃO FUNCIONA** | Botão sem `onClick`, apenas decorativo |
-| Badge "Configurar" (Webhook) | **NÃO FUNCIONA** | Apenas texto estático, sem ação |
-| Badge "Configurar" (Escalação) | **NÃO FUNCIONA** | Apenas texto estático, sem ação |
-| Notificações por Email | **NÃO EXISTE** | Não há edge function nem integração |
-| Notificações por WhatsApp | **NÃO EXISTE** | Não há edge function nem integração |
-| Ícone do Sininho (Bell) | **NÃO FUNCIONA** | Badge estático "3", sem dados reais |
+| Requisito | Status | Observação |
+|-----------|--------|------------|
+| Guarda de logs de acesso por 6 meses | **NÃO IMPLEMENTADO** | sessoes_wifi não tem política de retenção |
+| Registro de IP e data/hora | **PARCIAL** | Existe ip_address e timestamps mas sem garantia de retenção |
+| Disponibilização sob ordem judicial | **NÃO IMPLEMENTADO** | Falta sistema de exportação forense |
 
-### Evidências no Código
+### LGPD (Lei 13.709/2018)
 
-```typescript
-// Alertas.tsx - linha 147-150
-<Button variant="outline">
-  <Settings className="h-4 w-4 mr-2" />
-  Configurar Alertas  // ❌ Sem onClick!
-</Button>
+| Requisito | Status | Observação |
+|-----------|--------|------------|
+| Base legal para tratamento | **NÃO IMPLEMENTADO** | Falta consentimento explícito |
+| Política de Privacidade | **NÃO EXISTE** | Nenhuma página ou modal |
+| Termos de Uso | **NÃO EXISTE** | Nenhum aceite registrado |
+| Direito de acesso | **NÃO IMPLEMENTADO** | Tripulante não consegue ver seus dados |
+| Direito de exclusão | **NÃO IMPLEMENTADO** | Não existe processo de anonimização |
+| Direito de retificação | **PARCIAL** | Edição existe mas sem portal do titular |
+| Registro de consentimento | **NÃO EXISTE** | Nenhuma tabela de consentimentos |
+| Minimização de dados | **PARCIAL** | CPF coletado mas não é obrigatório |
+| Encarregado (DPO) | **NÃO EXISTE** | Sem informações de contato |
+| Relatório de impacto (RIPD) | **NÃO EXISTE** | Sem documentação |
 
-// Alertas.tsx - linhas 503-505, 538-540
-<Badge className="bg-muted text-muted-foreground">
-  Configurar  // ❌ Apenas texto estático!
-</Badge>
+---
 
-// Configuracoes.tsx - Switches sem estado
-<Switch defaultChecked />  // ❌ Não salva em lugar nenhum!
+## Dados Pessoais Tratados
+
+O sistema coleta e processa os seguintes dados pessoais de tripulantes:
+
+```text
+tripulantes:
+  - nome (obrigatório)
+  - email (opcional)
+  - cpf (opcional)
+  - cargo (opcional)
+  - login_wifi / senha_wifi (credenciais)
+  - bytes_consumidos (comportamento)
+  - ultimo_login (comportamento)
+
+sessoes_wifi:
+  - mac_address (identificador único)
+  - ip_address (identificador)
+  - inicio / fim (comportamento)
+  - bytes_in / bytes_out (comportamento)
+
+dispositivos_registrados:
+  - mac_address (identificador único)
+  - bytes_consumidos (comportamento)
+
+empresas:
+  - cnpj, email, telefone, endereco (dados comerciais)
 ```
 
 ---
@@ -42,219 +65,348 @@ Após análise do código, identifiquei **múltiplos problemas graves**:
 
 ```text
 +------------------------------------------------------------------+
-|                      SISTEMA DE NOTIFICAÇÕES                      |
+|                    CONFORMIDADE LGPD/MARCO CIVIL                  |
 +------------------------------------------------------------------+
 |                                                                  |
-|  [TABELA: notification_settings]                                 |
-|  - empresa_id, email_enabled, whatsapp_enabled, webhook_enabled  |
-|  - email_destinatarios, whatsapp_numero, webhook_url             |
-|  - escalacao_minutos, auto_resolver_horas                        |
+|  [1] CONSENTIMENTO E TERMOS                                      |
+|  +--------------------+  +--------------------+                  |
+|  | Política Privacidade|  | Termos de Uso     |                  |
+|  | /privacidade        |  | /termos           |                  |
+|  +--------------------+  +--------------------+                  |
 |                                                                  |
-|  [EDGE FUNCTION: send-alert-notification]                        |
-|  - Dispara quando alerta crítico é criado                        |
-|  - Envia para canais configurados (Email/WhatsApp/Webhook)       |
+|  [2] REGISTRO DE CONSENTIMENTOS (tabela: consentimentos)         |
+|  - tripulante_id, tipo, versao, aceito_em, ip_address            |
 |                                                                  |
-|  [TRIGGER: on_alerta_insert]                                     |
-|  - Detecta novos alertas críticos                                |
-|  - Chama edge function para notificar                            |
+|  [3] PORTAL DO TITULAR                                           |
+|  +--------------------------------------------------+            |
+|  | Meus Dados | Histórico | Solicitar Exclusão      |            |
+|  | Ver dados  | Sessions  | Anonimização            |            |
+|  +--------------------------------------------------+            |
+|                                                                  |
+|  [4] GUARDA DE LOGS (Marco Civil)                                |
+|  - Retenção mínima de 6 meses para sessoes_wifi                  |
+|  - Exportação para ordem judicial                                |
+|                                                                  |
+|  [5] AUDITORIA                                                   |
+|  - Tabela audit_logs para rastreabilidade                        |
 |                                                                  |
 +------------------------------------------------------------------+
 ```
 
 ---
 
-## Parte 1: Tabela de Configurações de Notificação
+## Parte 1: Tabelas para Conformidade
 
-### Migração: `notification_settings`
+### 1.1 Tabela de Consentimentos
+
+Registra cada aceite do titular de dados:
 
 ```sql
-CREATE TABLE public.notification_settings (
+CREATE TABLE public.consentimentos (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  empresa_id UUID REFERENCES empresas(id) ON DELETE CASCADE,
-  
-  -- Canais
-  email_enabled BOOLEAN DEFAULT true,
-  email_destinatarios TEXT[], -- Array de emails
-  
-  whatsapp_enabled BOOLEAN DEFAULT false,
-  whatsapp_numeros TEXT[], -- Array de números
-  
-  webhook_enabled BOOLEAN DEFAULT false,
-  webhook_url TEXT,
-  webhook_secret TEXT,
-  
-  -- Configurações Automáticas
-  auto_resolver_enabled BOOLEAN DEFAULT false,
-  auto_resolver_horas INTEGER DEFAULT 24,
-  
-  agrupar_enabled BOOLEAN DEFAULT true,
-  agrupar_intervalo_minutos INTEGER DEFAULT 5,
-  
-  escalacao_enabled BOOLEAN DEFAULT false,
-  escalacao_minutos INTEGER DEFAULT 30,
-  escalacao_destinatarios TEXT[],
-  
-  -- Filtros
-  notificar_severidades TEXT[] DEFAULT ARRAY['critical', 'warning'],
-  
+  tripulante_id UUID REFERENCES tripulantes(id) ON DELETE CASCADE,
+  tipo TEXT NOT NULL, -- 'termos_uso', 'politica_privacidade', 'marketing'
+  versao TEXT NOT NULL, -- 'v1.0', 'v1.1'
+  aceito BOOLEAN NOT NULL,
+  aceito_em TIMESTAMPTZ DEFAULT now(),
+  ip_address INET,
+  user_agent TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_consentimentos_tripulante ON consentimentos(tripulante_id);
+CREATE INDEX idx_consentimentos_tipo ON consentimentos(tipo, versao);
+```
+
+### 1.2 Tabela de Auditoria
+
+Registra todas as ações no sistema (exigido pelo Marco Civil):
+
+```sql
+CREATE TABLE public.audit_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID, -- auth.users.id (admin/gerente) ou NULL para sistema
+  tripulante_id UUID, -- tripulante afetado
+  acao TEXT NOT NULL, -- 'create', 'update', 'delete', 'access', 'export'
+  tabela TEXT NOT NULL, -- nome da tabela
+  registro_id UUID, -- id do registro afetado
+  dados_anteriores JSONB,
+  dados_novos JSONB,
+  ip_address INET,
+  user_agent TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_audit_logs_data ON audit_logs(created_at);
+CREATE INDEX idx_audit_logs_tripulante ON audit_logs(tripulante_id);
+CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
+```
+
+### 1.3 Tabela de Solicitações LGPD
+
+Para direitos de acesso, retificação e exclusão:
+
+```sql
+CREATE TABLE public.solicitacoes_lgpd (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tripulante_id UUID REFERENCES tripulantes(id),
+  tipo TEXT NOT NULL, -- 'acesso', 'retificacao', 'exclusao', 'portabilidade'
+  status TEXT DEFAULT 'pendente', -- 'pendente', 'em_analise', 'concluida', 'recusada'
+  descricao TEXT,
+  resposta TEXT,
+  atendido_por UUID, -- user_id do admin
   created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now(),
-  
-  UNIQUE(empresa_id)
+  atendido_em TIMESTAMPTZ,
+  prazo_legal TIMESTAMPTZ -- 15 dias úteis pela LGPD
+);
+```
+
+### 1.4 Configurações LGPD por Empresa
+
+```sql
+CREATE TABLE public.lgpd_config (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  empresa_id UUID REFERENCES empresas(id) ON DELETE CASCADE UNIQUE,
+  razao_social TEXT NOT NULL,
+  cnpj TEXT NOT NULL,
+  dpo_nome TEXT, -- Encarregado de Dados
+  dpo_email TEXT,
+  dpo_telefone TEXT,
+  endereco_sede TEXT,
+  politica_privacidade_versao TEXT DEFAULT 'v1.0',
+  termos_uso_versao TEXT DEFAULT 'v1.0',
+  retencao_logs_meses INTEGER DEFAULT 12, -- Mínimo 6 pelo Marco Civil
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
 );
 ```
 
 ---
 
-## Parte 2: Modal de Configuração de Alertas
+## Parte 2: Páginas de Termos e Privacidade
 
-### Arquivo: `src/components/modals/AlertSettingsModal.tsx`
+### 2.1 Página de Política de Privacidade
 
-Modal completo com abas para:
+**Arquivo:** `src/pages/PoliticaPrivacidade.tsx`
+
+Conteúdo obrigatório pela LGPD:
+- Identificação do controlador (empresa)
+- Dados do encarregado (DPO)
+- Quais dados são coletados
+- Finalidade do tratamento
+- Base legal (consentimento/legítimo interesse)
+- Compartilhamento com terceiros
+- Período de retenção
+- Direitos do titular
+- Como exercer os direitos
+- Canal de contato
+
+### 2.2 Página de Termos de Uso
+
+**Arquivo:** `src/pages/TermosUso.tsx`
+
+Conteúdo para Marco Civil:
+- Regras de uso do serviço WiFi
+- Responsabilidades do usuário
+- Proibições (acesso ilegal, etc.)
+- Monitoramento de rede
+- Guarda de registros (6 meses)
+
+---
+
+## Parte 3: Aceite de Termos no Cadastro
+
+### 3.1 Modificar CompletarCadastro.tsx
+
+Adicionar checkboxes obrigatórios antes de completar cadastro:
 
 ```text
 +------------------------------------------+
-| CONFIGURAÇÕES DE ALERTAS            [X]  |
+| COMPLETE SEU CADASTRO                     |
 +------------------------------------------+
-| [Canais] [Automações] [Escalação]        |
-+------------------------------------------+
+| [Campos de dados pessoais]                |
 |                                          |
-| CANAIS DE NOTIFICAÇÃO                    |
+| ☐ Li e concordo com os Termos de Uso     |
+| ☐ Li e concordo com a Política de        |
+|   Privacidade e autorizo o tratamento    |
+|   dos meus dados pessoais                |
 |                                          |
-| ☑ Email                                  |
-|   [ admin@empresa.com                  ] |
-|   [ + Adicionar email ]                  |
-|                                          |
-| ☐ WhatsApp                               |
-|   [ +55 11 99999-9999                  ] |
-|   (Requer integração Twilio/Z-API)       |
-|                                          |
-| ☐ Webhook                                |
-|   [ https://minha-api.com/webhook      ] |
-|   [ Testar Webhook ]                     |
-|                                          |
-+------------------------------------------+
-| [Cancelar]               [Salvar]        |
+| [Completar Cadastro]                     |
 +------------------------------------------+
 ```
 
-### Funcionalidades do Modal
+### 3.2 Modificar Edge Function
 
-1. **Aba Canais**:
-   - Toggle para Email, WhatsApp, Webhook
-   - Campos para configurar destinatários
-   - Botão "Testar" para webhook
-
-2. **Aba Automações**:
-   - Auto-resolução após X horas
-   - Agrupamento de alertas similares
-   - Filtro por severidade
-
-3. **Aba Escalação**:
-   - Ativar escalação
-   - Tempo até escalar (minutos)
-   - Destinatários para escalação
+Registrar consentimento na tabela `consentimentos` quando tripulante aceitar.
 
 ---
 
-## Parte 3: Hook para Configurações
+## Parte 4: Portal do Titular de Dados
 
-### Arquivo: `src/hooks/useNotificationSettings.ts`
+### 4.1 Página Meus Dados
+
+**Arquivo:** `src/pages/MeusDados.tsx`
+
+Acessível via /meus-dados (autenticação do tripulante):
+
+```text
++------------------------------------------+
+| MEUS DADOS PESSOAIS                       |
++------------------------------------------+
+| Nome: João Silva                         |
+| Email: joao@email.com                    |
+| CPF: 123.456.789-00                      |
+| Cargo: Marinheiro                        |
+|                                          |
+| HISTÓRICO DE SESSÕES (últimos 30 dias)   |
+| [Tabela com início, fim, consumo]        |
+|                                          |
+| MEUS CONSENTIMENTOS                      |
+| ✓ Termos de Uso v1.0 (aceito em 01/01)   |
+| ✓ Política de Privacidade v1.0           |
+|                                          |
+| EXERCER MEUS DIREITOS                    |
+| [Solicitar Correção de Dados]            |
+| [Solicitar Exclusão de Dados]            |
+| [Exportar Meus Dados (JSON)]             |
++------------------------------------------+
+```
+
+### 4.2 Hook para Portal
+
+**Arquivo:** `src/hooks/useMeusDados.ts`
 
 ```typescript
-interface NotificationSettings {
-  id: string;
-  empresa_id: string;
-  email_enabled: boolean;
-  email_destinatarios: string[];
-  whatsapp_enabled: boolean;
-  whatsapp_numeros: string[];
-  webhook_enabled: boolean;
-  webhook_url: string | null;
-  // ... demais campos
-}
+useMeusDadosTripulante()
+- Busca dados pessoais do tripulante logado
+- Lista histórico de sessões
+- Lista consentimentos
 
-useNotificationSettings()
-- Busca configurações da empresa do usuário
-- Cria registro padrão se não existir
+useSolicitarExclusao()
+- Cria solicitação na tabela solicitacoes_lgpd
+- Envia notificação para admin
 
-useUpdateNotificationSettings()
-- Atualiza configurações
-- Valida campos obrigatórios
-- Toast de sucesso/erro
+useExportarDados()
+- Gera JSON com todos os dados do titular
+- Registra ação na audit_logs
 ```
 
 ---
 
-## Parte 4: Edge Function para Notificações
+## Parte 5: Painel Admin de LGPD
 
-### Arquivo: `supabase/functions/send-alert-notification/index.ts`
+### 5.1 Página de Gestão LGPD
 
-```typescript
-// Recebe alerta e configurações
-// Envia para canais ativos:
-// - Email: via Resend (precisa API key)
-// - WhatsApp: via Z-API ou Twilio (precisa integração)
-// - Webhook: HTTP POST para URL configurada
+**Arquivo:** `src/pages/GestaoLGPD.tsx`
 
-// Por enquanto, implementar apenas:
-// ✅ Webhook (não precisa de API externa)
-// ⚠️ Email (precisa RESEND_API_KEY)
-// ⚠️ WhatsApp (precisa integração Z-API/Twilio)
+Acessível apenas para super_admin e empresa_admin:
+
+```text
++------------------------------------------+
+| GESTÃO LGPD                               |
++------------------------------------------+
+| [Config] [Solicitações] [Auditoria]       |
++------------------------------------------+
+|                                          |
+| CONFIGURAÇÕES DA EMPRESA                 |
+| DPO: Maria Silva (dpo@empresa.com)       |
+| Retenção de logs: 12 meses               |
+| Versão Política: v1.0                    |
+|                                          |
+| SOLICITAÇÕES PENDENTES (3)               |
+| [Tabela de solicitações_lgpd]            |
+|                                          |
+| CONSENTIMENTOS                           |
+| Total: 156 tripulantes                   |
+| Com aceite atual: 154 (98.7%)            |
+|                                          |
++------------------------------------------+
 ```
 
-### Implementação Inicial (Webhook apenas)
+### 5.2 Processo de Exclusão (Anonimização)
 
-O webhook é a única funcionalidade que pode ser implementada sem dependências externas:
+Quando admin aprova solicitação de exclusão:
 
-```typescript
-Deno.serve(async (req) => {
-  const { alerta, settings } = await req.json();
+```sql
+-- Anonimizar dados pessoais (manter logs por 6 meses)
+UPDATE tripulantes SET
+  nome = 'ANONIMIZADO',
+  email = NULL,
+  cpf = NULL,
+  cargo = NULL,
+  login_wifi = 'deleted_' || id::text,
+  senha_wifi = gen_random_uuid()::text,
+  status = 'excluido'
+WHERE id = $tripulante_id;
+
+-- Anonimizar dispositivos
+UPDATE dispositivos_registrados SET
+  nome = 'ANONIMIZADO'
+WHERE tripulante_id = $tripulante_id;
+
+-- Logs são mantidos por 6 meses (Marco Civil)
+-- Apenas marcar como anonimizado, não excluir
+```
+
+---
+
+## Parte 6: Retenção de Logs (Marco Civil)
+
+### 6.1 Política de Retenção
+
+Criar job para limpeza automática após período legal:
+
+```sql
+-- Função para limpar logs antigos
+CREATE OR REPLACE FUNCTION cleanup_old_logs()
+RETURNS void AS $$
+BEGIN
+  -- Sessões WiFi: manter 6 meses mínimo (configurável)
+  DELETE FROM sessoes_wifi 
+  WHERE created_at < now() - interval '12 months'
+  AND NOT EXISTS (
+    SELECT 1 FROM solicitacoes_lgpd 
+    WHERE status = 'pendente' AND tipo = 'acesso'
+  );
   
-  if (settings.webhook_enabled && settings.webhook_url) {
-    await fetch(settings.webhook_url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type: 'alert',
-        alerta,
-        timestamp: new Date().toISOString(),
-      }),
-    });
-  }
-  
-  return new Response(JSON.stringify({ success: true }));
-});
+  -- Audit logs: manter 5 anos (prazo prescricional)
+  DELETE FROM audit_logs
+  WHERE created_at < now() - interval '5 years';
+END;
+$$ LANGUAGE plpgsql;
 ```
 
----
+### 6.2 Exportação para Ordem Judicial
 
-## Parte 5: Sininho (Bell Icon) Funcional
+Edge function para gerar relatório forense:
 
-### Arquivos a criar/modificar
+**Arquivo:** `supabase/functions/export-logs-judicial/index.ts`
 
-1. **`src/hooks/useNotifications.ts`**
-   - Busca alertas não resolvidos
-   - Retorna contagem e lista
-
-2. **`src/components/NotificationsDropdown.tsx`**
-   - Dropdown com lista de alertas
-   - Badge dinâmico com contagem real
-   - Ações rápidas (resolver, ver todos)
-
-3. **`src/components/AppLayout.tsx`**
-   - Integrar NotificationsDropdown no header
+- Requer autenticação super_admin
+- Gera JSON estruturado com:
+  - Dados do tripulante
+  - Todas as sessões WiFi
+  - Endereços IP e MAC
+  - Timestamps precisos
+  - Assinatura hash para integridade
 
 ---
 
-## Parte 6: Atualizar Página de Alertas
+## Parte 7: Modificações no Formulário de Cadastro
 
-### Modificações em `src/pages/Alertas.tsx`
+### 7.1 CompletarCadastro.tsx
 
-1. **Botão "Configurar Alertas"**: Abrir AlertSettingsModal
-2. **Badge "Configurar" (Webhook)**: Abrir modal na aba Canais
-3. **Badge "Configurar" (Escalação)**: Abrir modal na aba Escalação
-4. **Status dinâmico**: Mostrar status real baseado em notification_settings
+Adicionar:
+- Checkboxes de aceite obrigatórios
+- Links para páginas de termos/privacidade
+- Registro de IP e user agent no consentimento
+
+### 7.2 Edge Function tripulante-self-register
+
+Modificar para:
+- Registrar consentimentos na tabela
+- Capturar IP do request
+- Validar que aceites foram marcados
 
 ---
 
@@ -262,117 +414,114 @@ Deno.serve(async (req) => {
 
 | Arquivo | Ação | Descrição |
 |---------|------|-----------|
-| Migração `notification_settings` | Criar | Tabela de configurações |
-| `src/hooks/useNotificationSettings.ts` | Criar | CRUD de configurações |
-| `src/hooks/useNotifications.ts` | Criar | Dados do sininho |
-| `src/components/modals/AlertSettingsModal.tsx` | Criar | Modal de configuração |
-| `src/components/NotificationsDropdown.tsx` | Criar | Dropdown do sininho |
-| `supabase/functions/send-alert-notification/` | Criar | Edge function webhook |
-| `src/pages/Alertas.tsx` | Modificar | Integrar modal e ações |
-| `src/components/AppLayout.tsx` | Modificar | Integrar sininho funcional |
-| `src/pages/Configuracoes.tsx` | Modificar | Integrar com settings reais |
+| Migração `lgpd_compliance.sql` | Criar | Tabelas de conformidade |
+| `src/pages/PoliticaPrivacidade.tsx` | Criar | Política de privacidade |
+| `src/pages/TermosUso.tsx` | Criar | Termos de uso |
+| `src/pages/MeusDados.tsx` | Criar | Portal do titular |
+| `src/pages/GestaoLGPD.tsx` | Criar | Painel admin LGPD |
+| `src/hooks/useMeusDados.ts` | Criar | Hooks do portal |
+| `src/hooks/useLGPD.ts` | Criar | Hooks de gestão |
+| `src/pages/CompletarCadastro.tsx` | Modificar | Adicionar aceites |
+| `supabase/functions/tripulante-self-register/` | Modificar | Registrar consentimento |
+| `supabase/functions/export-logs-judicial/` | Criar | Exportação forense |
+| `src/components/AppSidebar.tsx` | Modificar | Adicionar menu LGPD |
+| `src/App.tsx` | Modificar | Adicionar rotas |
 
 ---
 
-## Limitações e Dependências Externas
+## Fluxo do Tripulante
 
-### Email (Resend)
+```text
+1. Acessa portal de cadastro
+         ↓
+2. Preenche dados pessoais
+         ↓
+3. Lê e marca aceite de Termos de Uso
+         ↓
+4. Lê e marca aceite de Política de Privacidade
+         ↓
+5. Clica em "Completar Cadastro"
+         ↓
+6. Sistema registra:
+   - Dados pessoais na tabela tripulantes
+   - Consentimentos na tabela consentimentos
+   - Auditoria na tabela audit_logs
+         ↓
+7. Tripulante pode acessar /meus-dados a qualquer momento
+```
 
-Para enviar emails reais, preciso:
-1. Você criar conta em resend.com
-2. Validar seu domínio
-3. Fornecer a `RESEND_API_KEY`
+---
 
-Sem isso, o toggle de email ficará visual mas não enviará emails.
+## Notificações de Conformidade
 
-### WhatsApp (Z-API ou Twilio)
+### Alertas para Admin
 
-Para WhatsApp real, preciso:
-- Conta Z-API ou Twilio
-- Credenciais de API
-
-**Recomendação**: Deixar WhatsApp desativado por enquanto e focar em Email + Webhook.
+Criar alertas automáticos:
+- Solicitação LGPD pendente há mais de 10 dias (prazo legal: 15 dias úteis)
+- Versão de política/termos desatualizada
+- Tripulantes sem consentimento válido
 
 ---
 
 ## Ordem de Implementação
 
-1. **Migração de banco** - Tabela notification_settings
-2. **Hook useNotificationSettings** - CRUD configurações
-3. **AlertSettingsModal** - UI de configuração
-4. **Atualizar Alertas.tsx** - Integrar botões com modal
-5. **Hook useNotifications** - Dados do sininho
-6. **NotificationsDropdown** - UI do sininho
-7. **Atualizar AppLayout.tsx** - Integrar dropdown
-8. **Edge Function webhook** - Envio via webhook
-9. **(Opcional) Email** - Se fornecer RESEND_API_KEY
+1. **Migração de banco** - Criar tabelas de conformidade
+2. **Páginas estáticas** - Termos e Privacidade
+3. **Modificar cadastro** - Adicionar aceites
+4. **Portal do titular** - MeusDados
+5. **Painel admin** - GestaoLGPD
+6. **Edge functions** - Exportação e auditoria
+7. **Integração** - Menu e rotas
+8. **Jobs de limpeza** - Política de retenção
 
 ---
 
 ## Seção Técnica
 
-### Schema da Tabela
+### RLS para Tabelas LGPD
 
 ```sql
-CREATE TABLE public.notification_settings (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  empresa_id UUID REFERENCES empresas(id) ON DELETE CASCADE UNIQUE,
-  
-  email_enabled BOOLEAN DEFAULT true,
-  email_destinatarios TEXT[] DEFAULT '{}',
-  
-  whatsapp_enabled BOOLEAN DEFAULT false,
-  whatsapp_numeros TEXT[] DEFAULT '{}',
-  
-  webhook_enabled BOOLEAN DEFAULT false,
-  webhook_url TEXT,
-  
-  auto_resolver_enabled BOOLEAN DEFAULT false,
-  auto_resolver_horas INTEGER DEFAULT 24,
-  
-  agrupar_enabled BOOLEAN DEFAULT true,
-  
-  escalacao_enabled BOOLEAN DEFAULT false,
-  escalacao_minutos INTEGER DEFAULT 30,
-  escalacao_destinatarios TEXT[] DEFAULT '{}',
-  
-  notificar_severidades TEXT[] DEFAULT ARRAY['critical', 'warning'],
-  
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
+-- Consentimentos: tripulante vê apenas os seus
+CREATE POLICY "Tripulante ve proprios consentimentos"
+ON consentimentos FOR SELECT
+USING (tripulante_id IN (
+  SELECT id FROM tripulantes WHERE login_wifi = current_user
+));
 
--- RLS Policies
-ALTER TABLE public.notification_settings ENABLE ROW LEVEL SECURITY;
+-- Admin vê todos da empresa
+CREATE POLICY "Admin ve consentimentos da empresa"
+ON consentimentos FOR SELECT
+USING (has_role(auth.uid(), 'empresa_admin') AND ...);
 
-CREATE POLICY "Super admin full access"
-ON public.notification_settings FOR ALL
+-- Audit logs: apenas super_admin pode ver
+CREATE POLICY "Super admin acesso audit_logs"
+ON audit_logs FOR ALL
 USING (has_role(auth.uid(), 'super_admin'));
-
-CREATE POLICY "Empresa admin manage own settings"
-ON public.notification_settings FOR ALL
-USING (empresa_id = get_user_empresa_id(auth.uid()));
 ```
 
-### Interface NotificationSettings
+### Modelo de Consentimento
 
 ```typescript
-interface NotificationSettings {
+interface Consentimento {
   id: string;
-  empresa_id: string | null;
-  email_enabled: boolean;
-  email_destinatarios: string[];
-  whatsapp_enabled: boolean;
-  whatsapp_numeros: string[];
-  webhook_enabled: boolean;
-  webhook_url: string | null;
-  auto_resolver_enabled: boolean;
-  auto_resolver_horas: number;
-  agrupar_enabled: boolean;
-  escalacao_enabled: boolean;
-  escalacao_minutos: number;
-  escalacao_destinatarios: string[];
-  notificar_severidades: string[];
+  tripulante_id: string;
+  tipo: 'termos_uso' | 'politica_privacidade' | 'marketing';
+  versao: string;
+  aceito: boolean;
+  aceito_em: Date;
+  ip_address: string;
+  user_agent: string;
 }
 ```
+
+### Texto Legal Obrigatório
+
+A Política de Privacidade deve incluir:
+- Art. 9º da LGPD: informações sobre tratamento
+- Art. 18 da LGPD: direitos do titular
+- Art. 41 da LGPD: dados do encarregado (DPO)
+
+Os Termos de Uso devem incluir:
+- Art. 13 do Marco Civil: guarda de registros
+- Art. 7º do Marco Civil: direitos do usuário
 
