@@ -52,7 +52,7 @@ export function GerenteEmbarcacaoDashboard() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Minha Embarcação</h1>
           <p className="text-muted-foreground">
-            Bem-vindo, {user?.name} - Gerencie sua embarcação
+            Bem-vindo - Gerencie sua embarcação
           </p>
         </div>
         <Button>
