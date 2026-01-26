@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   Smartphone,
   Laptop,
@@ -100,6 +101,7 @@ export default function Dispositivos() {
     nome: "",
     tipo: "outro",
     embarcacao_id: "",
+    autorizado: true,
   });
 
   // Queries and mutations
@@ -158,12 +160,12 @@ export default function Dispositivos() {
         nome: newDevice.nome || `Equipamento ${newDevice.tipo}`,
         tipo: newDevice.tipo,
         embarcacao_id: newDevice.embarcacao_id,
-        autorizado: true,
+        autorizado: newDevice.autorizado,
       },
       {
         onSuccess: () => {
           setShowNewDevice(false);
-          setNewDevice({ mac_address: "", nome: "", tipo: "outro", embarcacao_id: "" });
+          setNewDevice({ mac_address: "", nome: "", tipo: "outro", embarcacao_id: "", autorizado: true });
         },
       }
     );
@@ -505,6 +507,19 @@ export default function Dispositivos() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div className="flex items-center justify-between pt-2">
+              <div className="space-y-0.5">
+                <Label htmlFor="autorizado">Autorizado a conectar</Label>
+                <p className="text-xs text-muted-foreground">
+                  {newDevice.autorizado ? "O dispositivo poderá se conectar à rede" : "O dispositivo será cadastrado bloqueado"}
+                </p>
+              </div>
+              <Switch
+                id="autorizado"
+                checked={newDevice.autorizado}
+                onCheckedChange={(checked) => setNewDevice((prev) => ({ ...prev, autorizado: checked }))}
+              />
             </div>
           </div>
           <DialogFooter>

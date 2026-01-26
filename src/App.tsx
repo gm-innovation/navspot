@@ -8,7 +8,6 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { AuthProvider } from "@/contexts/AuthContext";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
-import Hotspots from "./pages/Hotspots";
 import Embarcacoes from "./pages/Embarcacoes";
 import Tripulantes from "./pages/Tripulantes";
 import Dispositivos from "./pages/Dispositivos";
@@ -41,15 +40,6 @@ const App = () => (
                   <SidebarProvider>
                     <AppLayout>
                       <Dashboard />
-                    </AppLayout>
-                  </SidebarProvider>
-                </ProtectedRoute>
-              } />
-              <Route path="/hotspots" element={
-                <ProtectedRoute allowedRoles={['super_admin', 'empresa_admin']}>
-                  <SidebarProvider>
-                    <AppLayout>
-                      <Hotspots />
                     </AppLayout>
                   </SidebarProvider>
                 </ProtectedRoute>
