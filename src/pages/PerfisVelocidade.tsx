@@ -366,9 +366,10 @@ export default function PerfisVelocidade() {
 
       {/* Form Modal */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
-        <DialogContent className="sm:max-w-[500px]">
+        <DialogContent className="sm:max-w-[650px] max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <Gauge className="h-5 w-5" />
               {editingPerfil ? "Editar Perfil" : "Novo Perfil de Velocidade"}
             </DialogTitle>
             <DialogDescription>
@@ -376,211 +377,215 @@ export default function PerfisVelocidade() {
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSubmit}>
-            <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="nome" className="text-right">
-                  Nome
-                </Label>
-                <Input
-                  id="nome"
-                  value={formData.nome}
-                  onChange={(e) => handleChange("nome", e.target.value)}
-                  className="col-span-3"
-                  placeholder="Comandante, Oficiais, Tripulação..."
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="velocidade_download" className="text-right">
-                  Download
-                </Label>
-                <Input
-                  id="velocidade_download"
-                  value={formData.velocidade_download}
-                  onChange={(e) => handleChange("velocidade_download", e.target.value)}
-                  className="col-span-3"
-                  placeholder="10M, 5M, 2M..."
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="velocidade_upload" className="text-right">
-                  Upload
-                </Label>
-                <Input
-                  id="velocidade_upload"
-                  value={formData.velocidade_upload}
-                  onChange={(e) => handleChange("velocidade_upload", e.target.value)}
-                  className="col-span-3"
-                  placeholder="5M, 2M, 1M..."
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="limite_dados_mb" className="text-right">
-                  Quota (MB)
-                </Label>
-                <Input
-                  id="limite_dados_mb"
-                  type="number"
-                  value={formData.limite_dados_mb}
-                  onChange={(e) => handleChange("limite_dados_mb", e.target.value)}
-                  className="col-span-3"
-                  placeholder="Vazio = ilimitado"
-                />
-              </div>
-
-              {formData.limite_dados_mb && (
+            <div className="space-y-6 py-4">
+              {/* Identificação */}
+              <div className="space-y-4">
+                <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+                  Identificação
+                </h3>
                 <div className="grid grid-cols-4 items-center gap-4">
-                  <Label htmlFor="quota_periodo" className="text-right">
-                    Renovação
+                  <Label htmlFor="nome" className="text-right">
+                    Nome *
+                  </Label>
+                  <Input
+                    id="nome"
+                    value={formData.nome}
+                    onChange={(e) => handleChange("nome", e.target.value)}
+                    className="col-span-3"
+                    placeholder="Comandante, Oficiais, Tripulação..."
+                    required
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="descricao" className="text-right">
+                    Descrição
+                  </Label>
+                  <Input
+                    id="descricao"
+                    value={formData.descricao}
+                    onChange={(e) => handleChange("descricao", e.target.value)}
+                    className="col-span-3"
+                    placeholder="Descrição opcional do perfil..."
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="tipo_usuario" className="text-right">
+                    Tipo de Usuário
                   </Label>
                   <Select
-                    value={formData.quota_periodo}
-                    onValueChange={(value) => handleChange("quota_periodo", value)}
+                    value={formData.tipo_usuario}
+                    onValueChange={(value) => handleChange("tipo_usuario", value)}
                   >
                     <SelectTrigger className="col-span-3">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent className="z-50 bg-background border shadow-lg">
-                      {PERIODOS_QUOTA.map(periodo => (
-                        <SelectItem key={periodo.value} value={periodo.value}>
+                      {TIPOS_USUARIO.map(tipo => (
+                        <SelectItem key={tipo.value} value={tipo.value}>
+                          {tipo.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {/* Limites de Banda */}
+              <div className="space-y-4 border-t pt-4">
+                <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+                  Limites de Banda
+                </h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="velocidade_download" className="flex items-center gap-2">
+                      <Download className="h-4 w-4 text-green-600" />
+                      Download
+                    </Label>
+                    <Input
+                      id="velocidade_download"
+                      value={formData.velocidade_download}
+                      onChange={(e) => handleChange("velocidade_download", e.target.value)}
+                      placeholder="10M, 5M, 2M..."
+                      required
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="velocidade_upload" className="flex items-center gap-2">
+                      <Upload className="h-4 w-4 text-blue-600" />
+                      Upload
+                    </Label>
+                    <Input
+                      id="velocidade_upload"
+                      value={formData.velocidade_upload}
+                      onChange={(e) => handleChange("velocidade_upload", e.target.value)}
+                      placeholder="5M, 2M, 1M..."
+                      required
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="prioridade">Prioridade (1-8)</Label>
+                    <Input
+                      id="prioridade"
+                      type="number"
+                      min={1}
+                      max={8}
+                      value={formData.prioridade}
+                      onChange={(e) => handleChange("prioridade", parseInt(e.target.value) || 4)}
+                    />
+                    <p className="text-xs text-muted-foreground">1 = Máxima, 8 = Mínima</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="max_dispositivos">Máx. Dispositivos</Label>
+                    <Input
+                      id="max_dispositivos"
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={formData.max_dispositivos}
+                      onChange={(e) => handleChange("max_dispositivos", parseInt(e.target.value) || 1)}
+                    />
+                    <p className="text-xs text-muted-foreground">Por tripulante</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quota de Dados */}
+              <div className="space-y-4 border-t pt-4">
+                <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+                  Quota de Dados
+                </h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="limite_dados_mb">Limite (MB)</Label>
+                    <Input
+                      id="limite_dados_mb"
+                      type="number"
+                      value={formData.limite_dados_mb}
+                      onChange={(e) => handleChange("limite_dados_mb", e.target.value)}
+                      placeholder="Vazio = ilimitado"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="quota_periodo">Período de Renovação</Label>
+                    <Select
+                      value={formData.quota_periodo}
+                      onValueChange={(value) => handleChange("quota_periodo", value)}
+                      disabled={!formData.limite_dados_mb}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="z-50 bg-background border shadow-lg">
+                        {PERIODOS_QUOTA.map(periodo => (
+                          <SelectItem key={periodo.value} value={periodo.value}>
+                            {periodo.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="session_timeout">Timeout de Sessão (minutos)</Label>
+                  <Input
+                    id="session_timeout"
+                    type="number"
+                    value={formData.session_timeout_minutos}
+                    onChange={(e) => handleChange("session_timeout_minutos", e.target.value)}
+                    placeholder="Vazio = sem limite de tempo"
+                    className="max-w-xs"
+                  />
+                </div>
+                {formData.limite_dados_mb && (
+                  <p className="text-xs text-muted-foreground">
+                    ℹ️ A renovação da quota segue o fuso horário configurado na embarcação
+                  </p>
+                )}
+              </div>
+
+              {/* Controle de Acesso */}
+              <div className="space-y-4 border-t pt-4">
+                <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+                  Controle de Acesso
+                </h3>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="modo_acesso" className="text-right">
+                    Modo de Acesso
+                  </Label>
+                  <Select
+                    value={formData.modo_acesso}
+                    onValueChange={(value) => handleChange("modo_acesso", value)}
+                  >
+                    <SelectTrigger className="col-span-3">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="z-50 bg-background border shadow-lg">
+                      {MODOS_ACESSO.map(modo => (
+                        <SelectItem key={modo.value} value={modo.value}>
                           <div className="flex flex-col">
-                            <span>{periodo.label}</span>
-                            <span className="text-xs text-muted-foreground">{periodo.description}</span>
+                            <span>{modo.label}</span>
                           </div>
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
-              )}
-              {formData.limite_dados_mb && (
-                <p className="text-xs text-muted-foreground ml-auto col-span-4 text-right">
-                  ℹ️ A renovação segue o fuso horário da embarcação/empresa
-                </p>
-              )}
-
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="prioridade" className="text-right">
-                  Prioridade
-                </Label>
-                <Input
-                  id="prioridade"
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={formData.prioridade}
-                  onChange={(e) => handleChange("prioridade", parseInt(e.target.value) || 4)}
-                  className="col-span-3"
-                />
-              </div>
-
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="session_timeout" className="text-right">
-                  Timeout (min)
-                </Label>
-                <Input
-                  id="session_timeout"
-                  type="number"
-                  value={formData.session_timeout_minutos}
-                  onChange={(e) => handleChange("session_timeout_minutos", e.target.value)}
-                  className="col-span-3"
-                  placeholder="Vazio = sem limite"
-                />
-              </div>
-
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="descricao" className="text-right">
-                  Descrição
-                </Label>
-                <Input
-                  id="descricao"
-                  value={formData.descricao}
-                  onChange={(e) => handleChange("descricao", e.target.value)}
-                  className="col-span-3"
-                  placeholder="Descrição opcional..."
-                />
-              </div>
-
-              {/* Novos campos */}
-              <div className="col-span-4 border-t pt-4 mt-2">
-                <p className="text-sm font-medium mb-3">Configurações Avançadas</p>
-              </div>
-
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="tipo_usuario" className="text-right">
-                  Tipo Usuário
-                </Label>
-                <Select
-                  value={formData.tipo_usuario}
-                  onValueChange={(value) => handleChange("tipo_usuario", value)}
-                >
-                  <SelectTrigger className="col-span-3">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="z-50 bg-background border shadow-lg">
-                    {TIPOS_USUARIO.map(tipo => (
-                      <SelectItem key={tipo.value} value={tipo.value}>
-                        {tipo.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="max_dispositivos" className="text-right">
-                  Max Disp.
-                </Label>
-                <Input
-                  id="max_dispositivos"
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={formData.max_dispositivos}
-                  onChange={(e) => handleChange("max_dispositivos", parseInt(e.target.value) || 1)}
-                  className="col-span-3"
-                />
-              </div>
-
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="modo_acesso" className="text-right">
-                  Modo Acesso
-                </Label>
-                <Select
-                  value={formData.modo_acesso}
-                  onValueChange={(value) => handleChange("modo_acesso", value)}
-                >
-                  <SelectTrigger className="col-span-3">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="z-50 bg-background border shadow-lg">
-                    {MODOS_ACESSO.map(modo => (
-                      <SelectItem key={modo.value} value={modo.value}>
-                        {modo.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="herdar_regras" className="text-right text-sm">
-                  Herdar Regras
-                </Label>
-                <div className="col-span-3 flex items-center gap-2">
-                  <Switch
-                    id="herdar_regras"
-                    checked={formData.herdar_regras_empresa}
-                    onCheckedChange={(checked) => handleChange("herdar_regras_empresa", checked)}
-                  />
-                  <span className="text-sm text-muted-foreground">
-                    {formData.herdar_regras_empresa ? "Herda regras da empresa" : "Regras independentes"}
-                  </span>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="herdar_regras" className="text-right">
+                    Herdar Regras
+                  </Label>
+                  <div className="col-span-3 flex items-center gap-3">
+                    <Switch
+                      id="herdar_regras"
+                      checked={formData.herdar_regras_empresa}
+                      onCheckedChange={(checked) => handleChange("herdar_regras_empresa", checked)}
+                    />
+                    <span className="text-sm text-muted-foreground">
+                      {formData.herdar_regras_empresa ? "Herda regras da empresa" : "Regras independentes"}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
