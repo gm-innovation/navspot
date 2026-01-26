@@ -7,6 +7,20 @@ export type PerfilVelocidade = Tables<'perfis_velocidade'>;
 export type PerfilVelocidadeInsert = TablesInsert<'perfis_velocidade'>;
 export type PerfilVelocidadeUpdate = TablesUpdate<'perfis_velocidade'>;
 
+export const TIPOS_USUARIO = [
+  { value: 'tripulante', label: 'Tripulante' },
+  { value: 'comandante', label: 'Comandante' },
+  { value: 'chemaq', label: 'Chefe de Máquinas' },
+  { value: 'imediato', label: 'Imediato' },
+  { value: 'oficial', label: 'Oficial' },
+  { value: 'convidado', label: 'Convidado' },
+] as const;
+
+export const MODOS_ACESSO = [
+  { value: 'permitir_tudo', label: 'Permitir Tudo (bloquear exceções)' },
+  { value: 'bloquear_tudo', label: 'Bloquear Tudo (permitir exceções)' },
+] as const;
+
 export interface PerfilWithCount extends PerfilVelocidade {
   tripulantes_count?: number;
 }

@@ -129,6 +129,50 @@ export type Database = {
           },
         ]
       }
+      dispositivos_registrados: {
+        Row: {
+          autorizado: boolean
+          bytes_consumidos: number
+          created_at: string
+          id: string
+          mac_address: string
+          nome: string | null
+          tipo: string
+          tripulante_id: string
+          ultimo_uso: string | null
+        }
+        Insert: {
+          autorizado?: boolean
+          bytes_consumidos?: number
+          created_at?: string
+          id?: string
+          mac_address: string
+          nome?: string | null
+          tipo?: string
+          tripulante_id: string
+          ultimo_uso?: string | null
+        }
+        Update: {
+          autorizado?: boolean
+          bytes_consumidos?: number
+          created_at?: string
+          id?: string
+          mac_address?: string
+          nome?: string | null
+          tipo?: string
+          tripulante_id?: string
+          ultimo_uso?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "dispositivos_registrados_tripulante_id_fkey"
+            columns: ["tripulante_id"]
+            isOneToOne: false
+            referencedRelation: "tripulantes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       embarcacoes: {
         Row: {
           created_at: string
@@ -271,16 +315,73 @@ export type Database = {
           },
         ]
       }
+      listas_acesso: {
+        Row: {
+          aplicativos: Json
+          ativo: boolean
+          created_at: string
+          descricao: string | null
+          dominios: Json
+          empresa_id: string
+          id: string
+          is_template: boolean
+          nome: string
+          portas: Json
+          tipo: string
+          updated_at: string
+        }
+        Insert: {
+          aplicativos?: Json
+          ativo?: boolean
+          created_at?: string
+          descricao?: string | null
+          dominios?: Json
+          empresa_id: string
+          id?: string
+          is_template?: boolean
+          nome: string
+          portas?: Json
+          tipo?: string
+          updated_at?: string
+        }
+        Update: {
+          aplicativos?: Json
+          ativo?: boolean
+          created_at?: string
+          descricao?: string | null
+          dominios?: Json
+          empresa_id?: string
+          id?: string
+          is_template?: boolean
+          nome?: string
+          portas?: Json
+          tipo?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "listas_acesso_empresa_id_fkey"
+            columns: ["empresa_id"]
+            isOneToOne: false
+            referencedRelation: "empresas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       perfis_velocidade: {
         Row: {
           created_at: string
           descricao: string | null
           empresa_id: string
+          herdar_regras_empresa: boolean
           id: string
           limite_dados_mb: number | null
+          max_dispositivos: number
+          modo_acesso: string
           nome: string
           prioridade: number
           session_timeout_minutos: number | null
+          tipo_usuario: string
           velocidade_download: string
           velocidade_upload: string
         }
@@ -288,11 +389,15 @@ export type Database = {
           created_at?: string
           descricao?: string | null
           empresa_id: string
+          herdar_regras_empresa?: boolean
           id?: string
           limite_dados_mb?: number | null
+          max_dispositivos?: number
+          modo_acesso?: string
           nome: string
           prioridade?: number
           session_timeout_minutos?: number | null
+          tipo_usuario?: string
           velocidade_download?: string
           velocidade_upload?: string
         }
@@ -300,11 +405,15 @@ export type Database = {
           created_at?: string
           descricao?: string | null
           empresa_id?: string
+          herdar_regras_empresa?: boolean
           id?: string
           limite_dados_mb?: number | null
+          max_dispositivos?: number
+          modo_acesso?: string
           nome?: string
           prioridade?: number
           session_timeout_minutos?: number | null
+          tipo_usuario?: string
           velocidade_download?: string
           velocidade_upload?: string
         }
@@ -318,11 +427,99 @@ export type Database = {
           },
         ]
       }
+      regras_acesso: {
+        Row: {
+          acao: string
+          ativo: boolean
+          created_at: string
+          dias_semana: Json
+          empresa_id: string
+          horario_fim: string | null
+          horario_inicio: string | null
+          hotspot_id: string | null
+          id: string
+          lista_id: string
+          mac_address: string | null
+          perfil_id: string | null
+          prioridade: number
+          tripulante_id: string | null
+        }
+        Insert: {
+          acao?: string
+          ativo?: boolean
+          created_at?: string
+          dias_semana?: Json
+          empresa_id: string
+          horario_fim?: string | null
+          horario_inicio?: string | null
+          hotspot_id?: string | null
+          id?: string
+          lista_id: string
+          mac_address?: string | null
+          perfil_id?: string | null
+          prioridade?: number
+          tripulante_id?: string | null
+        }
+        Update: {
+          acao?: string
+          ativo?: boolean
+          created_at?: string
+          dias_semana?: Json
+          empresa_id?: string
+          horario_fim?: string | null
+          horario_inicio?: string | null
+          hotspot_id?: string | null
+          id?: string
+          lista_id?: string
+          mac_address?: string | null
+          perfil_id?: string | null
+          prioridade?: number
+          tripulante_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "regras_acesso_empresa_id_fkey"
+            columns: ["empresa_id"]
+            isOneToOne: false
+            referencedRelation: "empresas"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "regras_acesso_hotspot_id_fkey"
+            columns: ["hotspot_id"]
+            isOneToOne: false
+            referencedRelation: "hotspots"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "regras_acesso_lista_id_fkey"
+            columns: ["lista_id"]
+            isOneToOne: false
+            referencedRelation: "listas_acesso"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "regras_acesso_perfil_id_fkey"
+            columns: ["perfil_id"]
+            isOneToOne: false
+            referencedRelation: "perfis_velocidade"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "regras_acesso_tripulante_id_fkey"
+            columns: ["tripulante_id"]
+            isOneToOne: false
+            referencedRelation: "tripulantes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       sessoes_wifi: {
         Row: {
           bytes_in: number
           bytes_out: number
           created_at: string
+          dispositivo_id: string | null
           fim: string | null
           hotspot_id: string
           id: string
@@ -336,6 +533,7 @@ export type Database = {
           bytes_in?: number
           bytes_out?: number
           created_at?: string
+          dispositivo_id?: string | null
           fim?: string | null
           hotspot_id: string
           id?: string
@@ -349,6 +547,7 @@ export type Database = {
           bytes_in?: number
           bytes_out?: number
           created_at?: string
+          dispositivo_id?: string | null
           fim?: string | null
           hotspot_id?: string
           id?: string
@@ -359,6 +558,13 @@ export type Database = {
           tripulante_id?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "sessoes_wifi_dispositivo_id_fkey"
+            columns: ["dispositivo_id"]
+            isOneToOne: false
+            referencedRelation: "dispositivos_registrados"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "sessoes_wifi_hotspot_id_fkey"
             columns: ["hotspot_id"]
