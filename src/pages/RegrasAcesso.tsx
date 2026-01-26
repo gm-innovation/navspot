@@ -509,14 +509,14 @@ export default function RegrasAcesso() {
                   Perfil
                 </Label>
                 <Select
-                  value={formData.perfil_id}
-                  onValueChange={(value) => setFormData(prev => ({ ...prev, perfil_id: value }))}
+                  value={formData.perfil_id || "_none_"}
+                  onValueChange={(value) => setFormData(prev => ({ ...prev, perfil_id: value === "_none_" ? "" : value }))}
                 >
                   <SelectTrigger className="col-span-3">
                     <SelectValue placeholder="Todos os perfis (global)" />
                   </SelectTrigger>
                   <SelectContent className="z-50 bg-background border shadow-lg">
-                    <SelectItem value="">Todos os perfis (global)</SelectItem>
+                    <SelectItem value="_none_">Todos os perfis (global)</SelectItem>
                     {perfis?.map(perfil => (
                       <SelectItem key={perfil.id} value={perfil.id}>
                         {perfil.nome}
@@ -532,14 +532,14 @@ export default function RegrasAcesso() {
                   Tripulante
                 </Label>
                 <Select
-                  value={formData.tripulante_id}
-                  onValueChange={(value) => setFormData(prev => ({ ...prev, tripulante_id: value }))}
+                  value={formData.tripulante_id || "_none_"}
+                  onValueChange={(value) => setFormData(prev => ({ ...prev, tripulante_id: value === "_none_" ? "" : value }))}
                 >
                   <SelectTrigger className="col-span-3">
                     <SelectValue placeholder="Nenhum (usar perfil)" />
                   </SelectTrigger>
                   <SelectContent className="z-50 bg-background border shadow-lg max-h-[200px]">
-                    <SelectItem value="">Nenhum (usar perfil)</SelectItem>
+                    <SelectItem value="_none_">Nenhum (usar perfil)</SelectItem>
                     {tripulantes?.map(trip => (
                       <SelectItem key={trip.id} value={trip.id}>
                         {trip.nome}
@@ -570,14 +570,14 @@ export default function RegrasAcesso() {
                   Hotspot
                 </Label>
                 <Select
-                  value={formData.hotspot_id}
-                  onValueChange={(value) => setFormData(prev => ({ ...prev, hotspot_id: value }))}
+                  value={formData.hotspot_id || "_none_"}
+                  onValueChange={(value) => setFormData(prev => ({ ...prev, hotspot_id: value === "_none_" ? "" : value }))}
                 >
                   <SelectTrigger className="col-span-3">
                     <SelectValue placeholder="Todos os hotspots" />
                   </SelectTrigger>
                   <SelectContent className="z-50 bg-background border shadow-lg">
-                    <SelectItem value="">Todos os hotspots</SelectItem>
+                    <SelectItem value="_none_">Todos os hotspots</SelectItem>
                     {hotspots?.map(hs => (
                       <SelectItem key={hs.id} value={hs.id}>
                         {hs.nome}
