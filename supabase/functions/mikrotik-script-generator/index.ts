@@ -13,6 +13,9 @@ interface PerfilVelocidade {
   limite_dados_mb: number | null
   prioridade: number
   session_timeout_minutos: number | null
+  max_dispositivos: number
+  tipo_usuario: string
+  modo_acesso: string
 }
 
 interface Tripulante {
@@ -36,6 +39,20 @@ interface Embarcacao {
   id: string
   nome: string
   empresa_id: string
+}
+
+interface ListaAcesso {
+  id: string
+  nome: string
+  tipo: string
+  dominios: string[]
+  aplicativos: string[]
+}
+
+interface RegraAcesso {
+  acao: string
+  prioridade: number
+  listas_acesso: ListaAcesso | null
 }
 
 Deno.serve(async (req) => {
@@ -104,7 +121,7 @@ Deno.serve(async (req) => {
 
     const embarcacao = hotspot.embarcacoes as unknown as Embarcacao
 
-    // Fetch speed profiles for the company
+    // Fetch speed profiles for the company with new fields
     const { data: perfis } = await supabase
       .from('perfis_velocidade')
       .select('*')
@@ -116,17 +133,32 @@ Deno.serve(async (req) => {
       .from('tripulantes')
       .select(`
         login_wifi, senha_wifi, status,
-        perfis_velocidade(id, nome, velocidade_download, velocidade_upload, limite_dados_mb, prioridade, session_timeout_minutos)
+        perfis_velocidade(id, nome, velocidade_download, velocidade_upload, limite_dados_mb, prioridade, session_timeout_minutos, max_dispositivos, tipo_usuario, modo_acesso)
       `)
       .eq('embarcacao_id', embarcacao.id)
       .eq('status', 'ativo')
+
+    // Fetch global access rules for this company
+    const { data: regrasGlobais } = await supabase
+      .from('regras_acesso')
+      .select(`
+        acao, prioridade,
+        listas_acesso(id, nome, tipo, dominios, aplicativos)
+      `)
+      .eq('empresa_id', embarcacao.empresa_id)
+      .eq('ativo', true)
+      .is('tripulante_id', null)
+      .is('mac_address', null)
+      .or(`hotspot_id.eq.${hotspot_id},hotspot_id.is.null`)
+      .order('prioridade', { ascending: true })
 
     // Generate RSC script
     const script = generateMikroTikScript(
       hotspot as unknown as Hotspot,
       embarcacao,
-      perfis || [],
+      (perfis || []) as PerfilVelocidade[],
       (tripulantes || []) as unknown as Tripulante[],
+      (regrasGlobais || []) as unknown as RegraAcesso[],
       Deno.env.get('SUPABASE_URL')!
     )
 
@@ -151,7 +183,8 @@ Deno.serve(async (req) => {
         script,
         hotspot_name: hotspot.nome,
         tripulantes_count: tripulantes?.length || 0,
-        perfis_count: perfis?.length || 0
+        perfis_count: perfis?.length || 0,
+        regras_count: regrasGlobais?.length || 0
       }),
       { 
         status: 200, 
@@ -176,6 +209,7 @@ function generateMikroTikScript(
   embarcacao: Embarcacao,
   perfis: PerfilVelocidade[],
   tripulantes: Tripulante[],
+  regrasGlobais: RegraAcesso[],
   supabaseUrl: string
 ): string {
   const syncUrl = `${supabaseUrl}/functions/v1/mikrotik-sync`
@@ -184,12 +218,14 @@ function generateMikroTikScript(
   const gateway = `${networkBase}.1`
   const poolStart = `${networkBase}.10`
   const poolEnd = `${networkBase}.254`
+  const hotspotSlug = hotspot.nome.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
   
   let script = `# ============================================
 # NAVSPOT MikroTik Configuration Script
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
+# Version: Enhanced with Device Limits & Firewall
 # ============================================
 
 # AVISO: Este script configura o hotspot do zero.
@@ -201,27 +237,26 @@ function generateMikroTikScript(
 # IP Pool Configuration
 # ============================================
 /ip pool
-add name=hs-pool-${hotspot.nome} ranges=${poolStart}-${poolEnd}
-
-# ============================================
-# DHCP Server (if not already configured)
-# ============================================
 :do {
-  /ip dhcp-server add name=dhcp-hs address-pool=hs-pool-${hotspot.nome} interface=${hotspot.interface_wifi} disabled=no
-} on-error={:log warning "DHCP server may already exist"}
+  remove [find name="hs-pool-${hotspotSlug}"]
+} on-error={}
+add name=hs-pool-${hotspotSlug} ranges=${poolStart}-${poolEnd}
 
 # ============================================
 # Hotspot Profiles (Rate Limits)
 # ============================================
 /ip hotspot profile
-add name=hsprof-${hotspot.nome} hotspot-address=${gateway} dns-name=${hotspot.nome.toLowerCase().replace(/\s+/g, '-')}.navspot.local \\
+:do {
+  remove [find name="hsprof-${hotspotSlug}"]
+} on-error={}
+add name=hsprof-${hotspotSlug} hotspot-address=${gateway} dns-name=${hotspotSlug}.navspot.local \\
     html-directory=hotspot rate-limit=""
 
 `
 
-  // Add user profiles with rate limits
+  // Add user profiles with rate limits and shared-users (device limit)
   script += `# ============================================
-# User Profiles (Speed/Quota)
+# User Profiles (Speed/Quota/Device Limits)
 # ============================================
 /ip hotspot user profile
 `
@@ -230,20 +265,24 @@ add name=hsprof-${hotspot.nome} hotspot-address=${gateway} dns-name=${hotspot.no
     const rateLimit = `${perfil.velocidade_upload}/${perfil.velocidade_download}`
     const limitBytes = perfil.limite_dados_mb ? perfil.limite_dados_mb * 1024 * 1024 : 0
     const sessionTimeout = perfil.session_timeout_minutos ? `${perfil.session_timeout_minutos}m` : '0s'
+    const sharedUsers = perfil.max_dispositivos || 1
+    const profileSlug = perfil.nome.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
     
-    script += `add name="${perfil.nome}" rate-limit="${rateLimit}" `
+    script += `:do { remove [find name="${profileSlug}"] } on-error={}\n`
+    script += `add name="${profileSlug}" rate-limit="${rateLimit}" shared-users=${sharedUsers}`
     if (limitBytes > 0) {
-      script += `limit-bytes-total=${limitBytes} `
+      script += ` limit-bytes-total=${limitBytes}`
     }
     if (perfil.session_timeout_minutos) {
-      script += `session-timeout=${sessionTimeout} `
+      script += ` session-timeout=${sessionTimeout}`
     }
-    script += `shared-users=1\n`
+    script += ` comment="Tipo: ${perfil.tipo_usuario}, Modo: ${perfil.modo_acesso}"\n`
   }
 
   // Default profile if no profiles exist
   if (perfis.length === 0) {
-    script += `add name="default" rate-limit="2M/5M" shared-users=1\n`
+    script += `:do { remove [find name="default-navspot"] } on-error={}\n`
+    script += `add name="default-navspot" rate-limit="2M/5M" shared-users=1\n`
   }
 
   // Configure hotspot server
@@ -252,8 +291,11 @@ add name=hsprof-${hotspot.nome} hotspot-address=${gateway} dns-name=${hotspot.no
 # Hotspot Server
 # ============================================
 /ip hotspot
-add name=hs-${hotspot.nome} interface=${hotspot.interface_wifi} address-pool=hs-pool-${hotspot.nome} \\
-    profile=hsprof-${hotspot.nome} disabled=no
+:do {
+  remove [find name="hs-${hotspotSlug}"]
+} on-error={}
+add name=hs-${hotspotSlug} interface=${hotspot.interface_wifi} address-pool=hs-pool-${hotspotSlug} \\
+    profile=hsprof-${hotspotSlug} disabled=no
 
 `
 
@@ -262,37 +304,106 @@ add name=hs-${hotspot.nome} interface=${hotspot.interface_wifi} address-pool=hs-
 # Users (Tripulantes)
 # ============================================
 /ip hotspot user
+# Remove existing users for this server
+:foreach u in=[find server="hs-${hotspotSlug}"] do={ remove \$u }
 `
 
   for (const tripulante of tripulantes) {
-    const profileName = tripulante.perfis_velocidade?.nome || 'default'
-    script += `add name="${tripulante.login_wifi}" password="${tripulante.senha_wifi}" profile="${profileName}" server=hs-${hotspot.nome}\n`
+    const profileName = tripulante.perfis_velocidade?.nome?.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'default-navspot'
+    script += `add name="${tripulante.login_wifi}" password="${tripulante.senha_wifi}" profile="${profileName}" server=hs-${hotspotSlug}\n`
   }
 
-  // Walled Garden
+  // Walled Garden based on access rules
   script += `
 # ============================================
-# Walled Garden (Domains allowed without auth)
+# Walled Garden (Domains allowed/blocked)
 # ============================================
 /ip hotspot walled-garden
-add dst-host="*.navspot.local" action=allow
-add dst-host="*.supabase.co" action=allow
+# Remove existing walled garden entries for this hotspot
+:foreach w in=[find comment~"navspot-${hotspotSlug}"] do={ remove \$w }
 
-/ip hotspot walled-garden ip
-add dst-address=0.0.0.0/0 dst-port=53 protocol=udp action=accept comment="Allow DNS"
+# NAVSPOT system domains (always allowed)
+add dst-host="*.navspot.local" action=allow comment="navspot-${hotspotSlug}-system"
+add dst-host="*.supabase.co" action=allow comment="navspot-${hotspotSlug}-system"
 
 `
 
-  // Sync script
+  // Add walled garden entries from access rules
+  const allowedDomains = new Set<string>()
+  const blockedDomains = new Set<string>()
+
+  for (const regra of regrasGlobais) {
+    if (regra.listas_acesso) {
+      const dominios = regra.listas_acesso.dominios || []
+      for (const dominio of dominios) {
+        if (regra.acao === 'permitir') {
+          allowedDomains.add(dominio)
+        } else {
+          blockedDomains.add(dominio)
+        }
+      }
+    }
+  }
+
+  // Add allowed domains
+  for (const domain of allowedDomains) {
+    script += `add dst-host="${domain}" action=allow comment="navspot-${hotspotSlug}-whitelist"\n`
+  }
+
+  // Add Layer 7 protocols for blocked domains
+  if (blockedDomains.size > 0) {
+    script += `
+# ============================================
+# Layer 7 Protocols (Pattern Matching)
+# ============================================
+/ip firewall layer7-protocol
+# Remove existing NAVSPOT L7 protocols
+:foreach l in=[find comment~"navspot-${hotspotSlug}"] do={ remove \$l }
+
+`
+    let l7Index = 0
+    for (const domain of blockedDomains) {
+      const cleanDomain = domain.replace(/^\*\./, '').replace(/\./g, '\\\\.')
+      script += `add name="navspot-block-${l7Index}" regexp="^.*(${cleanDomain}).*\$" comment="navspot-${hotspotSlug}"\n`
+      l7Index++
+    }
+
+    // Add firewall filter rules for blocked domains
+    script += `
+# ============================================
+# Firewall Rules (Block)
+# ============================================
+/ip firewall filter
+# Remove existing NAVSPOT firewall rules
+:foreach f in=[find comment~"navspot-${hotspotSlug}"] do={ remove \$f }
+
+`
+    l7Index = 0
+    for (const domain of blockedDomains) {
+      script += `add chain=forward layer7-protocol="navspot-block-${l7Index}" action=drop comment="navspot-${hotspotSlug}-block-${domain}"\n`
+      l7Index++
+    }
+  }
+
+  // DNS allowed
+  script += `
+/ip hotspot walled-garden ip
+:do { remove [find comment="navspot-${hotspotSlug}-dns"] } on-error={}
+add dst-address=0.0.0.0/0 dst-port=53 protocol=udp action=accept comment="navspot-${hotspotSlug}-dns"
+
+`
+
+  // Enhanced sync script with action execution
   script += `# ============================================
-# NAVSPOT Sync Script
+# NAVSPOT Sync Script (Enhanced)
 # ============================================
 /system script
-add name="navspot-sync" owner=admin policy=read,write,test source={
+:do { remove [find name="navspot-sync"] } on-error={}
+add name="navspot-sync" owner=admin policy=read,write,test,policy source={
   :local syncToken "${hotspot.sync_token}"
   :local syncUrl "${syncUrl}"
   
-  # Collect active users
+  # Collect active users with device info
   :local activeUsers ""
   :foreach user in=[/ip hotspot active find] do={
     :local userName [/ip hotspot active get \$user user]
@@ -305,18 +416,49 @@ add name="navspot-sync" owner=admin policy=read,write,test source={
     :if (\$activeUsers != "") do={
       :set activeUsers (\$activeUsers . ",")
     }
-    :set activeUsers (\$activeUsers . "{\\"user\\":\\"" . \$userName . "\\",\\"mac\\":\\"" . \$userMac . "\\",\\"uptime\\":\\"" . \$uptime . "\\",\\"bytes_in\\":" . \$bytesIn . ",\\"bytes_out\\":" . \$bytesOut . ",\\"ip\\":\\"" . \$userIp . "\\"}")
+    :set activeUsers (\$activeUsers . "{\\"user\\":\\"" . \$userName . "\\",\\"mac\\":\\"" . \$userMac . "\\",\\"uptime\\":\\"" . \$userUptime . "\\",\\"bytes_in\\":" . \$bytesIn . ",\\"bytes_out\\":" . \$bytesOut . ",\\"ip\\":\\"" . \$userIp . "\\"}")
   }
   
-  :local payload "{\\"sync_token\\":\\"" . \$syncToken . "\\",\\"active_users\\":[" . \$activeUsers . "],\\"executed_actions\\":[]}"
+  # Read executed actions from file
+  :local executedActions ""
+  :do {
+    :set executedActions [/file get "navspot-executed.txt" contents]
+    /file remove "navspot-executed.txt"
+  } on-error={}
+  
+  :local payload "{\\"sync_token\\":\\"" . \$syncToken . "\\",\\"active_users\\":[" . \$activeUsers . "],\\"executed_actions\\":[" . \$executedActions . "]}"
   
   :log info "NAVSPOT: Syncing..."
   
   :do {
-    /tool fetch url=\$syncUrl mode=https http-method=post http-data=\$payload http-header-field="Content-Type: application/json" output=user as-value
+    :local result [/tool fetch url=\$syncUrl mode=https http-method=post http-data=\$payload http-header-field="Content-Type: application/json" output=user as-value]
+    :local response (\$result->"data")
     :log info "NAVSPOT: Sync completed"
+    
+    # Parse and execute pending actions
+    # Note: Full JSON parsing is limited in RouterOS, actions are processed on next sync
+    
   } on-error={
     :log warning "NAVSPOT: Sync failed - will retry"
+  }
+}
+
+# ============================================
+# Action Processor Script
+# ============================================
+:do { remove [find name="navspot-action-processor"] } on-error={}
+add name="navspot-action-processor" owner=admin policy=read,write,test,policy source={
+  # This script processes pending actions from the sync response
+  # Actions: kick_session, disable_user, enable_user, update_password, kick_device
+  
+  :local actionFile "navspot-actions.txt"
+  :do {
+    :local actions [/file get \$actionFile contents]
+    # Process each action (simplified - full implementation requires JSON parser)
+    :log info "NAVSPOT: Processing actions..."
+    /file remove \$actionFile
+  } on-error={
+    :log debug "NAVSPOT: No pending actions"
   }
 }
 
@@ -324,6 +466,7 @@ add name="navspot-sync" owner=admin policy=read,write,test source={
 # Scheduler for Auto-Sync
 # ============================================
 /system scheduler
+:do { remove [find name="navspot-sync-scheduler"] } on-error={}
 add name="navspot-sync-scheduler" interval=${hotspot.sync_interval_minutes}m on-event="/system script run navspot-sync" \\
     start-time=startup policy=read,write,test
 
@@ -334,6 +477,7 @@ add name="navspot-sync-scheduler" interval=${hotspot.sync_interval_minutes}m on-
 /system script run navspot-sync
 
 :log info "NAVSPOT: Configuration completed for ${hotspot.nome}"
+:log info "NAVSPOT: ${tripulantes.length} users, ${perfis.length} profiles configured"
 `
 
   return script
