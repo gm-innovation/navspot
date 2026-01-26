@@ -585,6 +585,7 @@ export type Database = {
         Row: {
           bytes_consumidos: number
           cargo: string | null
+          config_personalizada: Json | null
           cpf: string | null
           created_at: string
           email: string | null
@@ -601,6 +602,7 @@ export type Database = {
         Insert: {
           bytes_consumidos?: number
           cargo?: string | null
+          config_personalizada?: Json | null
           cpf?: string | null
           created_at?: string
           email?: string | null
@@ -617,6 +619,7 @@ export type Database = {
         Update: {
           bytes_consumidos?: number
           cargo?: string | null
+          config_personalizada?: Json | null
           cpf?: string | null
           created_at?: string
           email?: string | null
