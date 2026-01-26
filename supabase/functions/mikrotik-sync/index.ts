@@ -39,6 +39,85 @@ interface BlockedDevice {
   reason: string
 }
 
+// Helper to get week number for semanal quota
+function getWeekNumber(date: Date): number {
+  const startOfYear = new Date(date.getFullYear(), 0, 1)
+  const days = Math.floor((date.getTime() - startOfYear.getTime()) / (24 * 60 * 60 * 1000))
+  return Math.ceil((days + startOfYear.getDay() + 1) / 7)
+}
+
+// Convert UTC date to local timezone date
+function toLocalDate(utcDate: Date, timezone: string): Date {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  })
+  
+  const parts = formatter.formatToParts(utcDate)
+  const values: Record<string, string> = {}
+  parts.forEach(part => {
+    values[part.type] = part.value
+  })
+  
+  return new Date(
+    parseInt(values.year),
+    parseInt(values.month) - 1,
+    parseInt(values.day),
+    parseInt(values.hour),
+    parseInt(values.minute),
+    parseInt(values.second)
+  )
+}
+
+// Check if quota should be reset based on period and timezone
+function shouldResetQuota(
+  quotaResetAt: string | null,
+  quotaPeriodo: string,
+  timezone: string
+): boolean {
+  if (!quotaResetAt) return true // First time
+  
+  const now = new Date()
+  const lastReset = new Date(quotaResetAt)
+  
+  // Convert to local timezone
+  const nowLocal = toLocalDate(now, timezone)
+  const lastResetLocal = toLocalDate(lastReset, timezone)
+  
+  switch (quotaPeriodo) {
+    case 'hora':
+      // Reset if hour changed
+      return nowLocal.getHours() !== lastResetLocal.getHours() ||
+             nowLocal.getDate() !== lastResetLocal.getDate() ||
+             nowLocal.getMonth() !== lastResetLocal.getMonth()
+    
+    case 'diario':
+      // Reset if passed midnight
+      return nowLocal.getDate() !== lastResetLocal.getDate() ||
+             nowLocal.getMonth() !== lastResetLocal.getMonth() ||
+             nowLocal.getFullYear() !== lastResetLocal.getFullYear()
+    
+    case 'semanal':
+      // Reset if week number changed (week starts Monday)
+      return getWeekNumber(nowLocal) !== getWeekNumber(lastResetLocal) ||
+             nowLocal.getFullYear() !== lastResetLocal.getFullYear()
+    
+    case 'mensal':
+      // Reset if month changed
+      return nowLocal.getMonth() !== lastResetLocal.getMonth() ||
+             nowLocal.getFullYear() !== lastResetLocal.getFullYear()
+    
+    default:
+      return false // Unknown period, don't reset
+  }
+}
+
 // Helper to create alerts without duplicating recent ones
 async function createAlertIfNotRecent(
   supabase: ReturnType<typeof createClient>,
@@ -125,9 +204,25 @@ Deno.serve(async (req) => {
 
     const { data: embarcacao } = await supabase
       .from('embarcacoes')
-      .select('id, empresa_id')
+      .select('id, empresa_id, timezone')
       .eq('id', hotspot.embarcacao_id)
       .single()
+
+    // Get empresa timezone as fallback
+    let effectiveTimezone = 'America/Sao_Paulo' // Default
+    if (embarcacao?.timezone) {
+      effectiveTimezone = embarcacao.timezone
+    } else if (embarcacao?.empresa_id) {
+      const { data: empresa } = await supabase
+        .from('empresas')
+        .select('timezone')
+        .eq('id', embarcacao.empresa_id)
+        .single()
+      if (empresa?.timezone) {
+        effectiveTimezone = empresa.timezone
+      }
+    }
+    console.log(`[mikrotik-sync] Using timezone: ${effectiveTimezone}`)
 
     if (hotspot.status === 'offline') {
       console.log('[mikrotik-sync] Hotspot was offline, resolving offline alerts')
@@ -200,8 +295,8 @@ Deno.serve(async (req) => {
         const { data: tripulante } = await supabase
           .from('tripulantes')
           .select(`
-            id, bytes_consumidos, perfil_id, nome, login_wifi,
-            perfis_velocidade(id, nome, max_dispositivos, limite_dados_mb)
+            id, bytes_consumidos, perfil_id, nome, login_wifi, quota_reset_at,
+            perfis_velocidade(id, nome, max_dispositivos, limite_dados_mb, quota_periodo)
           `)
           .eq('login_wifi', activeUser.user)
           .eq('embarcacao_id', hotspot.embarcacao_id)
@@ -213,9 +308,29 @@ Deno.serve(async (req) => {
             nome: string; 
             max_dispositivos: number;
             limite_dados_mb: number | null;
+            quota_periodo: string;
           } | null
           const maxDevices = perfil?.max_dispositivos || 1
           const userMacs = userDeviceCounts.get(activeUser.user) || []
+
+          // Check if quota should be reset based on period and timezone
+          if (perfil?.limite_dados_mb && perfil.quota_periodo) {
+            const quotaResetAt = (tripulante as any).quota_reset_at as string | null
+            if (shouldResetQuota(quotaResetAt, perfil.quota_periodo, effectiveTimezone)) {
+              console.log(`[mikrotik-sync] Resetting quota for ${tripulante.nome} (period: ${perfil.quota_periodo}, tz: ${effectiveTimezone})`)
+              
+              await supabase
+                .from('tripulantes')
+                .update({
+                  bytes_consumidos: 0,
+                  quota_reset_at: new Date().toISOString()
+                })
+                .eq('id', tripulante.id)
+
+              // Update local reference so the percentage calculation is correct
+              tripulante.bytes_consumidos = 0
+            }
+          }
           
           if (userMacs.length > maxDevices) {
             let violation = deviceViolations.find(v => v.user === activeUser.user)

@@ -16,6 +16,20 @@ export const TIPOS_USUARIO = [
   { value: 'convidado', label: 'Convidado' },
 ] as const;
 
+export const PERIODOS_QUOTA = [
+  { value: 'hora', label: 'Por Hora', description: 'Renova a cada hora cheia' },
+  { value: 'diario', label: 'Diário', description: 'Renova à meia-noite' },
+  { value: 'semanal', label: 'Semanal', description: 'Renova toda segunda-feira' },
+  { value: 'mensal', label: 'Mensal', description: 'Renova no dia 1' },
+] as const;
+
+export const TIMEZONES_BRASIL = [
+  { value: 'America/Noronha', label: 'Fernando de Noronha (UTC-2)', offset: -2 },
+  { value: 'America/Sao_Paulo', label: 'Brasília (UTC-3)', offset: -3 },
+  { value: 'America/Manaus', label: 'Manaus (UTC-4)', offset: -4 },
+  { value: 'America/Rio_Branco', label: 'Acre (UTC-5)', offset: -5 },
+] as const;
+
 export const MODOS_ACESSO = [
   { value: 'permitir_tudo', label: 'Permitir Tudo (bloquear exceções)' },
   { value: 'bloquear_tudo', label: 'Bloquear Tudo (permitir exceções)' },

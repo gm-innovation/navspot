@@ -57,7 +57,8 @@ import {
   useDeletePerfilVelocidade,
   PerfilWithCount,
   TIPOS_USUARIO,
-  MODOS_ACESSO
+  MODOS_ACESSO,
+  PERIODOS_QUOTA
 } from "@/hooks/usePerfisVelocidade";
 import { useTableRealtime } from "@/hooks/useRealtimeSubscription";
 import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
@@ -83,6 +84,7 @@ export default function PerfisVelocidade() {
     velocidade_download: "10M",
     velocidade_upload: "5M",
     limite_dados_mb: "",
+    quota_periodo: "diario",
     prioridade: 4,
     session_timeout_minutos: "",
     descricao: "",
@@ -99,6 +101,7 @@ export default function PerfisVelocidade() {
         velocidade_download: editingPerfil.velocidade_download,
         velocidade_upload: editingPerfil.velocidade_upload,
         limite_dados_mb: editingPerfil.limite_dados_mb?.toString() || "",
+        quota_periodo: (editingPerfil as any).quota_periodo || "diario",
         prioridade: editingPerfil.prioridade,
         session_timeout_minutos: editingPerfil.session_timeout_minutos?.toString() || "",
         descricao: editingPerfil.descricao || "",
@@ -113,6 +116,7 @@ export default function PerfisVelocidade() {
         velocidade_download: "10M",
         velocidade_upload: "5M",
         limite_dados_mb: "",
+        quota_periodo: "diario",
         prioridade: 4,
         session_timeout_minutos: "",
         descricao: "",
@@ -155,6 +159,7 @@ export default function PerfisVelocidade() {
       velocidade_download: formData.velocidade_download,
       velocidade_upload: formData.velocidade_upload,
       limite_dados_mb: formData.limite_dados_mb ? parseInt(formData.limite_dados_mb) : null,
+      quota_periodo: formData.quota_periodo,
       prioridade: formData.prioridade,
       session_timeout_minutos: formData.session_timeout_minutos ? parseInt(formData.session_timeout_minutos) : null,
       descricao: formData.descricao || null,
@@ -427,6 +432,37 @@ export default function PerfisVelocidade() {
                   placeholder="Vazio = ilimitado"
                 />
               </div>
+
+              {formData.limite_dados_mb && (
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="quota_periodo" className="text-right">
+                    Renovação
+                  </Label>
+                  <Select
+                    value={formData.quota_periodo}
+                    onValueChange={(value) => handleChange("quota_periodo", value)}
+                  >
+                    <SelectTrigger className="col-span-3">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="z-50 bg-background border shadow-lg">
+                      {PERIODOS_QUOTA.map(periodo => (
+                        <SelectItem key={periodo.value} value={periodo.value}>
+                          <div className="flex flex-col">
+                            <span>{periodo.label}</span>
+                            <span className="text-xs text-muted-foreground">{periodo.description}</span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              {formData.limite_dados_mb && (
+                <p className="text-xs text-muted-foreground ml-auto col-span-4 text-right">
+                  ℹ️ A renovação segue o fuso horário da embarcação/empresa
+                </p>
+              )}
 
               <div className="grid grid-cols-4 items-center gap-4">
                 <Label htmlFor="prioridade" className="text-right">
