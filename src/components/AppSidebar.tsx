@@ -94,7 +94,7 @@ export function AppSidebar() {
             </SidebarGroupLabel>
             <SidebarGroupContent>
               <div className="px-3 py-2 text-sm">
-                <p className="font-medium">{user.name}</p>
+                <p className="font-medium">{user.email?.split('@')[0]}</p>
                 <p className="text-xs text-muted-foreground capitalize">
                   {user.role.replace('_', ' ')}
                 </p>

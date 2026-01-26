@@ -1,7 +1,7 @@
-
 import React from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth, UserRole } from '@/contexts/AuthContext';
+import { Loader2 } from 'lucide-react';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -12,19 +12,25 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   children, 
   allowedRoles 
 }) => {
-  const { isAuthenticated, hasRole, user } = useAuth();
+  const { isAuthenticated, hasRole, user, isLoading } = useAuth();
 
-  console.log('ProtectedRoute - User:', user);
-  console.log('ProtectedRoute - Is authenticated:', isAuthenticated);
-  console.log('ProtectedRoute - Allowed roles:', allowedRoles);
+  // Show loading spinner while checking auth state
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="h-8 w-8 animate-spin text-navspot-blue-600" />
+          <p className="text-muted-foreground">Carregando...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
-    console.log('ProtectedRoute - Redirecting to login (not authenticated)');
     return <Navigate to="/login" replace />;
   }
 
   if (allowedRoles && !hasRole(allowedRoles)) {
-    console.log(`ProtectedRoute - Access denied. User role: ${user?.role}, Required roles: ${allowedRoles.join(', ')}`);
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center space-y-4">
@@ -40,6 +46,5 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     );
   }
 
-  console.log('ProtectedRoute - Access granted');
   return <>{children}</>;
 };

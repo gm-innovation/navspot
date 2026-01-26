@@ -8,6 +8,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AuthProvider } from "@/contexts/AuthContext";
 import Login from "./pages/Login";
+import Cadastro from "./pages/Cadastro";
 import Dashboard from "./pages/Dashboard";
 import Hotspots from "./pages/Hotspots";
 import Embarcacoes from "./pages/Embarcacoes";
@@ -30,6 +31,7 @@ const App = () => (
           <AuthProvider>
             <Routes>
               <Route path="/login" element={<Login />} />
+              <Route path="/cadastro" element={<Cadastro />} />
               <Route path="/" element={
                 <ProtectedRoute>
                   <SidebarProvider>

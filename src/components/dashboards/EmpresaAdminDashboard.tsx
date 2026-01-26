@@ -41,7 +41,7 @@ export function EmpresaAdminDashboard() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Dashboard da Empresa</h1>
           <p className="text-muted-foreground">
-            Bem-vindo, {user?.name} - Gerencie suas embarcações
+            Bem-vindo - Gerencie suas embarcações
           </p>
         </div>
         <Button>
