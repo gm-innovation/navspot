@@ -1,60 +1,94 @@
-
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Ship, MapPin, Users, Wifi, Plus, Settings } from "lucide-react";
+import { Ship, MapPin, Users, Wifi, Plus, Settings, Trash2, Loader2 } from "lucide-react";
+import { 
+  useEmbarcacoes, 
+  useCreateEmbarcacao, 
+  useUpdateEmbarcacao, 
+  useDeleteEmbarcacao,
+  EmbarcacaoWithStats 
+} from "@/hooks/useEmbarcacoes";
+import { EmbarcacaoForm } from "@/components/forms/EmbarcacaoForm";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export default function Embarcacoes() {
-  const embarcacoes = [
-    {
-      id: 1,
-      nome: "Atlas Marine",
-      tipo: "Navio Cargueiro",
-      responsavel: "Capitão Silva",
-      email: "silva@atlasmarine.com",
-      hotspots: 2,
-      tripulantes: 45,
-      localizacao: "Porto de Santos",
-      status: "ativo",
-      ultimaAtualizacao: "2 min atrás"
-    },
-    {
-      id: 2,
-      nome: "Esperança Transportes",
-      tipo: "Navio Petroleiro",
-      responsavel: "Comandante Costa",
-      email: "costa@esperanca.com",
-      hotspots: 1,
-      tripulantes: 32,
-      localizacao: "Porto do Rio",
-      status: "inativo",
-      ultimaAtualizacao: "15 min atrás"
-    },
-    {
-      id: 3,
-      nome: "Marina Recreio",
-      tipo: "Lancha",
-      responsavel: "Capitão Oliveira",
-      email: "oliveira@marina.com",
-      hotspots: 1,
-      tripulantes: 12,
-      localizacao: "Marina da Glória",
-      status: "ativo",
-      ultimaAtualizacao: "5 min atrás"
-    },
-    {
-      id: 4,
-      nome: "Poseidon Luxury",
-      tipo: "Iate",
-      responsavel: "Comandante Santos",
-      email: "santos@poseidon.com",
-      hotspots: 3,
-      tripulantes: 18,
-      localizacao: "Angra dos Reis",
-      status: "ativo",
-      ultimaAtualizacao: "1 min atrás"
+  const { data: embarcacoes, isLoading, error } = useEmbarcacoes();
+  const createEmbarcacao = useCreateEmbarcacao();
+  const updateEmbarcacao = useUpdateEmbarcacao();
+  const deleteEmbarcacao = useDeleteEmbarcacao();
+
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingEmbarcacao, setEditingEmbarcacao] = useState<EmbarcacaoWithStats | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [embarcacaoToDelete, setEmbarcacaoToDelete] = useState<EmbarcacaoWithStats | null>(null);
+
+  const handleCreate = () => {
+    setEditingEmbarcacao(null);
+    setFormOpen(true);
+  };
+
+  const handleEdit = (embarcacao: EmbarcacaoWithStats) => {
+    setEditingEmbarcacao(embarcacao);
+    setFormOpen(true);
+  };
+
+  const handleDelete = (embarcacao: EmbarcacaoWithStats) => {
+    setEmbarcacaoToDelete(embarcacao);
+    setDeleteDialogOpen(true);
+  };
+
+  const confirmDelete = () => {
+    if (embarcacaoToDelete) {
+      deleteEmbarcacao.mutate(embarcacaoToDelete.id);
+      setDeleteDialogOpen(false);
+      setEmbarcacaoToDelete(null);
     }
-  ];
+  };
+
+  const handleSubmit = (data: any) => {
+    if (editingEmbarcacao) {
+      updateEmbarcacao.mutate(data, {
+        onSuccess: () => setFormOpen(false),
+      });
+    } else {
+      createEmbarcacao.mutate(data, {
+        onSuccess: () => setFormOpen(false),
+      });
+    }
+  };
+
+  // Calculate stats
+  const totalEmbarcacoes = embarcacoes?.length || 0;
+  const ativas = embarcacoes?.filter((e) => e.status === "ativo").length || 0;
+  const totalTripulantes = embarcacoes?.reduce((acc, e) => acc + (e.tripulantes_count || 0), 0) || 0;
+  const totalHotspots = embarcacoes?.reduce((acc, e) => acc + (e.hotspots_count || 0), 0) || 0;
+
+  if (isLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-6">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-6">
+        <p className="text-destructive">Erro ao carregar embarcações: {error.message}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 space-y-6 p-6">
@@ -66,7 +100,7 @@ export default function Embarcacoes() {
             Gerencie todas as embarcações cadastradas no sistema
           </p>
         </div>
-        <Button>
+        <Button onClick={handleCreate}>
           <Plus className="h-4 w-4 mr-2" />
           Nova Embarcação
         </Button>
@@ -77,16 +111,16 @@ export default function Embarcacoes() {
         <Card>
           <CardContent className="flex items-center justify-between p-6">
             <div>
-              <p className="text-2xl font-bold">12</p>
+              <p className="text-2xl font-bold">{totalEmbarcacoes}</p>
               <p className="text-sm text-muted-foreground">Total</p>
             </div>
-            <Ship className="h-8 w-8 text-navspot-blue-500" />
+            <Ship className="h-8 w-8 text-primary" />
           </CardContent>
         </Card>
         <Card>
           <CardContent className="flex items-center justify-between p-6">
             <div>
-              <p className="text-2xl font-bold text-green-600">9</p>
+              <p className="text-2xl font-bold text-green-600">{ativas}</p>
               <p className="text-sm text-muted-foreground">Ativas</p>
             </div>
             <div className="h-8 w-8 rounded-full bg-green-100 dark:bg-green-900/20 flex items-center justify-center">
@@ -97,90 +131,148 @@ export default function Embarcacoes() {
         <Card>
           <CardContent className="flex items-center justify-between p-6">
             <div>
-              <p className="text-2xl font-bold">156</p>
+              <p className="text-2xl font-bold">{totalTripulantes}</p>
               <p className="text-sm text-muted-foreground">Tripulantes</p>
             </div>
-            <Users className="h-8 w-8 text-navspot-blue-500" />
+            <Users className="h-8 w-8 text-primary" />
           </CardContent>
         </Card>
         <Card>
           <CardContent className="flex items-center justify-between p-6">
             <div>
-              <p className="text-2xl font-bold">24</p>
+              <p className="text-2xl font-bold">{totalHotspots}</p>
               <p className="text-sm text-muted-foreground">Hotspots</p>
             </div>
-            <Wifi className="h-8 w-8 text-navspot-blue-500" />
+            <Wifi className="h-8 w-8 text-primary" />
           </CardContent>
         </Card>
       </div>
 
       {/* Lista de embarcações */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {embarcacoes.map((embarcacao) => (
-          <Card key={embarcacao.id} className="hover:shadow-md transition-shadow">
-            <CardHeader className="pb-3">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="h-10 w-10 rounded-lg bg-navspot-blue-100 dark:bg-navspot-blue-900/20 flex items-center justify-center">
-                    <Ship className="h-5 w-5 text-navspot-blue-600 dark:text-navspot-blue-400" />
+      {embarcacoes && embarcacoes.length > 0 ? (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {embarcacoes.map((embarcacao) => (
+            <Card key={embarcacao.id} className="hover:shadow-md transition-shadow">
+              <CardHeader className="pb-3">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                      <Ship className="h-5 w-5 text-primary" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-lg">{embarcacao.nome}</CardTitle>
+                      <p className="text-sm text-muted-foreground capitalize">{embarcacao.tipo}</p>
+                    </div>
                   </div>
+                  <Badge 
+                    variant={embarcacao.status === "ativo" ? "default" : "secondary"}
+                    className={embarcacao.status === "ativo" ? "bg-green-100 text-green-800 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400" : ""}
+                  >
+                    {embarcacao.status === "ativo" ? "Ativo" : "Inativo"}
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Responsável */}
+                {embarcacao.responsavel_nome && (
                   <div>
-                    <CardTitle className="text-lg">{embarcacao.nome}</CardTitle>
-                    <p className="text-sm text-muted-foreground">{embarcacao.tipo}</p>
+                    <p className="text-sm font-medium">{embarcacao.responsavel_nome}</p>
+                    <p className="text-sm text-muted-foreground">{embarcacao.responsavel_email}</p>
+                  </div>
+                )}
+
+                {/* Localização */}
+                {embarcacao.localizacao && (
+                  <div className="flex items-center gap-2">
+                    <MapPin className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-sm">{embarcacao.localizacao}</span>
+                  </div>
+                )}
+
+                {/* Empresa */}
+                {embarcacao.empresa_nome && (
+                  <p className="text-xs text-muted-foreground">
+                    Empresa: {embarcacao.empresa_nome}
+                  </p>
+                )}
+
+                {/* Estatísticas */}
+                <div className="grid grid-cols-2 gap-4 pt-2 border-t">
+                  <div className="text-center">
+                    <p className="text-lg font-semibold">{embarcacao.hotspots_count || 0}</p>
+                    <p className="text-xs text-muted-foreground">Hotspots</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-lg font-semibold">{embarcacao.tripulantes_count || 0}</p>
+                    <p className="text-xs text-muted-foreground">Tripulantes</p>
                   </div>
                 </div>
-                <Badge 
-                  variant={embarcacao.status === "ativo" ? "default" : "secondary"}
-                  className={embarcacao.status === "ativo" ? "bg-green-100 text-green-800 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400" : ""}
-                >
-                  {embarcacao.status === "ativo" ? "Ativo" : "Inativo"}
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Responsável */}
-              <div>
-                <p className="text-sm font-medium">{embarcacao.responsavel}</p>
-                <p className="text-sm text-muted-foreground">{embarcacao.email}</p>
-              </div>
 
-              {/* Localização */}
-              <div className="flex items-center gap-2">
-                <MapPin className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm">{embarcacao.localizacao}</span>
-              </div>
-
-              {/* Estatísticas */}
-              <div className="grid grid-cols-2 gap-4 pt-2 border-t">
-                <div className="text-center">
-                  <p className="text-lg font-semibold">{embarcacao.hotspots}</p>
-                  <p className="text-xs text-muted-foreground">Hotspots</p>
+                {/* Ações */}
+                <div className="flex gap-2 pt-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="flex-1"
+                    onClick={() => handleEdit(embarcacao)}
+                  >
+                    <Settings className="h-4 w-4 mr-2" />
+                    Editar
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => handleDelete(embarcacao)}
+                  >
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </Button>
                 </div>
-                <div className="text-center">
-                  <p className="text-lg font-semibold">{embarcacao.tripulantes}</p>
-                  <p className="text-xs text-muted-foreground">Tripulantes</p>
-                </div>
-              </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <Ship className="h-12 w-12 text-muted-foreground mb-4" />
+            <h3 className="text-lg font-semibold">Nenhuma embarcação cadastrada</h3>
+            <p className="text-muted-foreground mb-4">Comece adicionando sua primeira embarcação.</p>
+            <Button onClick={handleCreate}>
+              <Plus className="h-4 w-4 mr-2" />
+              Nova Embarcação
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
-              {/* Ações */}
-              <div className="flex gap-2 pt-2">
-                <Button variant="outline" size="sm" className="flex-1">
-                  <Settings className="h-4 w-4 mr-2" />
-                  Gerenciar
-                </Button>
-                <Button variant="outline" size="sm" className="flex-1">
-                  Ver Detalhes
-                </Button>
-              </div>
+      {/* Form Modal */}
+      <EmbarcacaoForm
+        open={formOpen}
+        onOpenChange={setFormOpen}
+        onSubmit={handleSubmit}
+        initialData={editingEmbarcacao || undefined}
+        isLoading={createEmbarcacao.isPending || updateEmbarcacao.isPending}
+      />
 
-              {/* Última atualização */}
-              <p className="text-xs text-muted-foreground text-center pt-2 border-t">
-                Última atualização: {embarcacao.ultimaAtualizacao}
-              </p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar exclusão</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja excluir a embarcação "{embarcacaoToDelete?.nome}"? 
+              Esta ação não pode ser desfeita e todos os hotspots e tripulantes associados 
+              podem ser afetados.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Excluir
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
