@@ -12,7 +12,10 @@ import {
   AlertTriangle, 
   Activity,
   Clock,
-  Building2
+  Building2,
+  Shield,
+  Smartphone,
+  List
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { 
@@ -200,7 +203,7 @@ export function SuperAdminDashboard() {
       </div>
 
       {/* Estatísticas Resumidas */}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -229,20 +232,52 @@ export function SuperAdminDashboard() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Building2 className="h-5 w-5" />
-              Empresas
+              <Shield className="h-5 w-5" />
+              Controle de Acesso
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-sm text-muted-foreground mb-4">
-              {stats?.totalEmpresas || 0} empresa(s) cadastrada(s)
-            </p>
-            <Button className="w-full" variant="outline" asChild>
-              <Link to="/embarcacoes">
-                <Building2 className="h-4 w-4 mr-2" />
-                Gerenciar
-              </Link>
-            </Button>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Perfis de Velocidade</span>
+                <span className="text-sm font-medium">{stats?.totalPerfis || 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Listas de Acesso</span>
+                <span className="text-sm font-medium">{stats?.totalListasAcesso || 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Regras Ativas</span>
+                <span className="text-sm font-medium text-primary">{stats?.totalRegrasAcesso || 0}</span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Smartphone className="h-5 w-5" />
+              Dispositivos
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Total Registrados</span>
+                <span className="text-sm font-medium">{stats?.totalDispositivos || 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Autorizados</span>
+                <span className="text-sm font-medium text-green-600">{stats?.dispositivosAutorizados || 0}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Bloqueados</span>
+                <span className="text-sm font-medium text-red-600">
+                  {(stats?.totalDispositivos || 0) - (stats?.dispositivosAutorizados || 0)}
+                </span>
+              </div>
+            </div>
           </CardContent>
         </Card>
 

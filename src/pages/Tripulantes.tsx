@@ -16,7 +16,8 @@ import {
   Ban,
   LogOut,
   RotateCcw,
-  QrCode
+  QrCode,
+  Eye
 } from "lucide-react";
 import {
   Table,
@@ -54,6 +55,7 @@ import {
 import { useTripulantesRealtime } from "@/hooks/useRealtimeSubscription";
 import { TripulanteForm } from "@/components/forms/TripulanteForm";
 import { QRCodeModal } from "@/components/modals/QRCodeModal";
+import { TripulanteDetailsModal } from "@/components/modals/TripulanteDetailsModal";
 import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { EmptyState, ErrorState } from "@/components/ui/empty-state";
 import { formatDistanceToNow } from "date-fns";
@@ -75,6 +77,8 @@ export default function Tripulantes() {
   const [tripulanteToDelete, setTripulanteToDelete] = useState<TripulanteWithDetails | null>(null);
   const [qrModalOpen, setQrModalOpen] = useState(false);
   const [qrTripulante, setQrTripulante] = useState<TripulanteWithDetails | null>(null);
+  const [detailsModalOpen, setDetailsModalOpen] = useState(false);
+  const [selectedTripulante, setSelectedTripulante] = useState<TripulanteWithDetails | null>(null);
 
   const filteredTripulantes = tripulantes?.filter(tripulante =>
     tripulante.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -167,6 +171,11 @@ export default function Tripulantes() {
   const handleShowQR = (tripulante: TripulanteWithDetails) => {
     setQrTripulante(tripulante);
     setQrModalOpen(true);
+  };
+
+  const handleShowDetails = (tripulante: TripulanteWithDetails) => {
+    setSelectedTripulante(tripulante);
+    setDetailsModalOpen(true);
   };
 
   const formatLastLogin = (dateStr: string | null) => {
@@ -368,7 +377,11 @@ export default function Tripulantes() {
                             <Settings className="h-4 w-4" />
                           </Button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
+                        <DropdownMenuContent align="end" className="z-50 bg-background border shadow-lg">
+                          <DropdownMenuItem onClick={() => handleShowDetails(tripulante)}>
+                            <Eye className="h-4 w-4 mr-2" />
+                            Ver Detalhes
+                          </DropdownMenuItem>
                           <DropdownMenuItem onClick={() => handleShowQR(tripulante)}>
                             <QrCode className="h-4 w-4 mr-2" />
                             QR Code
@@ -431,6 +444,13 @@ export default function Tripulantes() {
         open={qrModalOpen}
         onOpenChange={setQrModalOpen}
         tripulante={qrTripulante}
+      />
+
+      {/* Details Modal with Devices Tab */}
+      <TripulanteDetailsModal
+        open={detailsModalOpen}
+        onOpenChange={setDetailsModalOpen}
+        tripulante={selectedTripulante}
       />
 
       {/* Delete Confirmation Dialog */}

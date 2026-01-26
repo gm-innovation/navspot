@@ -14,6 +14,12 @@ export interface DashboardStats {
   totalAlertas: number;
   alertasCriticos: number;
   alertasNaoResolvidos: number;
+  // Access control metrics
+  totalPerfis: number;
+  totalListasAcesso: number;
+  totalRegrasAcesso: number;
+  totalDispositivos: number;
+  dispositivosAutorizados: number;
 }
 
 export function useDashboardStats() {
@@ -27,12 +33,20 @@ export function useDashboardStats() {
         hotspotsRes,
         tripulantesRes,
         alertasRes,
+        perfisRes,
+        listasRes,
+        regrasRes,
+        dispositivosRes,
       ] = await Promise.all([
         supabase.from('empresas').select('id, status'),
         supabase.from('embarcacoes').select('id, status'),
         supabase.from('hotspots').select('id, status'),
         supabase.from('tripulantes').select('id, status'),
         supabase.from('alertas').select('id, severidade, resolvido'),
+        supabase.from('perfis_velocidade').select('id'),
+        supabase.from('listas_acesso').select('id, ativo'),
+        supabase.from('regras_acesso').select('id, ativo'),
+        supabase.from('dispositivos_registrados').select('id, autorizado'),
       ]);
 
       const empresas = empresasRes.data || [];
@@ -40,6 +54,10 @@ export function useDashboardStats() {
       const hotspots = hotspotsRes.data || [];
       const tripulantes = tripulantesRes.data || [];
       const alertas = alertasRes.data || [];
+      const perfis = perfisRes.data || [];
+      const listas = listasRes.data || [];
+      const regras = regrasRes.data || [];
+      const dispositivos = dispositivosRes.data || [];
 
       return {
         totalEmpresas: empresas.length,
@@ -54,6 +72,11 @@ export function useDashboardStats() {
         totalAlertas: alertas.length,
         alertasCriticos: alertas.filter((a) => a.severidade === 'critical').length,
         alertasNaoResolvidos: alertas.filter((a) => !a.resolvido).length,
+        totalPerfis: perfis.length,
+        totalListasAcesso: listas.length,
+        totalRegrasAcesso: regras.filter((r) => r.ativo).length,
+        totalDispositivos: dispositivos.length,
+        dispositivosAutorizados: dispositivos.filter((d) => d.autorizado).length,
       };
     },
     refetchInterval: 30000, // Refresh every 30 seconds
