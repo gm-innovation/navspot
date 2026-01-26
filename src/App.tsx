@@ -11,6 +11,7 @@ import Dashboard from "./pages/Dashboard";
 import Hotspots from "./pages/Hotspots";
 import Embarcacoes from "./pages/Embarcacoes";
 import Tripulantes from "./pages/Tripulantes";
+import Dispositivos from "./pages/Dispositivos";
 import PerfisVelocidade from "./pages/PerfisVelocidade";
 import ListasAcesso from "./pages/ListasAcesso";
 import RegrasAcesso from "./pages/RegrasAcesso";
@@ -67,6 +68,15 @@ const App = () => (
                   <SidebarProvider>
                     <AppLayout>
                       <Tripulantes />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/dispositivos" element={
+                <ProtectedRoute>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <Dispositivos />
                     </AppLayout>
                   </SidebarProvider>
                 </ProtectedRoute>

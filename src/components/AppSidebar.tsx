@@ -1,4 +1,4 @@
-import { Home, Wifi, Ship, Users, Bell, Settings, Gauge, List, ShieldCheck, UserCog } from "lucide-react";
+import { Home, Wifi, Ship, Users, Bell, Settings, Gauge, List, ShieldCheck, UserCog, Smartphone } from "lucide-react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   Sidebar,
@@ -25,6 +25,7 @@ const allNavigationItems: NavigationItem[] = [
   { title: "Hotspots", url: "/hotspots", icon: Wifi, roles: ['super_admin', 'empresa_admin'] },
   { title: "Embarcações", url: "/embarcacoes", icon: Ship, roles: ['super_admin', 'empresa_admin'] },
   { title: "Tripulantes", url: "/tripulantes", icon: Users, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
+  { title: "Dispositivos", url: "/dispositivos", icon: Smartphone, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
   { title: "Perfis", url: "/perfis-velocidade", icon: Gauge, roles: ['super_admin', 'empresa_admin'] },
   { title: "Listas de Acesso", url: "/listas-acesso", icon: List, roles: ['super_admin', 'empresa_admin'] },
   { title: "Regras de Acesso", url: "/regras-acesso", icon: ShieldCheck, roles: ['super_admin', 'empresa_admin'] },
