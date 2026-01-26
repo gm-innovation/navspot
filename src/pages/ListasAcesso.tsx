@@ -64,6 +64,7 @@ import {
   TEMPLATES_LISTAS,
   ListaWithRulesCount 
 } from "@/hooks/useListasAcesso";
+import { useEmpresas } from "@/hooks/useEmpresas";
 import { useTableRealtime } from "@/hooks/useRealtimeSubscription";
 import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { EmptyState, ErrorState } from "@/components/ui/empty-state";
@@ -87,6 +88,7 @@ export default function ListasAcesso() {
   useTableRealtime('listas_acesso', ['listas_acesso']);
   const { user } = useAuth();
   const { data: listas, isLoading, error } = useListasAcesso();
+  const { data: empresas } = useEmpresas();
   const createLista = useCreateListaAcesso();
   const updateLista = useUpdateListaAcesso();
   const deleteLista = useDeleteListaAcesso();
@@ -97,6 +99,8 @@ export default function ListasAcesso() {
   const [editingLista, setEditingLista] = useState<ListaWithRulesCount | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [listaToDelete, setListaToDelete] = useState<ListaWithRulesCount | null>(null);
+  const [selectedEmpresaId, setSelectedEmpresaId] = useState("");
+  const [templateEmpresaId, setTemplateEmpresaId] = useState("");
 
   const [formData, setFormData] = useState({
     nome: "",
@@ -120,6 +124,7 @@ export default function ListasAcesso() {
         aplicativos: (editingLista.aplicativos as string[]) || [],
         ativo: editingLista.ativo,
       });
+      setSelectedEmpresaId(editingLista.empresa_id);
     } else {
       setFormData({
         nome: "",
@@ -129,10 +134,12 @@ export default function ListasAcesso() {
         aplicativos: [],
         ativo: true,
       });
+      // For non-super_admin, auto-select their empresa
+      setSelectedEmpresaId(user?.role !== 'super_admin' ? (user?.empresa_id || "") : "");
     }
     setNewDominio("");
     setNewAplicativo("");
-  }, [editingLista, formOpen]);
+  }, [editingLista, formOpen, user]);
 
   const handleCreate = () => {
     setEditingLista(null);
@@ -210,6 +217,19 @@ export default function ListasAcesso() {
       return;
     }
 
+    const empresaId = user?.role === 'super_admin' 
+      ? selectedEmpresaId 
+      : user?.empresa_id;
+
+    if (!empresaId) {
+      toast({
+        title: "Erro",
+        description: "Selecione uma empresa.",
+        variant: "destructive"
+      });
+      return;
+    }
+
     const dataToSubmit = {
       nome: formData.nome.trim(),
       descricao: formData.descricao.trim() || null,
@@ -218,7 +238,7 @@ export default function ListasAcesso() {
       aplicativos: formData.aplicativos as unknown as Json,
       portas: [] as unknown as Json,
       ativo: formData.ativo,
-      empresa_id: user?.empresa_id || "",
+      empresa_id: empresaId,
     };
 
     if (editingLista) {
@@ -233,18 +253,25 @@ export default function ListasAcesso() {
   };
 
   const handleCreateFromTemplate = (template: typeof TEMPLATES_LISTAS[number]) => {
-    if (!user?.empresa_id) {
+    const empresaId = user?.role === 'super_admin' 
+      ? templateEmpresaId 
+      : user?.empresa_id;
+
+    if (!empresaId) {
       toast({
         title: "Erro",
-        description: "Empresa não identificada.",
+        description: "Selecione uma empresa para criar a lista.",
         variant: "destructive"
       });
       return;
     }
     
     createFromTemplate.mutate(
-      { template, empresaId: user.empresa_id },
-      { onSuccess: () => setTemplateModalOpen(false) }
+      { template, empresaId },
+      { onSuccess: () => {
+        setTemplateModalOpen(false);
+        setTemplateEmpresaId("");
+      }}
     );
   };
 
@@ -460,6 +487,28 @@ export default function ListasAcesso() {
           </DialogHeader>
           <form onSubmit={handleSubmit}>
             <div className="grid gap-4 py-4">
+              {/* Empresa - apenas para super_admin */}
+              {user?.role === 'super_admin' && (
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="empresa" className="text-right">
+                    Empresa *
+                  </Label>
+                  <Select
+                    value={selectedEmpresaId}
+                    onValueChange={setSelectedEmpresaId}
+                  >
+                    <SelectTrigger className="col-span-3">
+                      <SelectValue placeholder="Selecione a empresa" />
+                    </SelectTrigger>
+                    <SelectContent className="z-50 bg-background border shadow-lg">
+                      {empresas?.map(emp => (
+                        <SelectItem key={emp.id} value={emp.id}>{emp.nome}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
               {/* Nome */}
               <div className="grid grid-cols-4 items-center gap-4">
                 <Label htmlFor="nome" className="text-right">
@@ -650,43 +699,67 @@ export default function ListasAcesso() {
               Selecione um template para criar uma lista de acesso rapidamente.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-3 py-4 max-h-[400px] overflow-y-auto">
-            {TEMPLATES_LISTAS.map((template) => (
-              <Card 
-                key={template.nome} 
-                className="cursor-pointer hover:bg-muted/50 transition-colors"
-                onClick={() => handleCreateFromTemplate(template)}
-              >
-                <CardContent className="p-4 flex items-start gap-4">
-                  <div className={`p-2 rounded-lg ${
-                    template.tipo === 'whitelist' 
-                      ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' 
-                      : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-                  }`}>
-                    {TEMPLATE_ICONS[template.nome] || <Globe className="h-4 w-4" />}
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <p className="font-medium">{template.nome}</p>
-                      <Badge variant="outline" className="text-xs">
-                        {template.tipo}
-                      </Badge>
+          <div className="space-y-4 py-4">
+            {/* Empresa selector for super_admin */}
+            {user?.role === 'super_admin' && (
+              <div className="grid grid-cols-4 items-center gap-4 pb-4 border-b">
+                <Label className="text-right">Empresa *</Label>
+                <Select
+                  value={templateEmpresaId}
+                  onValueChange={setTemplateEmpresaId}
+                >
+                  <SelectTrigger className="col-span-3">
+                    <SelectValue placeholder="Selecione a empresa" />
+                  </SelectTrigger>
+                  <SelectContent className="z-50 bg-background border shadow-lg">
+                    {empresas?.map(emp => (
+                      <SelectItem key={emp.id} value={emp.id}>{emp.nome}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            
+            <div className="grid gap-3 max-h-[350px] overflow-y-auto">
+              {TEMPLATES_LISTAS.map((template) => (
+                <Card 
+                  key={template.nome} 
+                  className={`cursor-pointer hover:bg-muted/50 transition-colors ${
+                    user?.role === 'super_admin' && !templateEmpresaId ? 'opacity-50 pointer-events-none' : ''
+                  }`}
+                  onClick={() => handleCreateFromTemplate(template)}
+                >
+                  <CardContent className="p-4 flex items-start gap-4">
+                    <div className={`p-2 rounded-lg ${
+                      template.tipo === 'whitelist' 
+                        ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' 
+                        : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                    }`}>
+                      {TEMPLATE_ICONS[template.nome] || <Globe className="h-4 w-4" />}
                     </div>
-                    <p className="text-sm text-muted-foreground mb-2">{template.descricao}</p>
-                    <div className="flex flex-wrap gap-1">
-                      {template.dominios.slice(0, 3).map((d) => (
-                        <Badge key={d} variant="secondary" className="text-xs">{d}</Badge>
-                      ))}
-                      {template.dominios.length > 3 && (
-                        <Badge variant="secondary" className="text-xs">
-                          +{template.dominios.length - 3} mais
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <p className="font-medium">{template.nome}</p>
+                        <Badge variant="outline" className="text-xs">
+                          {template.tipo}
                         </Badge>
-                      )}
+                      </div>
+                      <p className="text-sm text-muted-foreground mb-2">{template.descricao}</p>
+                      <div className="flex flex-wrap gap-1">
+                        {template.dominios.slice(0, 3).map((d) => (
+                          <Badge key={d} variant="secondary" className="text-xs">{d}</Badge>
+                        ))}
+                        {template.dominios.length > 3 && (
+                          <Badge variant="secondary" className="text-xs">
+                            +{template.dominios.length - 3} mais
+                          </Badge>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setTemplateModalOpen(false)}>

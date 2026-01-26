@@ -23,10 +23,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
 import { EmbarcacaoInsert, EmbarcacaoUpdate } from "@/hooks/useEmbarcacoes";
 import { useEmpresas } from "@/hooks/useEmpresas";
+import { useListasAcessoByEmpresa } from "@/hooks/useListasAcesso";
 import { TIMEZONES_BRASIL } from "@/hooks/usePerfisVelocidade";
-import { HelpCircle, Ship, Wifi } from "lucide-react";
+import { HelpCircle, Ship, Wifi, Shield, ShieldOff } from "lucide-react";
 import { HotspotInsert, HotspotUpdate } from "@/hooks/useHotspots";
 
 interface EmbarcacaoFormProps {
@@ -35,9 +38,11 @@ interface EmbarcacaoFormProps {
   onSubmit: (data: {
     embarcacao: EmbarcacaoInsert | (EmbarcacaoUpdate & { id: string });
     hotspot?: Partial<HotspotInsert | HotspotUpdate>;
+    listasAplicadas?: string[];
   }) => void;
   initialData?: EmbarcacaoUpdate & { id: string };
   initialHotspot?: HotspotUpdate & { id: string };
+  initialListasAplicadas?: string[];
   isLoading?: boolean;
 }
 
@@ -64,6 +69,7 @@ export function EmbarcacaoForm({
   onSubmit,
   initialData,
   initialHotspot,
+  initialListasAplicadas = [],
   isLoading,
 }: EmbarcacaoFormProps) {
   const { data: empresas } = useEmpresas();
@@ -86,6 +92,11 @@ export function EmbarcacaoForm({
     sync_interval_minutes: 5,
   });
 
+  const [listasAplicadas, setListasAplicadas] = useState<string[]>([]);
+
+  // Fetch listas for selected empresa
+  const { data: listasDisponiveis, isLoading: isLoadingListas } = useListasAcessoByEmpresa(formData.empresa_id);
+
   // Update form when initialData changes
   useEffect(() => {
     if (initialData) {
@@ -98,6 +109,7 @@ export function EmbarcacaoForm({
         status: initialData.status || "ativo",
         timezone: initialData.timezone || "",
       });
+      setListasAplicadas(initialListasAplicadas);
     } else {
       setFormData({
         nome: "",
@@ -108,8 +120,9 @@ export function EmbarcacaoForm({
         status: "ativo",
         timezone: "",
       });
+      setListasAplicadas([]);
     }
-  }, [initialData]);
+  }, [initialData, initialListasAplicadas]);
 
   useEffect(() => {
     if (initialHotspot) {
@@ -129,6 +142,13 @@ export function EmbarcacaoForm({
     }
   }, [initialHotspot]);
 
+  // Reset listas when empresa changes (unless editing)
+  useEffect(() => {
+    if (!isEditing) {
+      setListasAplicadas([]);
+    }
+  }, [formData.empresa_id, isEditing]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (isEditing && initialData?.id) {
@@ -137,11 +157,13 @@ export function EmbarcacaoForm({
         hotspot: initialHotspot?.id 
           ? { ...hotspotData, id: initialHotspot.id }
           : hotspotData,
+        listasAplicadas,
       });
     } else {
       onSubmit({
         embarcacao: { ...formData, timezone: formData.timezone || null } as EmbarcacaoInsert,
         hotspot: hotspotData,
+        listasAplicadas,
       });
     }
   };
@@ -154,9 +176,17 @@ export function EmbarcacaoForm({
     setHotspotData((prev) => ({ ...prev, [field]: value }));
   };
 
+  const toggleLista = (listaId: string) => {
+    setListasAplicadas(prev => 
+      prev.includes(listaId) 
+        ? prev.filter(id => id !== listaId)
+        : [...prev, listaId]
+    );
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[550px] max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Ship className="h-5 w-5" />
@@ -396,6 +426,89 @@ export function EmbarcacaoForm({
                   <span className="text-sm text-muted-foreground">minutos</span>
                 </div>
               </div>
+            </div>
+
+            <Separator />
+
+            {/* Controle de Acesso - Listas */}
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+                  Controle de Acesso
+                </h3>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <HelpCircle className="h-4 w-4 text-muted-foreground cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    <p>
+                      Selecione as listas de acesso que serão aplicadas automaticamente 
+                      a esta embarcação. Regras de acesso serão criadas para cada lista selecionada.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+
+              {!formData.empresa_id ? (
+                <p className="text-sm text-muted-foreground italic py-4 text-center border rounded-md bg-muted/30">
+                  Selecione uma empresa para ver as listas de acesso disponíveis
+                </p>
+              ) : isLoadingListas ? (
+                <p className="text-sm text-muted-foreground italic py-4 text-center">
+                  Carregando listas...
+                </p>
+              ) : !listasDisponiveis || listasDisponiveis.length === 0 ? (
+                <p className="text-sm text-muted-foreground italic py-4 text-center border rounded-md bg-muted/30">
+                  Nenhuma lista de acesso cadastrada para esta empresa.
+                  <br />
+                  <span className="text-xs">Crie listas em "Listas de Acesso" antes de aplicar.</span>
+                </p>
+              ) : (
+                <div className="space-y-2 border rounded-md p-3 max-h-[180px] overflow-y-auto">
+                  {listasDisponiveis.map((lista) => (
+                    <div 
+                      key={lista.id} 
+                      className="flex items-center gap-3 p-2 rounded hover:bg-muted/50 cursor-pointer"
+                      onClick={() => toggleLista(lista.id)}
+                    >
+                      <Checkbox
+                        checked={listasAplicadas.includes(lista.id)}
+                        onCheckedChange={() => toggleLista(lista.id)}
+                      />
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          {lista.tipo === 'whitelist' ? (
+                            <Shield className="h-3.5 w-3.5 text-green-600" />
+                          ) : (
+                            <ShieldOff className="h-3.5 w-3.5 text-red-600" />
+                          )}
+                          <span className="text-sm font-medium">{lista.nome}</span>
+                          <Badge 
+                            variant="outline" 
+                            className={`text-xs ${
+                              lista.tipo === 'whitelist' 
+                                ? 'text-green-600 border-green-600' 
+                                : 'text-red-600 border-red-600'
+                            }`}
+                          >
+                            {lista.tipo}
+                          </Badge>
+                        </div>
+                        {lista.descricao && (
+                          <p className="text-xs text-muted-foreground mt-0.5">{lista.descricao}</p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {listasAplicadas.length > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {listasAplicadas.length} lista(s) selecionada(s). Regras de acesso serão criadas automaticamente.
+                </p>
+              )}
             </div>
           </div>
 
