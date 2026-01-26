@@ -54,7 +54,7 @@ export function AppSidebar() {
   console.log('Itens de navegação filtrados:', navigationItems.map(item => item.title));
 
   return (
-    <Sidebar className="border-r">
+    <Sidebar className="border-r top-14 h-[calc(100vh-3.5rem)]">
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel className="px-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
