@@ -1,211 +1,296 @@
 
-# Sistema de Alertas Funcional
 
-## Situacao Atual
+# Cadastro Simplificado de Tripulantes com Auto-Completação
 
-O sistema de alertas existe parcialmente:
-- Tabela `alertas` configurada com RLS policies
-- Hook `useRecentAlerts` disponivel em `useDashboard.ts`
-- Pagina `Alertas.tsx` usa dados mockados (hardcoded)
-- Nenhuma geracao automatica de alertas implementada
-- Edge Function `mikrotik-sync` nao cria alertas
+## Resumo do Requisito
 
-## Implementacao Proposta
+O administrador/gerente quer cadastrar tripulantes de forma simplificada:
+1. **No cadastro inicial**: apenas login, senha e perfil (pré-configurado ou personalizado)
+2. **No primeiro login**: o próprio tripulante completa seus dados pessoais (nome, email, CPF, cargo)
 
-### Fase 1: Hook Dedicado para Alertas
+Isso requer duas mudanças principais:
+- Reformular o formulário de cadastro de tripulantes
+- Criar uma página/portal para o tripulante completar seu perfil
 
-Criar `src/hooks/useAlertas.ts` com operacoes completas:
+## Análise da Estrutura Atual
 
-```typescript
-// Funcionalidades do hook
-- useAlertas(filters) - Listar com filtros (severidade, tipo, status)
-- useAlertasStats() - Estatisticas agregadas
-- useResolveAlerta() - Marcar como resolvido
-- useDeleteAlerta() - Excluir alerta
+### Tabela `tripulantes` (campos atuais)
+
+| Campo | Obrigatório | Descrição |
+|-------|-------------|-----------|
+| `nome` | SIM | Nome do tripulante |
+| `login_wifi` | SIM | Login para WiFi |
+| `senha_wifi` | SIM | Senha para WiFi |
+| `embarcacao_id` | SIM | Embarcação vinculada |
+| `perfil_id` | NAO | Perfil de velocidade |
+| `email` | NAO | Email pessoal |
+| `cpf` | NAO | CPF |
+| `cargo` | NAO | Cargo na embarcação |
+| `status` | SIM | ativo/bloqueado/inativo |
+
+### Tabela `perfis_velocidade` (campos disponíveis)
+
+| Campo | Descrição |
+|-------|-----------|
+| `velocidade_download` | Ex: "10M", "5M" |
+| `velocidade_upload` | Ex: "5M", "2M" |
+| `max_dispositivos` | Limite de dispositivos simultâneos |
+| `limite_dados_mb` | Quota de dados (opcional) |
+| `modo_acesso` | permitir_tudo / bloquear_tudo |
+| `herdar_regras_empresa` | Herdar listas de acesso |
+
+## Arquitetura da Solução
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                           FLUXO DE CADASTRO                                   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ADMINISTRADOR/GERENTE                    TRIPULANTE                         │
+│  ────────────────────                     ──────────                         │
+│                                                                              │
+│  1. Acessa "Novo Tripulante"                                                 │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌────────────────────────┐                                                  │
+│  │ Formulário Simplificado│                                                  │
+│  │ ────────────────────── │                                                  │
+│  │ • Login WiFi           │                                                  │
+│  │ • Senha WiFi           │                                                  │
+│  │ • Embarcação           │                                                  │
+│  │ • Modo: [Perfil | Personalizado] │                                        │
+│  │   ├── Perfil: Select de perfis   │                                        │
+│  │   └── Personalizado:             │                                        │
+│  │       • Velocidades              │                                        │
+│  │       • Max dispositivos         │                                        │
+│  │       • Modo acesso              │                                        │
+│  └────────────────────────┘                                                  │
+│           │                                                                  │
+│           ▼                                                                  │
+│  Tripulante criado com                                                       │
+│  nome = login_wifi                         2. Primeiro login WiFi            │
+│  status = "pendente_cadastro"                      │                         │
+│           │                                        ▼                         │
+│           │                              ┌───────────────────────┐           │
+│           └─ QR Code gerado ────────────▶│ Portal de Cadastro    │           │
+│                                          │ (Captive Portal)      │           │
+│                                          │ ───────────────────── │           │
+│                                          │ • Nome completo       │           │
+│                                          │ • Email               │           │
+│                                          │ • CPF                 │           │
+│                                          │ • Cargo               │           │
+│                                          └───────────────────────┘           │
+│                                                    │                         │
+│                                                    ▼                         │
+│                                          status = "ativo"                    │
+│                                          Acesso liberado                     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Fase 2: Pagina Alertas com Dados Reais
+## Mudanças Necessárias
 
-Refatorar `src/pages/Alertas.tsx`:
+### 1. Migração de Banco de Dados
 
-| Componente | Antes | Depois |
-|------------|-------|--------|
-| Lista de alertas | Array mockado | Query do banco de dados |
-| Cards de estatisticas | Numeros fixos | Contagens dinamicas |
-| Botao resolver | Sem funcao | Mutation para resolver |
-| Filtros | Nenhum | Por severidade, tipo, data |
-| Paginacao | Nenhuma | Scroll infinito ou paginacao |
-
-### Fase 3: Geracao Automatica de Alertas
-
-Adicionar criacao de alertas na Edge Function `mikrotik-sync`:
-
-**Tipos de alertas automaticos:**
-
-1. **Hotspot Offline** (critical)
-   - Quando hotspot muda status de online para offline
-   - Trigger: falta de sync por tempo configurado
-
-2. **Violacao de Dispositivos** (warning)
-   - Quando usuario excede limite de dispositivos
-   - Ja detectado no mikrotik-sync
-
-3. **Falha de Sincronizacao** (critical)
-   - Quando sync falha com erro
-   - Registrar no catch da funcao
-
-4. **Limite de Quota** (warning)
-   - Quando tripulante atinge 80%/100% da quota
-   - Verificar bytes_consumidos vs limite_dados_mb
-
-### Fase 4: Realtime para Alertas
-
-Habilitar Supabase Realtime na tabela alertas:
+Adicionar novo status e campo para saber se perfil é customizado:
 
 ```sql
-ALTER PUBLICATION supabase_realtime ADD TABLE public.alertas;
+-- Adicionar coluna para configurações personalizadas
+ALTER TABLE tripulantes ADD COLUMN config_personalizada jsonb DEFAULT NULL;
+
+-- Atualizar check constraint de status (se existir)
+-- Novo status: 'pendente_cadastro' para tripulantes que ainda não completaram dados
 ```
 
-Adicionar hook de realtime:
-
-```typescript
-// Em useRealtimeSubscription.ts
-export function useAlertasRealtime() {
-  useRealtimeSubscription([{
-    table: 'alertas',
-    queryKey: ['alertas'],
-    showToast: true,
-    toastMessages: {
-      INSERT: 'Novo alerta recebido!',
-    },
-  }]);
+O campo `config_personalizada` armazenará as configurações quando o admin optar por não usar um perfil pré-definido:
+```json
+{
+  "velocidade_download": "10M",
+  "velocidade_upload": "5M",
+  "max_dispositivos": 2,
+  "modo_acesso": "permitir_tudo"
 }
 ```
 
-### Fase 5: Edge Function para Monitoramento
+### 2. Reformular TripulanteForm.tsx
 
-Criar funcao de verificacao periodica:
+**Antes (campos exigidos):**
+- Nome, Login, Senha, Email, CPF, Cargo, Embarcação, Perfil, Status
 
-**`supabase/functions/monitor-hotspots/index.ts`**
+**Depois (cadastro simplificado):**
+
+| Campo | Obrigatório | Notas |
+|-------|-------------|-------|
+| Login WiFi | SIM | Auto-gerado ou manual |
+| Senha WiFi | SIM | Auto-gerada |
+| Embarcação | SIM | Select |
+| Modo de Config | SIM | Radio: "Usar Perfil" ou "Personalizado" |
+| Perfil | Condicional | Aparece se "Usar Perfil" |
+| Velocidades | Condicional | Aparecem se "Personalizado" |
+| Max Dispositivos | Condicional | Aparece se "Personalizado" |
+| Modo Acesso | Condicional | Aparece se "Personalizado" |
+
+O campo `nome` será preenchido automaticamente com o login e atualizado pelo tripulante depois.
+
+### 3. Criar Portal de Auto-Cadastro
+
+**Nova rota:** `/completar-cadastro/:token`
+
+**Arquivo:** `src/pages/CompletarCadastro.tsx`
+
+Esta página será acessada via QR Code ou link direto e permite ao tripulante:
+1. Validar suas credenciais (login + senha)
+2. Preencher dados pessoais (nome, email, CPF, cargo)
+3. Aceitar termos de uso (opcional)
+
+### 4. Edge Function para Validação
+
+**Arquivo:** `supabase/functions/tripulante-self-register/index.ts`
 
 Funcionalidades:
-- Verificar hotspots sem sync por mais de X minutos
-- Criar alertas de "Hotspot Offline"
-- Auto-resolver alertas quando hotspot volta online
-- Pode ser chamada via CRON/scheduler externo
+- Validar login e senha do tripulante
+- Aceitar dados pessoais e atualizar registro
+- Mudar status de `pendente_cadastro` para `ativo`
+- Registrar `ultimo_login` e IP
 
-## Detalhamento Tecnico
+### 5. Atualizar QRCodeModal
 
-### Estrutura do Hook useAlertas
+Modificar o modal de QR Code para incluir link para o portal de auto-cadastro quando o tripulante estiver com status `pendente_cadastro`.
+
+## Detalhamento Técnico
+
+### Estrutura do Formulário Reformulado
 
 ```typescript
-interface AlertaFilters {
-  severidade?: 'info' | 'warning' | 'critical';
-  tipo?: string;
-  resolvido?: boolean;
-  empresa_id?: string;
-  embarcacao_id?: string;
-  hotspot_id?: string;
-}
-
-interface Alerta {
-  id: string;
-  tipo: string;
-  mensagem: string;
-  severidade: string;
-  resolvido: boolean;
-  created_at: string;
-  resolvido_at: string | null;
-  empresa?: { nome: string };
-  embarcacao?: { nome: string };
-  hotspot?: { nome: string };
-  tripulante?: { nome: string };
+interface TripulanteFormData {
+  // Campos obrigatórios
+  login_wifi: string;
+  senha_wifi: string;
+  embarcacao_id: string;
+  
+  // Modo de configuração
+  modo_config: 'perfil' | 'personalizado';
+  
+  // Se modo = 'perfil'
+  perfil_id?: string;
+  
+  // Se modo = 'personalizado'
+  velocidade_download?: string;
+  velocidade_upload?: string;
+  max_dispositivos?: number;
+  modo_acesso?: 'permitir_tudo' | 'bloquear_tudo';
 }
 ```
 
-### Tipos de Alertas Suportados
-
-| tipo | severidade | Descricao |
-|------|------------|-----------|
-| `hotspot_offline` | critical | Hotspot sem comunicacao |
-| `sync_failure` | critical | Falha na sincronizacao |
-| `device_limit` | warning | Limite de dispositivos excedido |
-| `quota_warning` | warning | 80% da quota atingida |
-| `quota_exceeded` | critical | 100% da quota atingida |
-| `new_registration` | info | Nova embarcacao/tripulante |
-| `session_anomaly` | warning | Comportamento suspeito |
-
-### Modificacoes na Edge Function mikrotik-sync
-
-Adicionar criacao de alertas em pontos-chave:
+### Fluxo de Dados ao Salvar
 
 ```typescript
-// 1. Violacao de dispositivos (ja detectada)
-if (deviceViolations.length > 0) {
-  for (const violation of deviceViolations) {
-    await supabase.from('alertas').insert({
-      tipo: 'device_limit',
-      severidade: 'warning',
-      mensagem: `${violation.user} excedeu limite: ${violation.current_count}/${violation.max_allowed} dispositivos`,
-      hotspot_id: hotspot.id,
-      embarcacao_id: hotspot.embarcacao_id,
-      empresa_id: embarcacao?.empresa_id
-    });
+// Se modo = 'perfil'
+{
+  nome: login_wifi,
+  login_wifi,
+  senha_wifi,
+  embarcacao_id,
+  perfil_id,
+  status: 'pendente_cadastro',
+  config_personalizada: null
+}
+
+// Se modo = 'personalizado'
+{
+  nome: login_wifi,
+  login_wifi,
+  senha_wifi,
+  embarcacao_id,
+  perfil_id: null,
+  status: 'pendente_cadastro',
+  config_personalizada: {
+    velocidade_download,
+    velocidade_upload,
+    max_dispositivos,
+    modo_acesso
   }
 }
+```
 
-// 2. Hotspot voltou online (auto-resolver alertas)
-if (hotspot.status === 'offline') {
-  await supabase.from('alertas')
-    .update({ resolvido: true, resolvido_at: new Date().toISOString() })
-    .eq('hotspot_id', hotspot.id)
-    .eq('tipo', 'hotspot_offline')
-    .eq('resolvido', false);
+### Portal de Auto-Cadastro
+
+```typescript
+// Validação do tripulante
+POST /tripulante-self-register
+Body: {
+  login: "joao.silva",
+  senha: "abc123",
+  nome: "João da Silva",
+  email: "joao@email.com",
+  cpf: "123.456.789-00",
+  cargo: "Marinheiro"
+}
+
+// Resposta sucesso
+{
+  success: true,
+  message: "Cadastro completado com sucesso"
 }
 ```
 
-### Arquivos a Criar/Modificar
+## Arquivos a Criar/Modificar
 
-| Arquivo | Acao | Descricao |
+| Arquivo | Ação | Descrição |
 |---------|------|-----------|
-| `src/hooks/useAlertas.ts` | Criar | Hook CRUD para alertas |
-| `src/pages/Alertas.tsx` | Modificar | Usar dados reais |
-| `supabase/functions/mikrotik-sync/index.ts` | Modificar | Gerar alertas automaticos |
-| Migracao SQL | Criar | Habilitar realtime |
-| `src/hooks/useRealtimeSubscription.ts` | Modificar | Adicionar useAlertasRealtime |
+| Migração SQL | Criar | Adicionar `config_personalizada` e permitir status `pendente_cadastro` |
+| `src/components/forms/TripulanteForm.tsx` | Modificar | Formulário simplificado com toggle perfil/personalizado |
+| `src/pages/CompletarCadastro.tsx` | Criar | Portal público de auto-cadastro |
+| `src/App.tsx` | Modificar | Adicionar rota `/completar-cadastro/:token` |
+| `supabase/functions/tripulante-self-register/index.ts` | Criar | Validação e atualização do tripulante |
+| `supabase/config.toml` | Modificar | Registrar nova edge function |
+| `src/components/modals/QRCodeModal.tsx` | Modificar | Incluir link para portal quando pendente |
 
-### Funcionalidades da Pagina Refatorada
+## Considerações de Segurança
 
-1. **Header com estatisticas**
-   - Total de alertas hoje
-   - Alertas criticos ativos
-   - Alertas resolvidos
+1. **Validação de Credenciais**: O portal de auto-cadastro exige login + senha para validar identidade
+2. **Rate Limiting**: Limitar tentativas de cadastro para evitar brute-force
+3. **Token Único**: Opcionalmente, gerar token único por tripulante para o link do portal
+4. **RLS**: Manter políticas RLS para proteger dados entre empresas/embarcações
 
-2. **Filtros**
-   - Por severidade (todos, info, warning, critical)
-   - Por status (todos, ativos, resolvidos)
-   - Por data (hoje, ultimos 7 dias, mes)
+## Interface do Formulário Simplificado
 
-3. **Lista de alertas**
-   - Ordenada por data (mais recentes primeiro)
-   - Badge de severidade colorido
-   - Badge de status (ativo/resolvido)
-   - Botao para resolver
-   - Link para entidade relacionada
+```text
+┌────────────────────────────────────────────────────┐
+│               Novo Tripulante                       │
+│                                                    │
+│  Credenciais WiFi                                  │
+│  ──────────────────────────────────────────────── │
+│  Login WiFi    [joao.silva          ] [Auto]      │
+│  Senha WiFi    [********            ] [Gerar]     │
+│                                                    │
+│  Embarcação                                        │
+│  ──────────────────────────────────────────────── │
+│  [▼ Selecione a embarcação                      ] │
+│                                                    │
+│  Configuração de Acesso                           │
+│  ──────────────────────────────────────────────── │
+│  (●) Usar Perfil Pré-configurado                  │
+│  ( ) Configuração Personalizada                   │
+│                                                    │
+│  Perfil                                           │
+│  [▼ Comandante (10M/5M) - 3 disp                ] │
+│                                                    │
+│  ℹ️ Os dados pessoais (nome, email, CPF) serão   │
+│     preenchidos pelo tripulante no primeiro       │
+│     acesso via QR Code.                           │
+│                                                    │
+│           [Cancelar]  [Cadastrar]                 │
+└────────────────────────────────────────────────────┘
+```
 
-4. **Acoes em lote**
-   - Resolver todos os selecionados
-   - Excluir alertas antigos
+## Ordem de Implementação
 
-5. **Realtime**
-   - Novos alertas aparecem automaticamente
-   - Toast notification para alertas criticos
+1. **Migração**: Adicionar coluna `config_personalizada` à tabela
+2. **TripulanteForm**: Reformular com toggle perfil/personalizado
+3. **Edge Function**: Criar função de auto-registro
+4. **CompletarCadastro**: Criar página pública do portal
+5. **Rotas**: Adicionar rota no App.tsx
+6. **QRCodeModal**: Atualizar para mostrar link do portal
+7. **Testes**: Validar fluxo completo
 
-## Ordem de Implementacao
-
-1. **Migracao**: Habilitar realtime na tabela alertas
-2. **Hook useAlertas**: CRUD completo com filtros
-3. **Pagina Alertas**: Substituir mocks por dados reais
-4. **mikrotik-sync**: Adicionar geracao de alertas
-5. **Realtime hook**: Notificacoes em tempo real
-6. **Testes**: Simular cenarios de alerta
