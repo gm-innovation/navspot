@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Ship, MapPin, Users, Wifi, Plus, Settings, Trash2, Loader2 } from "lucide-react";
+import { Ship, MapPin, Users, Wifi, Plus, Settings, Trash2 } from "lucide-react";
 import { 
   useEmbarcacoes, 
   useCreateEmbarcacao, 
@@ -10,7 +10,10 @@ import {
   useDeleteEmbarcacao,
   EmbarcacaoWithStats 
 } from "@/hooks/useEmbarcacoes";
+import { useTableRealtime } from "@/hooks/useRealtimeSubscription";
 import { EmbarcacaoForm } from "@/components/forms/EmbarcacaoForm";
+import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
+import { EmptyState, ErrorState } from "@/components/ui/empty-state";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,6 +26,8 @@ import {
 } from "@/components/ui/alert-dialog";
 
 export default function Embarcacoes() {
+  // Enable realtime updates
+  useTableRealtime('embarcacoes', ['embarcacoes']);
   const { data: embarcacoes, isLoading, error } = useEmbarcacoes();
   const createEmbarcacao = useCreateEmbarcacao();
   const updateEmbarcacao = useUpdateEmbarcacao();
@@ -75,17 +80,16 @@ export default function Embarcacoes() {
   const totalHotspots = embarcacoes?.reduce((acc, e) => acc + (e.hotspots_count || 0), 0) || 0;
 
   if (isLoading) {
-    return (
-      <div className="flex-1 flex items-center justify-center p-6">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <PageLoadingSkeleton />;
   }
 
   if (error) {
     return (
-      <div className="flex-1 flex items-center justify-center p-6">
-        <p className="text-destructive">Erro ao carregar embarcações: {error.message}</p>
+      <div className="flex-1 p-6">
+        <ErrorState 
+          message={error.message} 
+          onRetry={() => window.location.reload()} 
+        />
       </div>
     );
   }
@@ -232,17 +236,13 @@ export default function Embarcacoes() {
           ))}
         </div>
       ) : (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center py-12">
-            <Ship className="h-12 w-12 text-muted-foreground mb-4" />
-            <h3 className="text-lg font-semibold">Nenhuma embarcação cadastrada</h3>
-            <p className="text-muted-foreground mb-4">Comece adicionando sua primeira embarcação.</p>
-            <Button onClick={handleCreate}>
-              <Plus className="h-4 w-4 mr-2" />
-              Nova Embarcação
-            </Button>
-          </CardContent>
-        </Card>
+        <EmptyState
+          icon={Ship}
+          title="Nenhuma embarcação cadastrada"
+          description="Comece adicionando sua primeira embarcação."
+          actionLabel="Nova Embarcação"
+          onAction={handleCreate}
+        />
       )}
 
       {/* Form Modal */}

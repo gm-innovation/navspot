@@ -3,6 +3,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { StatCardsGridSkeleton } from "@/components/ui/loading-skeleton";
 import { Skeleton } from "@/components/ui/skeleton";
 import { 
   Wifi, 
@@ -11,8 +12,7 @@ import {
   AlertTriangle, 
   Activity,
   Clock,
-  Building2,
-  Loader2
+  Building2
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { 
@@ -20,10 +20,14 @@ import {
   useRecentHotspots, 
   useRecentAlerts 
 } from "@/hooks/useDashboard";
+import { useDashboardRealtime } from "@/hooks/useRealtimeSubscription";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 export function SuperAdminDashboard() {
+  // Enable realtime updates
+  useDashboardRealtime();
+
   const { data: stats, isLoading: statsLoading } = useDashboardStats();
   const { data: recentHotspots, isLoading: hotspotsLoading } = useRecentHotspots(5);
   const { data: recentAlerts, isLoading: alertsLoading } = useRecentAlerts(5);
@@ -60,16 +64,7 @@ export function SuperAdminDashboard() {
       {/* Métricas globais */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         {statsLoading ? (
-          <>
-            {[1, 2, 3, 4].map((i) => (
-              <Card key={i}>
-                <CardContent className="p-6">
-                  <Skeleton className="h-8 w-20 mb-2" />
-                  <Skeleton className="h-4 w-32" />
-                </CardContent>
-              </Card>
-            ))}
-          </>
+          <StatCardsGridSkeleton count={4} />
         ) : (
           <>
             <MetricCard

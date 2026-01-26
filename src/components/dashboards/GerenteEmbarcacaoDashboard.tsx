@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { StatCardsGridSkeleton } from "@/components/ui/loading-skeleton";
 import { useAuth } from "@/contexts/AuthContext";
 import { Link } from "react-router-dom";
 import { 
@@ -21,10 +22,15 @@ import { useEmbarcacao } from "@/hooks/useEmbarcacoes";
 import { useHotspots } from "@/hooks/useHotspots";
 import { useTripulantes } from "@/hooks/useTripulantes";
 import { useAcoesPendentes } from "@/hooks/useAcoesPendentes";
+import { useDashboardRealtime, useAcoesPendentesRealtime } from "@/hooks/useRealtimeSubscription";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 export function GerenteEmbarcacaoDashboard() {
+  // Enable realtime updates
+  useDashboardRealtime();
+  useAcoesPendentesRealtime();
+
   const { user } = useAuth();
   const { data: embarcacao, isLoading: embarcacaoLoading } = useEmbarcacao(user?.embarcacao_id);
   const { data: hotspots, isLoading: hotspotsLoading } = useHotspots();
@@ -73,16 +79,7 @@ export function GerenteEmbarcacaoDashboard() {
       {/* Métricas da embarcação */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         {isLoading ? (
-          <>
-            {[1, 2, 3, 4].map((i) => (
-              <Card key={i}>
-                <CardContent className="p-6">
-                  <Skeleton className="h-8 w-20 mb-2" />
-                  <Skeleton className="h-4 w-32" />
-                </CardContent>
-              </Card>
-            ))}
-          </>
+          <StatCardsGridSkeleton count={4} />
         ) : (
           <>
             <MetricCard

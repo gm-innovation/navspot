@@ -2,6 +2,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { StatCardsGridSkeleton } from "@/components/ui/loading-skeleton";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/contexts/AuthContext";
 import { Link } from "react-router-dom";
@@ -18,8 +19,12 @@ import { useEmbarcacoes } from "@/hooks/useEmbarcacoes";
 import { useHotspots } from "@/hooks/useHotspots";
 import { useTripulantes } from "@/hooks/useTripulantes";
 import { useRecentAlerts } from "@/hooks/useDashboard";
+import { useDashboardRealtime } from "@/hooks/useRealtimeSubscription";
 
 export function EmpresaAdminDashboard() {
+  // Enable realtime updates
+  useDashboardRealtime();
+
   const { user } = useAuth();
   const { data: embarcacoes, isLoading: embarcacoesLoading } = useEmbarcacoes();
   const { data: hotspots, isLoading: hotspotsLoading } = useHotspots();
@@ -55,16 +60,7 @@ export function EmpresaAdminDashboard() {
       {/* Métricas da empresa */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         {isLoading ? (
-          <>
-            {[1, 2, 3, 4].map((i) => (
-              <Card key={i}>
-                <CardContent className="p-6">
-                  <Skeleton className="h-8 w-20 mb-2" />
-                  <Skeleton className="h-4 w-32" />
-                </CardContent>
-              </Card>
-            ))}
-          </>
+          <StatCardsGridSkeleton count={4} />
         ) : (
           <>
             <MetricCard
