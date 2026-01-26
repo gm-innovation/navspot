@@ -17,6 +17,7 @@ import ListasAcesso from "./pages/ListasAcesso";
 import RegrasAcesso from "./pages/RegrasAcesso";
 import Alertas from "./pages/Alertas";
 import Configuracoes from "./pages/Configuracoes";
+import Relatorios from "./pages/Relatorios";
 import Usuarios from "./pages/Usuarios";
 import CompletarCadastro from "./pages/CompletarCadastro";
 import NotFound from "./pages/NotFound";
@@ -122,6 +123,15 @@ const App = () => (
                   <SidebarProvider>
                     <AppLayout>
                       <Configuracoes />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/relatorios" element={
+                <ProtectedRoute>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <Relatorios />
                     </AppLayout>
                   </SidebarProvider>
                 </ProtectedRoute>
