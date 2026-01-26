@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -161,17 +160,7 @@ export default function Login() {
               </Button>
             </form>
 
-            <div className="mt-6 text-center text-sm">
-              <span className="text-muted-foreground">Não tem uma conta? </span>
-              <Link 
-                to="/cadastro" 
-                className="text-navspot-blue-600 hover:text-navspot-blue-700 font-medium"
-              >
-                Cadastre-se
-              </Link>
-            </div>
-
-            <div className="mt-4 text-center">
+            <div className="mt-6 text-center">
               <Button variant="link" className="text-sm text-navspot-blue-600 hover:text-navspot-blue-700">
                 Esqueceu sua senha?
               </Button>

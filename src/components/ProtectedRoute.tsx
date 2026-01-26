@@ -2,6 +2,7 @@ import React from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth, UserRole } from '@/contexts/AuthContext';
 import { Loader2 } from 'lucide-react';
+import { PendingApprovalScreen } from '@/components/PendingApprovalScreen';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -12,7 +13,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   children, 
   allowedRoles 
 }) => {
-  const { isAuthenticated, hasRole, user, isLoading } = useAuth();
+  const { isAuthenticated, hasRole, user, isLoading, isPendingApproval } = useAuth();
 
   // Show loading spinner while checking auth state
   if (isLoading) {
@@ -24,6 +25,11 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
         </div>
       </div>
     );
+  }
+
+  // User is logged in but has no role assigned yet
+  if (isPendingApproval) {
+    return <PendingApprovalScreen />;
   }
 
   if (!isAuthenticated) {
