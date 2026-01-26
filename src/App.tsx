@@ -8,6 +8,7 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { AuthProvider } from "@/contexts/AuthContext";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
+import Empresas from "./pages/Empresas";
 import Embarcacoes from "./pages/Embarcacoes";
 import Tripulantes from "./pages/Tripulantes";
 import Dispositivos from "./pages/Dispositivos";
@@ -40,6 +41,15 @@ const App = () => (
                   <SidebarProvider>
                     <AppLayout>
                       <Dashboard />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/empresas" element={
+                <ProtectedRoute allowedRoles={['super_admin']}>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <Empresas />
                     </AppLayout>
                   </SidebarProvider>
                 </ProtectedRoute>

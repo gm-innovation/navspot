@@ -208,20 +208,8 @@ Deno.serve(async (req) => {
       .eq('id', hotspot.embarcacao_id)
       .single()
 
-    // Get empresa timezone as fallback
-    let effectiveTimezone = 'America/Sao_Paulo' // Default
-    if (embarcacao?.timezone) {
-      effectiveTimezone = embarcacao.timezone
-    } else if (embarcacao?.empresa_id) {
-      const { data: empresa } = await supabase
-        .from('empresas')
-        .select('timezone')
-        .eq('id', embarcacao.empresa_id)
-        .single()
-      if (empresa?.timezone) {
-        effectiveTimezone = empresa.timezone
-      }
-    }
+    // Use timezone from embarcacao only (no empresa fallback)
+    const effectiveTimezone = embarcacao?.timezone || 'America/Sao_Paulo'
     console.log(`[mikrotik-sync] Using timezone: ${effectiveTimezone}`)
 
     if (hotspot.status === 'offline') {
