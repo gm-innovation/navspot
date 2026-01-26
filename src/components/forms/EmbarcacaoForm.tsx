@@ -279,7 +279,7 @@ export function EmbarcacaoForm({
             <div className="space-y-4">
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-                  Fuso Horário Predominante
+                  Fuso Horário Predominante *
                 </h3>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -296,11 +296,12 @@ export function EmbarcacaoForm({
 
               <div className="grid grid-cols-4 items-center gap-4">
                 <Label htmlFor="timezone" className="text-right">
-                  Fuso
+                  Fuso *
                 </Label>
                 <Select
                   value={formData.timezone || ""}
                   onValueChange={(value) => handleChange("timezone", value)}
+                  required
                 >
                   <SelectTrigger className="col-span-3">
                     <SelectValue placeholder="Selecione o fuso horário" />
@@ -315,7 +316,7 @@ export function EmbarcacaoForm({
                 </Select>
               </div>
               <p className="text-xs text-muted-foreground text-right">
-                ℹ️ A embarcação pode mudar de fuso durante navegação. Configure o fuso predominante.
+                ℹ️ Campo obrigatório. Define o horário local para renovação de quotas.
               </p>
             </div>
 
@@ -402,7 +403,7 @@ export function EmbarcacaoForm({
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancelar
             </Button>
-            <Button type="submit" disabled={isLoading}>
+            <Button type="submit" disabled={isLoading || !formData.nome.trim() || !formData.empresa_id || !formData.timezone}>
               {isLoading ? "Salvando..." : isEditing ? "Salvar" : "Cadastrar"}
             </Button>
           </DialogFooter>

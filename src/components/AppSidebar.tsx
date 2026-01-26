@@ -1,4 +1,4 @@
-import { Home, Ship, Users, Bell, Settings, Gauge, List, ShieldCheck, UserCog, Smartphone } from "lucide-react";
+import { Home, Ship, Users, Bell, Settings, Gauge, List, ShieldCheck, UserCog, Smartphone, Building2 } from "lucide-react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   Sidebar,
@@ -22,6 +22,7 @@ interface NavigationItem {
 
 const allNavigationItems: NavigationItem[] = [
   { title: "Dashboard", url: "/", icon: Home, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
+  { title: "Empresas", url: "/empresas", icon: Building2, roles: ['super_admin'] },
   { title: "Embarcações", url: "/embarcacoes", icon: Ship, roles: ['super_admin', 'empresa_admin'] },
   { title: "Tripulantes", url: "/tripulantes", icon: Users, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
   { title: "Dispositivos", url: "/dispositivos", icon: Smartphone, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
