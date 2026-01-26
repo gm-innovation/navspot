@@ -17,6 +17,7 @@ import RegrasAcesso from "./pages/RegrasAcesso";
 import Alertas from "./pages/Alertas";
 import Configuracoes from "./pages/Configuracoes";
 import Usuarios from "./pages/Usuarios";
+import CompletarCadastro from "./pages/CompletarCadastro";
 import NotFound from "./pages/NotFound";
 import { AppLayout } from "./components/AppLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
@@ -32,6 +33,7 @@ const App = () => (
         <BrowserRouter>
           <AuthProvider>
             <Routes>
+              <Route path="/completar-cadastro" element={<CompletarCadastro />} />
               <Route path="/login" element={<Login />} />
               <Route path="/" element={
                 <ProtectedRoute>

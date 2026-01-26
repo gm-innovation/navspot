@@ -8,8 +8,9 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Copy, Download, Wifi, User, Key } from "lucide-react";
+import { Copy, Download, Wifi, User, Key, ExternalLink, AlertCircle } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 interface QRCodeModalProps {
   open: boolean;
@@ -19,14 +20,24 @@ interface QRCodeModalProps {
     login_wifi: string;
     senha_wifi: string;
     embarcacao_nome?: string;
+    status?: string;
   } | null;
 }
 
 export function QRCodeModal({ open, onOpenChange, tripulante }: QRCodeModalProps) {
   if (!tripulante) return null;
 
+  const isPendingRegistration = tripulante.status === "pendente_cadastro";
+  
+  // Get the base URL for the self-registration portal
+  const baseUrl = window.location.origin;
+  const selfRegisterUrl = `${baseUrl}/completar-cadastro?login=${encodeURIComponent(tripulante.login_wifi)}`;
+
   // Create WiFi QR code string (WIFI:T:WPA;S:SSID;P:password;;)
   const wifiString = `WIFI:T:WPA;S:${tripulante.embarcacao_nome || "NAVSPOT"};P:${tripulante.senha_wifi};;`;
+  
+  // Use self-register URL for pending users, WiFi string for active users
+  const qrValue = isPendingRegistration ? selfRegisterUrl : wifiString;
   
   // Create credentials text for sharing
   const credentialsText = `Login: ${tripulante.login_wifi}\nSenha: ${tripulante.senha_wifi}`;
@@ -36,6 +47,14 @@ export function QRCodeModal({ open, onOpenChange, tripulante }: QRCodeModalProps
     toast({
       title: "Credenciais copiadas",
       description: "Login e senha copiados para a área de transferência.",
+    });
+  };
+
+  const handleCopyLink = () => {
+    navigator.clipboard.writeText(selfRegisterUrl);
+    toast({
+      title: "Link copiado",
+      description: "Link de cadastro copiado para a área de transferência.",
     });
   };
 
@@ -69,19 +88,33 @@ export function QRCodeModal({ open, onOpenChange, tripulante }: QRCodeModalProps
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Wifi className="h-5 w-5" />
-            Credenciais WiFi
+            {isPendingRegistration ? "Cadastro Pendente" : "Credenciais WiFi"}
           </DialogTitle>
           <DialogDescription>
-            QR Code para conexão WiFi de {tripulante.nome}
+            {isPendingRegistration 
+              ? `QR Code para ${tripulante.nome} completar o cadastro`
+              : `QR Code para conexão WiFi de ${tripulante.nome}`
+            }
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
+          {/* Pending Registration Alert */}
+          {isPendingRegistration && (
+            <Alert>
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>
+                Este tripulante ainda não completou o cadastro. O QR Code abaixo 
+                leva ao portal de auto-cadastro.
+              </AlertDescription>
+            </Alert>
+          )}
+
           {/* QR Code */}
           <div className="flex justify-center p-4 bg-white rounded-lg">
             <QRCodeSVG
               id="qr-code-svg"
-              value={wifiString}
+              value={qrValue}
               size={200}
               level="H"
               includeMargin
@@ -93,6 +126,14 @@ export function QRCodeModal({ open, onOpenChange, tripulante }: QRCodeModalProps
               }}
             />
           </div>
+
+          {/* Description of QR Code content */}
+          <p className="text-xs text-center text-muted-foreground">
+            {isPendingRegistration 
+              ? "Escaneie para acessar o portal de cadastro"
+              : "Escaneie para conectar automaticamente ao WiFi"
+            }
+          </p>
 
           {/* Credentials Card */}
           <Card>
@@ -134,6 +175,18 @@ export function QRCodeModal({ open, onOpenChange, tripulante }: QRCodeModalProps
               Baixar QR
             </Button>
           </div>
+
+          {/* Extra button for pending registration */}
+          {isPendingRegistration && (
+            <Button 
+              variant="secondary" 
+              className="w-full" 
+              onClick={handleCopyLink}
+            >
+              <ExternalLink className="h-4 w-4 mr-2" />
+              Copiar Link de Cadastro
+            </Button>
+          )}
         </div>
       </DialogContent>
     </Dialog>
