@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -9,6 +9,7 @@ import {
   EmbarcacaoWithStats 
 } from "@/hooks/useEmbarcacoes";
 import { useHotspots } from "@/hooks/useHotspots";
+import { useRegrasAcesso } from "@/hooks/useRegrasAcesso";
 import { useCreateEmbarcacaoWithHotspot, useUpdateEmbarcacaoWithHotspot } from "@/hooks/useEmbarcacoesWithHotspot";
 import { useTableRealtime } from "@/hooks/useRealtimeSubscription";
 import { EmbarcacaoForm } from "@/components/forms/EmbarcacaoForm";
@@ -33,6 +34,7 @@ export default function Embarcacoes() {
   
   const { data: embarcacoes, isLoading, error } = useEmbarcacoes();
   const { data: hotspots } = useHotspots();
+  const { data: regras } = useRegrasAcesso();
   const createEmbarcacao = useCreateEmbarcacaoWithHotspot();
   const updateEmbarcacao = useUpdateEmbarcacaoWithHotspot();
   const deleteEmbarcacao = useDeleteEmbarcacao();
@@ -46,6 +48,21 @@ export default function Embarcacoes() {
   const getHotspotForEmbarcacao = (embarcacaoId: string) => {
     return hotspots?.find(h => h.embarcacao_id === embarcacaoId);
   };
+
+  // Get applied listas for a hotspot
+  const getListasAplicadasForHotspot = (hotspotId: string | undefined) => {
+    if (!hotspotId || !regras) return [];
+    return regras
+      .filter(r => r.hotspot_id === hotspotId)
+      .map(r => r.lista_id);
+  };
+
+  // Memoize listas aplicadas for editing embarcacao
+  const editingListasAplicadas = useMemo(() => {
+    if (!editingEmbarcacao) return [];
+    const hotspot = getHotspotForEmbarcacao(editingEmbarcacao.id);
+    return getListasAplicadasForHotspot(hotspot?.id);
+  }, [editingEmbarcacao, hotspots, regras]);
 
   const handleCreate = () => {
     setEditingEmbarcacao(null);
@@ -300,6 +317,7 @@ export default function Embarcacoes() {
         onSubmit={handleSubmit}
         initialData={editingEmbarcacao || undefined}
         initialHotspot={editingEmbarcacao ? getHotspotForEmbarcacao(editingEmbarcacao.id) : undefined}
+        initialListasAplicadas={editingListasAplicadas}
         isLoading={createEmbarcacao.isPending || updateEmbarcacao.isPending}
       />
 

@@ -111,6 +111,44 @@ export function useListasAcesso() {
   });
 }
 
+export function useListasAcessoByEmpresa(empresaId: string | undefined) {
+  return useQuery({
+    queryKey: ['listas_acesso', 'empresa', empresaId],
+    queryFn: async () => {
+      if (!empresaId) return [];
+      
+      const { data, error } = await supabase
+        .from('listas_acesso')
+        .select('id, nome, tipo, descricao, ativo')
+        .eq('empresa_id', empresaId)
+        .eq('ativo', true)
+        .order('nome');
+
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!empresaId,
+  });
+}
+
+export function useListasAplicadasByHotspot(hotspotId: string | undefined) {
+  return useQuery({
+    queryKey: ['listas_aplicadas', 'hotspot', hotspotId],
+    queryFn: async () => {
+      if (!hotspotId) return [];
+      
+      const { data, error } = await supabase
+        .from('regras_acesso')
+        .select('lista_id')
+        .eq('hotspot_id', hotspotId);
+
+      if (error) throw error;
+      return data.map(r => r.lista_id);
+    },
+    enabled: !!hotspotId,
+  });
+}
+
 export function useListaAcesso(id: string | undefined) {
   return useQuery({
     queryKey: ['listas_acesso', id],

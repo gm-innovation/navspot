@@ -62,6 +62,7 @@ import { useListasAcesso } from "@/hooks/useListasAcesso";
 import { usePerfisVelocidade } from "@/hooks/usePerfisVelocidade";
 import { useTripulantes } from "@/hooks/useTripulantes";
 import { useHotspots } from "@/hooks/useHotspots";
+import { useEmpresas } from "@/hooks/useEmpresas";
 import { useTableRealtime } from "@/hooks/useRealtimeSubscription";
 import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { EmptyState, ErrorState } from "@/components/ui/empty-state";
@@ -79,6 +80,7 @@ export default function RegrasAcesso() {
   const { data: perfis } = usePerfisVelocidade();
   const { data: tripulantes } = useTripulantes();
   const { data: hotspots } = useHotspots();
+  const { data: empresas } = useEmpresas();
   
   const createRegra = useCreateRegraAcesso();
   const updateRegra = useUpdateRegraAcesso();
@@ -89,6 +91,7 @@ export default function RegrasAcesso() {
   const [editingRegra, setEditingRegra] = useState<RegraWithRelations | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [regraToDelete, setRegraToDelete] = useState<RegraWithRelations | null>(null);
+  const [selectedEmpresaId, setSelectedEmpresaId] = useState("");
 
   const [formData, setFormData] = useState({
     lista_id: "",
@@ -119,6 +122,7 @@ export default function RegrasAcesso() {
         dias_semana: (editingRegra.dias_semana as string[]) || ["seg", "ter", "qua", "qui", "sex", "sab", "dom"],
         ativo: editingRegra.ativo,
       });
+      setSelectedEmpresaId(editingRegra.empresa_id);
     } else {
       setFormData({
         lista_id: "",
@@ -133,8 +137,10 @@ export default function RegrasAcesso() {
         dias_semana: ["seg", "ter", "qua", "qui", "sex", "sab", "dom"],
         ativo: true,
       });
+      // For non-super_admin, auto-select their empresa
+      setSelectedEmpresaId(user?.role !== 'super_admin' ? (user?.empresa_id || "") : "");
     }
-  }, [editingRegra, formOpen]);
+  }, [editingRegra, formOpen, user]);
 
   const handleCreate = () => {
     setEditingRegra(null);
@@ -187,6 +193,19 @@ export default function RegrasAcesso() {
       return;
     }
 
+    const empresaId = user?.role === 'super_admin' 
+      ? selectedEmpresaId 
+      : user?.empresa_id;
+
+    if (!empresaId) {
+      toast({
+        title: "Erro",
+        description: "Selecione uma empresa.",
+        variant: "destructive"
+      });
+      return;
+    }
+
     const dataToSubmit = {
       lista_id: formData.lista_id,
       perfil_id: formData.perfil_id || null,
@@ -199,7 +218,7 @@ export default function RegrasAcesso() {
       horario_fim: formData.horario_fim || null,
       dias_semana: formData.dias_semana as unknown as Json,
       ativo: formData.ativo,
-      empresa_id: user?.empresa_id || "",
+      empresa_id: empresaId,
     };
 
     if (editingRegra) {
@@ -444,6 +463,28 @@ export default function RegrasAcesso() {
           </DialogHeader>
           <form onSubmit={handleSubmit}>
             <div className="grid gap-4 py-4">
+              {/* Empresa - apenas para super_admin */}
+              {user?.role === 'super_admin' && (
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="empresa" className="text-right">
+                    Empresa *
+                  </Label>
+                  <Select
+                    value={selectedEmpresaId}
+                    onValueChange={setSelectedEmpresaId}
+                  >
+                    <SelectTrigger className="col-span-3">
+                      <SelectValue placeholder="Selecione a empresa" />
+                    </SelectTrigger>
+                    <SelectContent className="z-50 bg-background border shadow-lg">
+                      {empresas?.map(emp => (
+                        <SelectItem key={emp.id} value={emp.id}>{emp.nome}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
               {/* Lista de Acesso */}
               <div className="grid grid-cols-4 items-center gap-4">
                 <Label htmlFor="lista" className="text-right">
@@ -457,7 +498,11 @@ export default function RegrasAcesso() {
                     <SelectValue placeholder="Selecione uma lista" />
                   </SelectTrigger>
                   <SelectContent className="z-50 bg-background border shadow-lg">
-                    {listas?.map(lista => (
+                    {listas?.filter(lista => 
+                      user?.role === 'super_admin' 
+                        ? (!selectedEmpresaId || lista.empresa_id === selectedEmpresaId)
+                        : true
+                    ).map(lista => (
                       <SelectItem key={lista.id} value={lista.id}>
                         {lista.nome} ({lista.tipo})
                       </SelectItem>
