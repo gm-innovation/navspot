@@ -1,4 +1,3 @@
-
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,7 +13,10 @@ import {
   Wifi,
   Settings,
   RefreshCw,
-  AlertTriangle
+  AlertTriangle,
+  Code,
+  Trash2,
+  Loader2
 } from "lucide-react";
 import {
   Table,
@@ -24,66 +26,142 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { 
+  useHotspots, 
+  useCreateHotspot, 
+  useUpdateHotspot, 
+  useDeleteHotspot,
+  useGenerateHotspotScript,
+  HotspotWithDetails 
+} from "@/hooks/useHotspots";
+import { HotspotForm } from "@/components/forms/HotspotForm";
+import { ScriptModal } from "@/components/modals/ScriptModal";
+import { formatDistanceToNow } from "date-fns";
+import { ptBR } from "date-fns/locale";
 
 export default function Hotspots() {
+  const { data: hotspots, isLoading, error } = useHotspots();
+  const createHotspot = useCreateHotspot();
+  const updateHotspot = useUpdateHotspot();
+  const deleteHotspot = useDeleteHotspot();
+  const generateScript = useGenerateHotspotScript();
+
   const [searchTerm, setSearchTerm] = useState("");
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingHotspot, setEditingHotspot] = useState<HotspotWithDetails | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [hotspotToDelete, setHotspotToDelete] = useState<HotspotWithDetails | null>(null);
+  const [scriptModalOpen, setScriptModalOpen] = useState(false);
+  const [currentScript, setCurrentScript] = useState("");
+  const [currentHotspotName, setCurrentHotspotName] = useState("");
+  const [currentHotspotId, setCurrentHotspotId] = useState("");
 
-  const hotspots = [
-    {
-      id: 1,
-      name: "Embarcação Atlas",
-      embarcacao: "Atlas Marine",
-      status: "ativo",
-      usuarios: 12,
-      maxUsuarios: 50,
-      localizacao: "Porto de Santos",
-      ultimaAtualizacao: "2 min atrás",
-      ip: "192.168.1.1",
-      sinal: 85
-    },
-    {
-      id: 2,
-      name: "Navio Esperança",
-      embarcacao: "Esperança Transportes",
-      status: "inativo",
-      usuarios: 0,
-      maxUsuarios: 30,
-      localizacao: "Porto do Rio",
-      ultimaAtualizacao: "15 min atrás",
-      ip: "192.168.1.2",
-      sinal: 0
-    },
-    {
-      id: 3,
-      name: "Lancha Marina",
-      embarcacao: "Marina Recreio",
-      status: "ativo",
-      usuarios: 8,
-      maxUsuarios: 25,
-      localizacao: "Marina da Glória",
-      ultimaAtualizacao: "5 min atrás",
-      ip: "192.168.1.3",
-      sinal: 92
-    },
-    {
-      id: 4,
-      name: "Iate Poseidon",
-      embarcacao: "Poseidon Luxury",
-      status: "alerta",
-      usuarios: 23,
-      maxUsuarios: 25,
-      localizacao: "Angra dos Reis",
-      ultimaAtualizacao: "1 min atrás",
-      ip: "192.168.1.4",
-      sinal: 67
+  const filteredHotspots = hotspots?.filter(hotspot =>
+    hotspot.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    hotspot.embarcacao_nome?.toLowerCase().includes(searchTerm.toLowerCase())
+  ) || [];
+
+  const handleCreate = () => {
+    setEditingHotspot(null);
+    setFormOpen(true);
+  };
+
+  const handleEdit = (hotspot: HotspotWithDetails) => {
+    setEditingHotspot(hotspot);
+    setFormOpen(true);
+  };
+
+  const handleDelete = (hotspot: HotspotWithDetails) => {
+    setHotspotToDelete(hotspot);
+    setDeleteDialogOpen(true);
+  };
+
+  const confirmDelete = () => {
+    if (hotspotToDelete) {
+      deleteHotspot.mutate(hotspotToDelete.id);
+      setDeleteDialogOpen(false);
+      setHotspotToDelete(null);
     }
-  ];
+  };
 
-  const filteredHotspots = hotspots.filter(hotspot =>
-    hotspot.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    hotspot.embarcacao.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    hotspot.localizacao.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const handleSubmit = (data: any) => {
+    if (editingHotspot) {
+      updateHotspot.mutate(data, {
+        onSuccess: () => setFormOpen(false),
+      });
+    } else {
+      createHotspot.mutate(data, {
+        onSuccess: (newHotspot) => {
+          setFormOpen(false);
+          // Auto-generate script for new hotspot
+          handleGenerateScript(newHotspot.id, newHotspot.nome);
+        },
+      });
+    }
+  };
+
+  const handleGenerateScript = async (hotspotId: string, hotspotName: string) => {
+    setCurrentHotspotId(hotspotId);
+    setCurrentHotspotName(hotspotName);
+    
+    generateScript.mutate(hotspotId, {
+      onSuccess: (data) => {
+        setCurrentScript(data.script || "# Script não gerado");
+        setScriptModalOpen(true);
+      },
+    });
+  };
+
+  const handleRegenerateScript = () => {
+    if (currentHotspotId) {
+      generateScript.mutate(currentHotspotId, {
+        onSuccess: (data) => {
+          setCurrentScript(data.script || "# Script não gerado");
+        },
+      });
+    }
+  };
+
+  // Calculate stats
+  const totalHotspots = hotspots?.length || 0;
+  const online = hotspots?.filter((h) => h.status === "online").length || 0;
+  const offline = hotspots?.filter((h) => h.status === "offline").length || 0;
+  const alertas = hotspots?.filter((h) => h.status === "alerta").length || 0;
+
+  const formatLastSync = (dateStr: string | null) => {
+    if (!dateStr) return "Nunca";
+    try {
+      return formatDistanceToNow(new Date(dateStr), { addSuffix: true, locale: ptBR });
+    } catch {
+      return "Inválido";
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-6">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-6">
+        <p className="text-destructive">Erro ao carregar hotspots: {error.message}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 space-y-6 p-6">
@@ -96,11 +174,7 @@ export default function Hotspots() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm">
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Sincronizar
-          </Button>
-          <Button size="sm">
+          <Button size="sm" onClick={handleCreate}>
             <Plus className="h-4 w-4 mr-2" />
             Novo Hotspot
           </Button>
@@ -112,17 +186,17 @@ export default function Hotspots() {
         <Card>
           <CardContent className="flex items-center justify-between p-6">
             <div>
-              <p className="text-2xl font-bold">24</p>
+              <p className="text-2xl font-bold">{totalHotspots}</p>
               <p className="text-sm text-muted-foreground">Total</p>
             </div>
-            <Wifi className="h-8 w-8 text-navspot-blue-500" />
+            <Wifi className="h-8 w-8 text-primary" />
           </CardContent>
         </Card>
         <Card>
           <CardContent className="flex items-center justify-between p-6">
             <div>
-              <p className="text-2xl font-bold text-green-600">18</p>
-              <p className="text-sm text-muted-foreground">Ativos</p>
+              <p className="text-2xl font-bold text-green-600">{online}</p>
+              <p className="text-sm text-muted-foreground">Online</p>
             </div>
             <div className="h-8 w-8 rounded-full bg-green-100 dark:bg-green-900/20 flex items-center justify-center">
               <div className="h-3 w-3 rounded-full bg-green-500"></div>
@@ -132,8 +206,8 @@ export default function Hotspots() {
         <Card>
           <CardContent className="flex items-center justify-between p-6">
             <div>
-              <p className="text-2xl font-bold text-red-600">3</p>
-              <p className="text-sm text-muted-foreground">Inativos</p>
+              <p className="text-2xl font-bold text-red-600">{offline}</p>
+              <p className="text-sm text-muted-foreground">Offline</p>
             </div>
             <div className="h-8 w-8 rounded-full bg-red-100 dark:bg-red-900/20 flex items-center justify-center">
               <div className="h-3 w-3 rounded-full bg-red-500"></div>
@@ -143,7 +217,7 @@ export default function Hotspots() {
         <Card>
           <CardContent className="flex items-center justify-between p-6">
             <div>
-              <p className="text-2xl font-bold text-yellow-600">3</p>
+              <p className="text-2xl font-bold text-yellow-600">{alertas}</p>
               <p className="text-sm text-muted-foreground">Alertas</p>
             </div>
             <AlertTriangle className="h-8 w-8 text-yellow-500" />
@@ -174,76 +248,129 @@ export default function Hotspots() {
           </div>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Hotspot</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Usuários</TableHead>
-                <TableHead>Localização</TableHead>
-                <TableHead>Sinal</TableHead>
-                <TableHead>Última Atualização</TableHead>
-                <TableHead>Ações</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredHotspots.map((hotspot) => (
-                <TableRow key={hotspot.id}>
-                  <TableCell>
-                    <div>
-                      <p className="font-medium">{hotspot.name}</p>
-                      <p className="text-sm text-muted-foreground">{hotspot.embarcacao}</p>
-                      <p className="text-xs text-muted-foreground">{hotspot.ip}</p>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge status={hotspot.status as any} />
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <Users className="h-4 w-4 text-muted-foreground" />
-                      <span>{hotspot.usuarios}/{hotspot.maxUsuarios}</span>
-                      {hotspot.usuarios >= hotspot.maxUsuarios * 0.9 && (
-                        <Badge variant="destructive" className="text-xs">
-                          Limite
-                        </Badge>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-1">
-                      <MapPin className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm">{hotspot.localizacao}</span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-1">
-                        <div className={`h-2 w-2 rounded-full ${
-                          hotspot.sinal > 70 ? 'bg-green-500' : 
-                          hotspot.sinal > 40 ? 'bg-yellow-500' : 
-                          hotspot.sinal > 0 ? 'bg-red-500' : 'bg-gray-400'
-                        }`}></div>
-                        <span className="text-sm">{hotspot.sinal}%</span>
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-sm text-muted-foreground">
-                      {hotspot.ultimaAtualizacao}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <Button variant="ghost" size="sm">
-                      <Settings className="h-4 w-4" />
-                    </Button>
-                  </TableCell>
+          {filteredHotspots.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Hotspot</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Configuração</TableHead>
+                  <TableHead>Última Sincronização</TableHead>
+                  <TableHead>Ações</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {filteredHotspots.map((hotspot) => (
+                  <TableRow key={hotspot.id}>
+                    <TableCell>
+                      <div>
+                        <p className="font-medium">{hotspot.nome}</p>
+                        <p className="text-sm text-muted-foreground">{hotspot.embarcacao_nome}</p>
+                        {hotspot.empresa_nome && (
+                          <p className="text-xs text-muted-foreground">{hotspot.empresa_nome}</p>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge status={hotspot.status as any} />
+                    </TableCell>
+                    <TableCell>
+                      <div className="text-sm">
+                        <p>Interface: {hotspot.interface_wifi}</p>
+                        <p className="text-muted-foreground">Rede: {hotspot.rede}</p>
+                        <p className="text-muted-foreground">Max: {hotspot.max_usuarios} usuários</p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-sm text-muted-foreground">
+                        {formatLastSync(hotspot.ultima_sincronizacao)}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => handleGenerateScript(hotspot.id, hotspot.nome)}
+                          disabled={generateScript.isPending}
+                        >
+                          <Code className="h-4 w-4" />
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => handleEdit(hotspot)}
+                        >
+                          <Settings className="h-4 w-4" />
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => handleDelete(hotspot)}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-12">
+              <Wifi className="h-12 w-12 text-muted-foreground mb-4" />
+              <h3 className="text-lg font-semibold">Nenhum hotspot encontrado</h3>
+              <p className="text-muted-foreground mb-4">
+                {searchTerm ? "Tente ajustar sua busca." : "Comece adicionando seu primeiro hotspot."}
+              </p>
+              {!searchTerm && (
+                <Button onClick={handleCreate}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Novo Hotspot
+                </Button>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      {/* Form Modal */}
+      <HotspotForm
+        open={formOpen}
+        onOpenChange={setFormOpen}
+        onSubmit={handleSubmit}
+        initialData={editingHotspot || undefined}
+        isLoading={createHotspot.isPending || updateHotspot.isPending}
+      />
+
+      {/* Script Modal */}
+      <ScriptModal
+        open={scriptModalOpen}
+        onOpenChange={setScriptModalOpen}
+        script={currentScript}
+        hotspotName={currentHotspotName}
+        onRegenerate={handleRegenerateScript}
+        isRegenerating={generateScript.isPending}
+      />
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar exclusão</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja excluir o hotspot "{hotspotToDelete?.nome}"? 
+              Esta ação não pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Excluir
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
