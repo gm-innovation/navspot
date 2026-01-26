@@ -1,143 +1,230 @@
 
+# Correção de Listas e Regras de Acesso para Super Admin
 
-# Página de Empresas e Correção do Fuso Horário
+## Problema Identificado
 
-## Entendimento do Problema
+O usuário super_admin tem `empresa_id: null`, mas o sistema atual tenta usar `user?.empresa_id` para criar listas e regras de acesso. Isso causa o erro "Empresa não identificada" ao usar templates e impede o cadastro correto.
 
-O fuso horário da **empresa** não tem relação com o fuso da **embarcação**. Uma empresa pode estar sediada em São Paulo, mas suas embarcações operarem em Manaus ou até em águas internacionais. Por isso:
-
-- O timezone da empresa não deve ser usado como fallback
-- O timezone deve ser definido **apenas na embarcação** como campo obrigatório
-- O formulário de empresa deve ser simples: apenas dados cadastrais
+Além disso, o usuário solicitou:
+1. Poder criar listas/regras "globais" (pré-configuradas) sem vincular a uma embarcação
+2. No cadastro/edição de embarcações, poder selecionar listas e regras pré-existentes
 
 ## Mudanças Propostas
 
-### 1. Página de Gerenciamento de Empresas
+### 1. Adicionar Seletor de Empresa nos Formulários (para Super Admin)
 
-Criar uma página completa para o super_admin gerenciar empresas:
-
-```text
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              Empresas                                           │
-│  Gerencie as empresas cadastradas no sistema                                    │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│  ┌─────────┬─────────┬─────────┬─────────┐     [+ Nova Empresa]                │
-│  │  Total  │ Ativas  │Inativas │Embarc.  │                                     │
-│  │    5    │    4    │    1    │   12    │                                     │
-│  └─────────┴─────────┴─────────┴─────────┘                                     │
-│                                                                                 │
-│  ┌───────────────────────────────────────────────────────────────────────────┐ │
-│  │ Empresa              │ CNPJ           │ Email           │ Status │ Ações  │ │
-│  ├───────────────────────────────────────────────────────────────────────────┤ │
-│  │ Navegação Alpha      │ 12.345.678/... │ contato@...     │ Ativo  │ [···]  │ │
-│  │ Transporte Beta      │ 98.765.432/... │ admin@...       │ Ativo  │ [···]  │ │
-│  └───────────────────────────────────────────────────────────────────────────┘ │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 2. Formulário de Empresa (Simplificado)
-
-Sem campo de fuso horário - apenas dados cadastrais:
+Quando o usuário for `super_admin`, mostrar um campo para selecionar a empresa. Para outros roles, usar automaticamente a empresa do usuário.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────┐
-│                          Nova Empresa                                           │
+│                          Nova Lista de Acesso                                   │
 ├────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  Nome *              [Navegação Alpha                     ]                    │
-│  CNPJ                [12.345.678/0001-99                  ]                    │
-│  Email               [contato@navegacao.com.br            ]                    │
-│  Telefone            [(11) 99999-9999                     ]                    │
-│  Endereço            [Av. Paulista, 1000 - São Paulo      ]                    │
-│  Status              [▼ Ativo                             ]                    │
+│  Empresa *         [▼ Navegação Alpha                  ]  ← NOVO (super_admin)│
+│                                                                                 │
+│  Nome              [Comunicação - WhatsApp             ]                       │
+│  Tipo              [▼ Whitelist                        ]                       │
+│  Domínios          [*.whatsapp.net, web.whatsapp.com   ]                       │
+│  ...                                                                           │
 │                                                                                 │
 │                      [Cancelar]  [Salvar]                                      │
 └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3. Correção do Fuso Horário no Sistema
+### 2. Integrar Listas de Acesso no Formulário de Embarcação
 
-**Formulário de Embarcação:**
-- Tornar o fuso horário **obrigatório** (não pode ficar vazio)
-- Remover qualquer menção a "herdar da empresa"
-- Manter o tooltip explicando que é o fuso predominante
+Adicionar uma seção no formulário de embarcação para selecionar quais listas de acesso aplicar:
 
-**Edge Function (mikrotik-sync):**
-- Remover o fallback para timezone da empresa
-- Usar apenas o timezone da embarcação
-- Se a embarcação não tiver timezone configurado, usar `America/Sao_Paulo` como default de emergência
+```text
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                          Nova Embarcação                                        │
+├────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  DADOS GERAIS                                                                   │
+│  Nome, Tipo, Empresa, etc...                                                   │
+│                                                                                 │
+│  ────────────────────────────────────────────────────                          │
+│  CONFIGURAÇÕES DE REDE (HOTSPOT)                                                │
+│  Interface WiFi, Rede, etc...                                                  │
+│                                                                                 │
+│  ────────────────────────────────────────────────────                          │
+│  CONTROLE DE ACESSO                                       ← NOVA SEÇÃO         │
+│                                                                                 │
+│  Listas de Acesso Aplicadas:                                                   │
+│  ┌─────────────────────────────────────────────────────────────────────────┐  │
+│  │ ☑ Comunicação - WhatsApp (whitelist)                                    │  │
+│  │ ☑ Comunicação - Email (whitelist)                                       │  │
+│  │ ☐ Redes Sociais (blacklist)                                             │  │
+│  │ ☐ Streaming de Vídeo (blacklist)                                        │  │
+│  └─────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                 │
+│  [+ Criar Nova Lista]                                                          │
+│                                                                                 │
+│                      [Cancelar]  [Cadastrar]                                   │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
 
-## Arquivos a Criar/Modificar
+### 3. Lógica de Criação Automática de Regras
 
-| Arquivo | Ação | Descrição |
-|---------|------|-----------|
-| `src/pages/Empresas.tsx` | Criar | Página de listagem e gerenciamento |
-| `src/components/forms/EmpresaForm.tsx` | Criar | Formulário modal (sem timezone) |
-| `src/components/AppSidebar.tsx` | Modificar | Adicionar "Empresas" no menu (super_admin) |
-| `src/App.tsx` | Modificar | Adicionar rota `/empresas` |
-| `src/components/forms/EmbarcacaoForm.tsx` | Modificar | Tornar timezone obrigatório |
-| `supabase/functions/mikrotik-sync/index.ts` | Modificar | Remover fallback para empresa timezone |
+Ao salvar a embarcação com listas selecionadas:
+- Criar automaticamente regras de acesso vinculando cada lista ao hotspot da embarcação
+- Regras criadas com prioridade default e aplicadas a todos os perfis
 
-## Campos do Formulário de Empresa
+## Arquivos a Modificar
 
-| Campo | Tipo | Obrigatório | Descrição |
-|-------|------|-------------|-----------|
-| nome | TEXT | Sim | Nome da empresa |
-| cnpj | TEXT | Não | CNPJ formatado |
-| email | TEXT | Não | Email de contato |
-| telefone | TEXT | Não | Telefone de contato |
-| endereco | TEXT | Não | Endereço da sede |
-| status | TEXT | Sim | 'ativo' ou 'inativo' |
+| Arquivo | Mudança |
+|---------|---------|
+| `src/pages/ListasAcesso.tsx` | Adicionar seletor de empresa para super_admin no form |
+| `src/pages/RegrasAcesso.tsx` | Adicionar seletor de empresa para super_admin no form |
+| `src/components/forms/EmbarcacaoForm.tsx` | Adicionar seção de listas de acesso |
+| `src/hooks/useEmbarcacoesWithHotspot.ts` | Criar regras automaticamente ao salvar |
 
-**Nota:** O campo `timezone` já existe na tabela `empresas` no banco, mas não será exibido nem utilizado. Isso evita a necessidade de uma migração para removê-lo.
+## Fluxo para Super Admin
 
-## Permissões de Acesso
+```text
+ANTES (PROBLEMA):
+Super Admin → Criar Lista → "Empresa não identificada" ❌
 
-| Role | Empresas |
-|------|----------|
-| super_admin | CRUD completo |
-| empresa_admin | Não vê no menu |
-| gerente_embarcacao | Não vê no menu |
+DEPOIS (SOLUÇÃO):
+Super Admin → Criar Lista → Seleciona Empresa → Salva ✓
+Super Admin → Cadastrar Embarcação → Seleciona Listas → Regras criadas automaticamente ✓
+```
 
-## Mudança no mikrotik-sync
+## Fluxo para Empresa Admin
 
-Antes (com fallback para empresa):
+```text
+ANTES E DEPOIS (SEM MUDANÇA VISUAL):
+Empresa Admin → Criar Lista → empresa_id preenchido automaticamente ✓
+```
+
+## Implementação Detalhada
+
+### ListasAcesso.tsx - Adicionar Seletor de Empresa
+
 ```typescript
-let effectiveTimezone = 'America/Sao_Paulo'
-if (embarcacao?.timezone) {
-  effectiveTimezone = embarcacao.timezone
-} else if (embarcacao?.empresa_id) {
-  // Busca timezone da empresa como fallback
-  const { data: empresa } = await supabase...
-  if (empresa?.timezone) {
-    effectiveTimezone = empresa.timezone
-  }
+// No estado do formulário:
+const [selectedEmpresaId, setSelectedEmpresaId] = useState("");
+
+// No JSX, antes do campo Nome:
+{user?.role === 'super_admin' && (
+  <div className="grid grid-cols-4 items-center gap-4">
+    <Label className="text-right">Empresa *</Label>
+    <Select
+      value={selectedEmpresaId}
+      onValueChange={setSelectedEmpresaId}
+    >
+      <SelectTrigger className="col-span-3">
+        <SelectValue placeholder="Selecione a empresa" />
+      </SelectTrigger>
+      <SelectContent>
+        {empresas?.map(emp => (
+          <SelectItem key={emp.id} value={emp.id}>{emp.nome}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  </div>
+)}
+
+// No handleSubmit:
+const empresaId = user?.role === 'super_admin' 
+  ? selectedEmpresaId 
+  : user?.empresa_id;
+
+if (!empresaId) {
+  toast({ title: "Erro", description: "Selecione uma empresa.", variant: "destructive" });
+  return;
 }
 ```
 
-Depois (apenas embarcação):
+### EmbarcacaoForm.tsx - Adicionar Seleção de Listas
+
 ```typescript
-// Usa timezone da embarcação ou default
-const effectiveTimezone = embarcacao?.timezone || 'America/Sao_Paulo'
+// Buscar listas da empresa selecionada:
+const { data: listasDisponiveis } = useListasAcessoByEmpresa(formData.empresa_id);
+
+// Estado para listas selecionadas:
+const [listasAplicadas, setListasAplicadas] = useState<string[]>([]);
+
+// No JSX, nova seção após Hotspot:
+<div className="space-y-4">
+  <h3>Controle de Acesso</h3>
+  <p className="text-sm text-muted-foreground">
+    Selecione as listas que serão aplicadas a esta embarcação
+  </p>
+  {listasDisponiveis?.map(lista => (
+    <div key={lista.id} className="flex items-center gap-2">
+      <Checkbox
+        checked={listasAplicadas.includes(lista.id)}
+        onCheckedChange={(checked) => {
+          if (checked) {
+            setListasAplicadas(prev => [...prev, lista.id]);
+          } else {
+            setListasAplicadas(prev => prev.filter(id => id !== lista.id));
+          }
+        }}
+      />
+      <span>{lista.nome} ({lista.tipo})</span>
+    </div>
+  ))}
+</div>
+
+// No submit, passar as listas selecionadas:
+onSubmit({
+  embarcacao: { ... },
+  hotspot: { ... },
+  listasAplicadas: listasAplicadas, // NOVO
+});
 ```
 
-## Ordem de Implementação
+### useEmbarcacoesWithHotspot.ts - Criar Regras Automaticamente
 
-1. Criar `EmpresaForm.tsx` - Formulário simples
-2. Criar `Empresas.tsx` - Página completa
-3. Modificar `AppSidebar.tsx` - Adicionar menu
-4. Modificar `App.tsx` - Adicionar rota
-5. Modificar `EmbarcacaoForm.tsx` - Tornar timezone obrigatório
-6. Modificar `mikrotik-sync` - Remover fallback empresa
+```typescript
+// Na mutação de criar embarcação:
+async createWithHotspotAndRules({ embarcacao, hotspot, listasAplicadas }) {
+  // 1. Criar embarcação
+  const { data: embarcacaoData } = await supabase
+    .from('embarcacoes')
+    .insert(embarcacao)
+    .select()
+    .single();
+
+  // 2. Criar hotspot
+  const { data: hotspotData } = await supabase
+    .from('hotspots')
+    .insert({ ...hotspot, embarcacao_id: embarcacaoData.id })
+    .select()
+    .single();
+
+  // 3. Criar regras para cada lista selecionada
+  if (listasAplicadas?.length > 0) {
+    const regras = listasAplicadas.map((listaId, index) => ({
+      lista_id: listaId,
+      hotspot_id: hotspotData.id,
+      empresa_id: embarcacao.empresa_id,
+      acao: 'permitir',
+      prioridade: 100 + index,
+      ativo: true,
+      dias_semana: ['seg', 'ter', 'qua', 'qui', 'sex', 'sab', 'dom'],
+    }));
+
+    await supabase.from('regras_acesso').insert(regras);
+  }
+}
+```
 
 ## Benefícios
 
 | Mudança | Benefício |
 |---------|-----------|
-| Página de Empresas | Super admin pode gerenciar todas as empresas |
-| Formulário simplificado | Sem campos confusos (timezone) |
-| Timezone só na embarcação | Modelo de dados mais correto |
-| Timezone obrigatório | Evita erros de configuração |
+| Seletor de empresa para super_admin | Resolve erro "Empresa não identificada" |
+| Listas no form de embarcação | Interface mais intuitiva e centralizada |
+| Criação automática de regras | Menos passos para configurar embarcação |
+| Filtro de listas por empresa | Mostra apenas listas relevantes |
 
+## Ordem de Implementação
+
+1. **ListasAcesso.tsx** - Adicionar seletor de empresa
+2. **RegrasAcesso.tsx** - Adicionar seletor de empresa
+3. **useListasAcesso.ts** - Criar hook para buscar listas por empresa
+4. **EmbarcacaoForm.tsx** - Adicionar seção de controle de acesso
+5. **useEmbarcacoesWithHotspot.ts** - Criar regras automaticamente
