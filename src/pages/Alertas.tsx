@@ -48,12 +48,18 @@ import {
 } from "@/hooks/useAlertas";
 import { useBlockDispositivoByMac } from "@/hooks/useDispositivosRegistrados";
 import { useAlertasRealtime } from "@/hooks/useRealtimeSubscription";
+import { useNotificationSettings } from "@/hooks/useNotificationSettings";
+import { AlertSettingsModal } from "@/components/modals/AlertSettingsModal";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
 export default function Alertas() {
   // Enable realtime updates
   useAlertasRealtime();
+
+  // Modal state
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [settingsModalTab, setSettingsModalTab] = useState<'canais' | 'automacoes' | 'escalacao'>('canais');
 
   // Filters state
   const [filters, setFilters] = useState<AlertaFilters>({
@@ -66,6 +72,7 @@ export default function Alertas() {
   // Queries and mutations
   const { data: alertas, isLoading, refetch } = useAlertas(filters);
   const { data: stats, isLoading: statsLoading } = useAlertasStats();
+  const { data: notificationSettings } = useNotificationSettings();
   const resolveAlerta = useResolveAlerta();
   const resolveMultiple = useResolveMultipleAlertas();
   const deleteOldAlertas = useDeleteOldAlertas();
@@ -129,8 +136,42 @@ export default function Alertas() {
   const alertasNaoResolvidos = alertas?.filter(a => !a.resolvido) || [];
   const hasSelectedNonResolved = selectedAlertas.length > 0;
 
+  const openSettingsModal = (tab: 'canais' | 'automacoes' | 'escalacao' = 'canais') => {
+    setSettingsModalTab(tab);
+    setSettingsModalOpen(true);
+  };
+
+  // Helper to get status badge for settings
+  const getSettingStatus = (enabled: boolean | undefined) => {
+    if (enabled === undefined) {
+      return (
+        <Badge 
+          className="bg-muted text-muted-foreground cursor-pointer hover:bg-muted/80"
+        >
+          Configurar
+        </Badge>
+      );
+    }
+    return enabled ? (
+      <Badge className="bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400">
+        Ativo
+      </Badge>
+    ) : (
+      <Badge className="bg-muted text-muted-foreground">
+        Inativo
+      </Badge>
+    );
+  };
+
   return (
     <div className="flex-1 space-y-6 p-6">
+      {/* Alert Settings Modal */}
+      <AlertSettingsModal 
+        open={settingsModalOpen} 
+        onOpenChange={setSettingsModalOpen}
+        defaultTab={settingsModalTab}
+      />
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -144,7 +185,7 @@ export default function Alertas() {
             <RefreshCw className="h-4 w-4 mr-2" />
             Atualizar
           </Button>
-          <Button variant="outline">
+          <Button variant="outline" onClick={() => openSettingsModal('canais')}>
             <Settings className="h-4 w-4 mr-2" />
             Configurar Alertas
           </Button>
@@ -477,32 +518,35 @@ export default function Alertas() {
             <CardTitle>Canais de Notificação</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div 
+              className="flex items-center justify-between cursor-pointer hover:bg-muted/50 p-2 -m-2 rounded-md transition-colors"
+              onClick={() => openSettingsModal('canais')}
+            >
               <div>
                 <p className="font-medium">Email</p>
                 <p className="text-sm text-muted-foreground">Notificações por email</p>
               </div>
-              <Badge className="bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400">
-                Ativo
-              </Badge>
+              {getSettingStatus(notificationSettings?.email_enabled)}
             </div>
-            <div className="flex items-center justify-between">
+            <div 
+              className="flex items-center justify-between cursor-pointer hover:bg-muted/50 p-2 -m-2 rounded-md transition-colors"
+              onClick={() => openSettingsModal('canais')}
+            >
               <div>
                 <p className="font-medium">WhatsApp</p>
                 <p className="text-sm text-muted-foreground">Mensagens via WhatsApp</p>
               </div>
-              <Badge className="bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400">
-                Ativo
-              </Badge>
+              {getSettingStatus(notificationSettings?.whatsapp_enabled)}
             </div>
-            <div className="flex items-center justify-between">
+            <div 
+              className="flex items-center justify-between cursor-pointer hover:bg-muted/50 p-2 -m-2 rounded-md transition-colors"
+              onClick={() => openSettingsModal('canais')}
+            >
               <div>
                 <p className="font-medium">Webhook</p>
                 <p className="text-sm text-muted-foreground">Integração via webhook</p>
               </div>
-              <Badge className="bg-muted text-muted-foreground">
-                Configurar
-              </Badge>
+              {getSettingStatus(notificationSettings?.webhook_enabled)}
             </div>
           </CardContent>
         </Card>
@@ -512,32 +556,35 @@ export default function Alertas() {
             <CardTitle>Configurações Automáticas</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div 
+              className="flex items-center justify-between cursor-pointer hover:bg-muted/50 p-2 -m-2 rounded-md transition-colors"
+              onClick={() => openSettingsModal('automacoes')}
+            >
               <div>
                 <p className="font-medium">Auto-resolução</p>
                 <p className="text-sm text-muted-foreground">Resolver alertas automaticamente</p>
               </div>
-              <Badge className="bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400">
-                Ativo
-              </Badge>
+              {getSettingStatus(notificationSettings?.auto_resolver_enabled)}
             </div>
-            <div className="flex items-center justify-between">
+            <div 
+              className="flex items-center justify-between cursor-pointer hover:bg-muted/50 p-2 -m-2 rounded-md transition-colors"
+              onClick={() => openSettingsModal('automacoes')}
+            >
               <div>
                 <p className="font-medium">Agrupamento</p>
                 <p className="text-sm text-muted-foreground">Agrupar alertas similares</p>
               </div>
-              <Badge className="bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400">
-                Ativo
-              </Badge>
+              {getSettingStatus(notificationSettings?.agrupar_enabled)}
             </div>
-            <div className="flex items-center justify-between">
+            <div 
+              className="flex items-center justify-between cursor-pointer hover:bg-muted/50 p-2 -m-2 rounded-md transition-colors"
+              onClick={() => openSettingsModal('escalacao')}
+            >
               <div>
                 <p className="font-medium">Escalação</p>
                 <p className="text-sm text-muted-foreground">Escalar alertas não resolvidos</p>
               </div>
-              <Badge className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400">
-                Configurar
-              </Badge>
+              {getSettingStatus(notificationSettings?.escalacao_enabled)}
             </div>
           </CardContent>
         </Card>

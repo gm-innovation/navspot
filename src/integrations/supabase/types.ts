@@ -434,6 +434,74 @@ export type Database = {
           },
         ]
       }
+      notification_settings: {
+        Row: {
+          agrupar_enabled: boolean | null
+          auto_resolver_enabled: boolean | null
+          auto_resolver_horas: number | null
+          created_at: string | null
+          email_destinatarios: string[] | null
+          email_enabled: boolean | null
+          empresa_id: string | null
+          escalacao_destinatarios: string[] | null
+          escalacao_enabled: boolean | null
+          escalacao_minutos: number | null
+          id: string
+          notificar_severidades: string[] | null
+          updated_at: string | null
+          webhook_enabled: boolean | null
+          webhook_url: string | null
+          whatsapp_enabled: boolean | null
+          whatsapp_numeros: string[] | null
+        }
+        Insert: {
+          agrupar_enabled?: boolean | null
+          auto_resolver_enabled?: boolean | null
+          auto_resolver_horas?: number | null
+          created_at?: string | null
+          email_destinatarios?: string[] | null
+          email_enabled?: boolean | null
+          empresa_id?: string | null
+          escalacao_destinatarios?: string[] | null
+          escalacao_enabled?: boolean | null
+          escalacao_minutos?: number | null
+          id?: string
+          notificar_severidades?: string[] | null
+          updated_at?: string | null
+          webhook_enabled?: boolean | null
+          webhook_url?: string | null
+          whatsapp_enabled?: boolean | null
+          whatsapp_numeros?: string[] | null
+        }
+        Update: {
+          agrupar_enabled?: boolean | null
+          auto_resolver_enabled?: boolean | null
+          auto_resolver_horas?: number | null
+          created_at?: string | null
+          email_destinatarios?: string[] | null
+          email_enabled?: boolean | null
+          empresa_id?: string | null
+          escalacao_destinatarios?: string[] | null
+          escalacao_enabled?: boolean | null
+          escalacao_minutos?: number | null
+          id?: string
+          notificar_severidades?: string[] | null
+          updated_at?: string | null
+          webhook_enabled?: boolean | null
+          webhook_url?: string | null
+          whatsapp_enabled?: boolean | null
+          whatsapp_numeros?: string[] | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "notification_settings_empresa_id_fkey"
+            columns: ["empresa_id"]
+            isOneToOne: true
+            referencedRelation: "empresas"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       perfis_velocidade: {
         Row: {
           created_at: string
