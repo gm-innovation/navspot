@@ -84,7 +84,7 @@ export function AppLayout({ children }: AppLayoutProps) {
       </header>
 
       {/* Layout principal */}
-      <div className="flex w-full">
+      <div className="flex w-full pt-14">
         <AppSidebar />
         <main className="flex-1 overflow-hidden">
           <div className="h-full overflow-y-auto">
