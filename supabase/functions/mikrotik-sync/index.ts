@@ -35,6 +35,53 @@ interface DeviceViolation {
   macs_to_kick: string[]
 }
 
+// Helper to create alerts without duplicating recent ones
+async function createAlertIfNotRecent(
+  supabase: ReturnType<typeof createClient>,
+  alertData: {
+    tipo: string
+    severidade: string
+    mensagem: string
+    hotspot_id?: string
+    embarcacao_id?: string
+    empresa_id?: string
+    tripulante_id?: string
+  },
+  dedupeMinutes: number = 30
+) {
+  // Check for recent duplicate
+  const cutoff = new Date(Date.now() - dedupeMinutes * 60 * 1000).toISOString()
+  
+  const { data: existing } = await supabase
+    .from('alertas')
+    .select('id')
+    .eq('tipo', alertData.tipo)
+    .eq('resolvido', false)
+    .gte('created_at', cutoff)
+    .eq('hotspot_id', alertData.hotspot_id || null)
+    .eq('tripulante_id', alertData.tripulante_id || null)
+    .maybeSingle()
+
+  if (existing) {
+    console.log(`[mikrotik-sync] Alert already exists, skipping: ${alertData.tipo}`)
+    return null
+  }
+
+  const { data, error } = await supabase
+    .from('alertas')
+    .insert(alertData)
+    .select()
+    .single()
+
+  if (error) {
+    console.error('[mikrotik-sync] Failed to create alert:', error)
+    return null
+  }
+
+  console.log(`[mikrotik-sync] Created alert: ${alertData.tipo} - ${alertData.mensagem}`)
+  return data
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -84,6 +131,17 @@ Deno.serve(async (req) => {
       .eq('id', hotspot.embarcacao_id)
       .single()
 
+    // If hotspot was offline, auto-resolve offline alerts and mark as back online
+    if (hotspot.status === 'offline') {
+      console.log('[mikrotik-sync] Hotspot was offline, resolving offline alerts')
+      await supabase
+        .from('alertas')
+        .update({ resolvido: true, resolvido_at: new Date().toISOString() })
+        .eq('hotspot_id', hotspot.id)
+        .eq('tipo', 'hotspot_offline')
+        .eq('resolvido', false)
+    }
+
     // Update hotspot status and last sync time
     const { error: updateError } = await supabase
       .from('hotspots')
@@ -131,19 +189,24 @@ Deno.serve(async (req) => {
       }
 
       for (const activeUser of payload.active_users) {
-        // Find tripulante by login_wifi with perfil for device limits
+        // Find tripulante by login_wifi with perfil for device limits and quota
         const { data: tripulante } = await supabase
           .from('tripulantes')
           .select(`
-            id, bytes_consumidos, perfil_id,
-            perfis_velocidade(id, nome, max_dispositivos)
+            id, bytes_consumidos, perfil_id, nome,
+            perfis_velocidade(id, nome, max_dispositivos, limite_dados_mb)
           `)
           .eq('login_wifi', activeUser.user)
           .eq('embarcacao_id', hotspot.embarcacao_id)
           .single()
 
         if (tripulante) {
-          const perfil = tripulante.perfis_velocidade as { id: string; nome: string; max_dispositivos: number } | null
+          const perfil = tripulante.perfis_velocidade as { 
+            id: string; 
+            nome: string; 
+            max_dispositivos: number;
+            limite_dados_mb: number | null;
+          } | null
           const maxDevices = perfil?.max_dispositivos || 1
           const userMacs = userDeviceCounts.get(activeUser.user) || []
           
@@ -162,6 +225,49 @@ Deno.serve(async (req) => {
               }
               deviceViolations.push(violation)
               console.log(`[mikrotik-sync] Device limit violation: ${activeUser.user} has ${userMacs.length} devices, max ${maxDevices}`)
+
+              // Create device limit alert
+              await createAlertIfNotRecent(supabase, {
+                tipo: 'device_limit',
+                severidade: 'warning',
+                mensagem: `${tripulante.nome || activeUser.user} excedeu limite: ${userMacs.length}/${maxDevices} dispositivos`,
+                hotspot_id: hotspot.id,
+                embarcacao_id: hotspot.embarcacao_id,
+                empresa_id: embarcacao?.empresa_id,
+                tripulante_id: tripulante.id
+              })
+            }
+          }
+
+          // Check quota limits
+          if (perfil?.limite_dados_mb) {
+            const limitBytes = perfil.limite_dados_mb * 1024 * 1024
+            const totalBytes = activeUser.bytes_in + activeUser.bytes_out
+            const newTotal = tripulante.bytes_consumidos + totalBytes
+            const percentage = (newTotal / limitBytes) * 100
+
+            if (percentage >= 100) {
+              // Quota exceeded
+              await createAlertIfNotRecent(supabase, {
+                tipo: 'quota_exceeded',
+                severidade: 'critical',
+                mensagem: `${tripulante.nome || activeUser.user} excedeu 100% da quota (${Math.round(percentage)}%)`,
+                hotspot_id: hotspot.id,
+                embarcacao_id: hotspot.embarcacao_id,
+                empresa_id: embarcacao?.empresa_id,
+                tripulante_id: tripulante.id
+              }, 60) // Dedupe for 1 hour
+            } else if (percentage >= 80) {
+              // Quota warning at 80%
+              await createAlertIfNotRecent(supabase, {
+                tipo: 'quota_warning',
+                severidade: 'warning',
+                mensagem: `${tripulante.nome || activeUser.user} atingiu ${Math.round(percentage)}% da quota`,
+                hotspot_id: hotspot.id,
+                embarcacao_id: hotspot.embarcacao_id,
+                empresa_id: embarcacao?.empresa_id,
+                tripulante_id: tripulante.id
+              }, 120) // Dedupe for 2 hours
             }
           }
 
@@ -377,6 +483,10 @@ Deno.serve(async (req) => {
 
   } catch (error) {
     console.error('[mikrotik-sync] Unexpected error:', error)
+    
+    // Create sync failure alert if we can identify the hotspot
+    // Note: Can't easily do this without the hotspot context from the failed request
+    
     return new Response(
       JSON.stringify({ 
         success: false, 
