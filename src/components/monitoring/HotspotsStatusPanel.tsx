@@ -1,9 +1,11 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useHotspotsStatus, formatTimeAgo, HotspotStatus } from '@/hooks/useMonitoramento';
-import { Server, Users } from 'lucide-react';
+import { Server, Users, History } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 function HotspotRow({ hotspot }: { hotspot: HotspotStatus }) {
   const [timeAgo, setTimeAgo] = useState(formatTimeAgo(hotspot.ultima_sincronizacao));
@@ -84,11 +86,17 @@ export function HotspotsStatusPanel() {
       <CardHeader className="pb-2">
         <CardTitle className="text-lg flex items-center justify-between">
           <span>Status dos Hotspots</span>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             <Badge className="bg-green-500">{onlineCount} online</Badge>
             {offlineCount > 0 && (
               <Badge variant="destructive">{offlineCount} offline</Badge>
             )}
+            <Button variant="ghost" size="sm" asChild className="h-7 px-2">
+              <Link to="/status-servico" className="flex items-center gap-1">
+                <History className="h-4 w-4" />
+                <span className="hidden sm:inline text-xs">Histórico</span>
+              </Link>
+            </Button>
           </div>
         </CardTitle>
       </CardHeader>
