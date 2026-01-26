@@ -1,150 +1,143 @@
 
 
-# Correções de Interface e Modelo de Dados
+# Página de Empresas e Correção do Fuso Horário
 
-## Pontos Identificados
+## Entendimento do Problema
 
-O usuário apontou três problemas nas interfaces atuais:
+O fuso horário da **empresa** não tem relação com o fuso da **embarcação**. Uma empresa pode estar sediada em São Paulo, mas suas embarcações operarem em Manaus ou até em águas internacionais. Por isso:
 
-### 1. Formulário de Novo Equipamento de Embarcação
-Falta a opção de **Autorizado** (liberar/bloquear) no momento do cadastro. Atualmente o campo está fixo como `autorizado: true`.
-
-### 2. Separação entre Hotspots e Embarcações
-O menu mostra "Hotspots" e "Embarcações" separadamente, mas o usuário diz que **cada embarcação É um hotspot**. Isso sugere que a relação deveria ser 1:1, não que uma embarcação pode ter múltiplos hotspots.
-
-### 3. Formulário de Embarcação
-- **"Herdar da empresa"**: Confuso para o usuário. O fuso horário da embarcação pode ser diferente do da empresa.
-- **"Localização"**: Não faz sentido ter um campo de localização estática para embarcações que navegam.
+- O timezone da empresa não deve ser usado como fallback
+- O timezone deve ser definido **apenas na embarcação** como campo obrigatório
+- O formulário de empresa deve ser simples: apenas dados cadastrais
 
 ## Mudanças Propostas
 
-### 1. Adicionar Switch de Autorização no Formulário de Dispositivo
+### 1. Página de Gerenciamento de Empresas
 
-Modificar `src/pages/Dispositivos.tsx`:
-- Adicionar um Switch para "Autorizado a conectar" no formulário de novo equipamento
-- Permitir que o admin já cadastre o dispositivo bloqueado se necessário
+Criar uma página completa para o super_admin gerenciar empresas:
 
 ```text
-┌────────────────────────────────────────────────────┐
-│        Novo Equipamento de Embarcação              │
-│                                                    │
-│  MAC Address *   [AA:BB:CC:DD:EE:FF       ]       │
-│  Nome            [Radar Principal         ]       │
-│  Tipo            [▼ Equipamento           ]       │
-│  Embarcação *    [▼ Navio Alpha           ]       │
-│                                                    │
-│  Autorizado      [====●] Sim                      │
-│                                                    │
-│           [Cancelar]  [Cadastrar]                 │
-└────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              Empresas                                           │
+│  Gerencie as empresas cadastradas no sistema                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌─────────┬─────────┬─────────┬─────────┐     [+ Nova Empresa]                │
+│  │  Total  │ Ativas  │Inativas │Embarc.  │                                     │
+│  │    5    │    4    │    1    │   12    │                                     │
+│  └─────────┴─────────┴─────────┴─────────┘                                     │
+│                                                                                 │
+│  ┌───────────────────────────────────────────────────────────────────────────┐ │
+│  │ Empresa              │ CNPJ           │ Email           │ Status │ Ações  │ │
+│  ├───────────────────────────────────────────────────────────────────────────┤ │
+│  │ Navegação Alpha      │ 12.345.678/... │ contato@...     │ Ativo  │ [···]  │ │
+│  │ Transporte Beta      │ 98.765.432/... │ admin@...       │ Ativo  │ [···]  │ │
+│  └───────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Unificar Hotspot e Embarcação (Relação 1:1)
+### 2. Formulário de Empresa (Simplificado)
 
-Dado que **cada embarcação é um hotspot**, faz mais sentido:
-
-**Opção A - Manter separado mas simplificar:**
-- Remover "Hotspots" do menu principal
-- Ao criar/editar uma embarcação, automaticamente criar/atualizar o hotspot vinculado
-- Mostrar as configurações do hotspot dentro da página de embarcações (em uma aba ou seção)
-
-**Opção B - Merge completo:**
-- Mover as colunas técnicas do hotspot (interface_wifi, rede, sync_token, etc.) para dentro de embarcações
-- Eliminar a tabela hotspots
-
-Recomendação: **Opção A** - mantém a separação no banco para flexibilidade futura, mas na interface o usuário gerencia tudo como "Embarcação" com uma aba de "Configurações de Rede".
-
-### 3. Corrigir Formulário de Embarcação
-
-**Remover:**
-- Campo "Localização" (não faz sentido para embarcações em movimento)
-
-**Melhorar "Fuso Horário":**
-- Mudar o texto "Herdar da empresa" para algo mais claro
-- Explicar que é o fuso **predominante** onde a embarcação opera
-- Adicionar tooltip explicativo
+Sem campo de fuso horário - apenas dados cadastrais:
 
 ```text
-┌────────────────────────────────────────────────────┐
-│               Editar Embarcação                    │
-│                                                    │
-│  Dados Gerais                                      │
-│  ──────────────────────────────────────────────── │
-│  Nome            [Navio Alpha             ]       │
-│  Tipo            [▼ Navio                 ]       │
-│  Empresa         [▼ Empresa ABC           ]       │
-│  Responsável     [João Silva              ]       │
-│  Email           [joao@empresa.com        ]       │
-│  Status          [▼ Ativo                 ]       │
-│                                                    │
-│  Fuso Horário Predominante                        │
-│  ──────────────────────────────────────────────── │
-│  [▼ America/Sao_Paulo (UTC-3)             ]       │
-│  ℹ️ Fuso onde a embarcação opera na maior parte  │
-│     do tempo. Afeta a renovação de quotas.        │
-│                                                    │
-│  Configurações de Rede (Hotspot)                  │
-│  ──────────────────────────────────────────────── │
-│  Interface WiFi  [▼ wlan1                 ]       │
-│  Rede            [192.168.88.0/24         ]       │
-│  Max Usuários    [50                      ]       │
-│  Intervalo Sync  [5                       ] min   │
-│                                                    │
-│           [Cancelar]  [Salvar]                    │
-└────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                          Nova Empresa                                           │
+├────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  Nome *              [Navegação Alpha                     ]                    │
+│  CNPJ                [12.345.678/0001-99                  ]                    │
+│  Email               [contato@navegacao.com.br            ]                    │
+│  Telefone            [(11) 99999-9999                     ]                    │
+│  Endereço            [Av. Paulista, 1000 - São Paulo      ]                    │
+│  Status              [▼ Ativo                             ]                    │
+│                                                                                 │
+│                      [Cancelar]  [Salvar]                                      │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Arquivos a Modificar
+### 3. Correção do Fuso Horário no Sistema
 
-| Arquivo | Mudança |
-|---------|---------|
-| `src/pages/Dispositivos.tsx` | Adicionar Switch de autorização no form |
-| `src/components/forms/EmbarcacaoForm.tsx` | Remover "Localização", melhorar texto do fuso, integrar campos de hotspot |
-| `src/components/AppSidebar.tsx` | Remover "Hotspots" do menu (será parte de Embarcações) |
-| `src/pages/Embarcacoes.tsx` | Modificar para gerenciar hotspot junto com embarcação |
-| `src/hooks/useEmbarcacoes.ts` | Adicionar lógica para criar/atualizar hotspot automaticamente |
-| `src/App.tsx` | Remover rota `/hotspots` ou redirecionar para `/embarcacoes` |
+**Formulário de Embarcação:**
+- Tornar o fuso horário **obrigatório** (não pode ficar vazio)
+- Remover qualquer menção a "herdar da empresa"
+- Manter o tooltip explicando que é o fuso predominante
 
-## Fluxo Simplificado
+**Edge Function (mikrotik-sync):**
+- Remover o fallback para timezone da empresa
+- Usar apenas o timezone da embarcação
+- Se a embarcação não tiver timezone configurado, usar `America/Sao_Paulo` como default de emergência
 
-```text
-ANTES:
-Embarcações ──────► Hotspots
-   (menu)            (menu separado)
-     │                    │
-     ▼                    ▼
- Cadastrar           Configurar
- embarcação          hotspot
+## Arquivos a Criar/Modificar
 
-DEPOIS:
-Embarcações
-   (menu único)
-     │
-     ▼
- Cadastrar/Editar embarcação
-   ├── Dados gerais
-   ├── Fuso horário
-   └── Config. de rede (hotspot)
-        ├── Interface WiFi
-        ├── Rede
-        └── Sync interval
+| Arquivo | Ação | Descrição |
+|---------|------|-----------|
+| `src/pages/Empresas.tsx` | Criar | Página de listagem e gerenciamento |
+| `src/components/forms/EmpresaForm.tsx` | Criar | Formulário modal (sem timezone) |
+| `src/components/AppSidebar.tsx` | Modificar | Adicionar "Empresas" no menu (super_admin) |
+| `src/App.tsx` | Modificar | Adicionar rota `/empresas` |
+| `src/components/forms/EmbarcacaoForm.tsx` | Modificar | Tornar timezone obrigatório |
+| `supabase/functions/mikrotik-sync/index.ts` | Modificar | Remover fallback para empresa timezone |
+
+## Campos do Formulário de Empresa
+
+| Campo | Tipo | Obrigatório | Descrição |
+|-------|------|-------------|-----------|
+| nome | TEXT | Sim | Nome da empresa |
+| cnpj | TEXT | Não | CNPJ formatado |
+| email | TEXT | Não | Email de contato |
+| telefone | TEXT | Não | Telefone de contato |
+| endereco | TEXT | Não | Endereço da sede |
+| status | TEXT | Sim | 'ativo' ou 'inativo' |
+
+**Nota:** O campo `timezone` já existe na tabela `empresas` no banco, mas não será exibido nem utilizado. Isso evita a necessidade de uma migração para removê-lo.
+
+## Permissões de Acesso
+
+| Role | Empresas |
+|------|----------|
+| super_admin | CRUD completo |
+| empresa_admin | Não vê no menu |
+| gerente_embarcacao | Não vê no menu |
+
+## Mudança no mikrotik-sync
+
+Antes (com fallback para empresa):
+```typescript
+let effectiveTimezone = 'America/Sao_Paulo'
+if (embarcacao?.timezone) {
+  effectiveTimezone = embarcacao.timezone
+} else if (embarcacao?.empresa_id) {
+  // Busca timezone da empresa como fallback
+  const { data: empresa } = await supabase...
+  if (empresa?.timezone) {
+    effectiveTimezone = empresa.timezone
+  }
+}
 ```
+
+Depois (apenas embarcação):
+```typescript
+// Usa timezone da embarcação ou default
+const effectiveTimezone = embarcacao?.timezone || 'America/Sao_Paulo'
+```
+
+## Ordem de Implementação
+
+1. Criar `EmpresaForm.tsx` - Formulário simples
+2. Criar `Empresas.tsx` - Página completa
+3. Modificar `AppSidebar.tsx` - Adicionar menu
+4. Modificar `App.tsx` - Adicionar rota
+5. Modificar `EmbarcacaoForm.tsx` - Tornar timezone obrigatório
+6. Modificar `mikrotik-sync` - Remover fallback empresa
 
 ## Benefícios
 
 | Mudança | Benefício |
 |---------|-----------|
-| Switch de autorização | Admin pode cadastrar dispositivo já bloqueado |
-| Unificar Hotspot+Embarcação | Interface mais simples e intuitiva |
-| Remover localização | Remove campo que não faz sentido |
-| Melhorar texto do fuso | Deixa claro que é o fuso predominante |
-| Tooltip explicativo | Ajuda o usuário a entender o impacto do fuso |
-
-## Ordem de Implementação
-
-1. **Dispositivos**: Adicionar Switch de autorização
-2. **EmbarcacaoForm**: Remover localização, melhorar fuso, adicionar campos de hotspot
-3. **useEmbarcacoes**: Criar hook para gerenciar embarcação + hotspot juntos
-4. **Sidebar/Rotas**: Remover menu e rota de Hotspots
-5. **Embarcacoes**: Adaptar página para o novo fluxo
+| Página de Empresas | Super admin pode gerenciar todas as empresas |
+| Formulário simplificado | Sem campos confusos (timezone) |
+| Timezone só na embarcação | Modelo de dados mais correto |
+| Timezone obrigatório | Evita erros de configuração |
 
