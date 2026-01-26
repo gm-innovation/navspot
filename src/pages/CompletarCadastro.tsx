@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Wifi, CheckCircle2, AlertCircle, Loader2, Ship } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Wifi, CheckCircle2, AlertCircle, Loader2, Ship, Shield, FileText } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 
 export default function CompletarCadastro() {
@@ -21,6 +22,8 @@ export default function CompletarCadastro() {
     cargo: "",
   });
 
+  const [aceitouTermos, setAceitouTermos] = useState(false);
+  const [aceitouPrivacidade, setAceitouPrivacidade] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -47,6 +50,12 @@ export default function CompletarCadastro() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (!aceitouTermos || !aceitouPrivacidade) {
+      setError("Você deve aceitar os Termos de Uso e a Política de Privacidade para continuar.");
+      return;
+    }
+    
     setIsLoading(true);
     setError(null);
 
@@ -61,6 +70,8 @@ export default function CompletarCadastro() {
             email: formData.email.trim() || undefined,
             cpf: formData.cpf.trim() || undefined,
             cargo: formData.cargo.trim() || undefined,
+            aceite_termos: aceitouTermos,
+            aceite_privacidade: aceitouPrivacidade,
           },
         }
       );
@@ -212,10 +223,64 @@ export default function CompletarCadastro() {
               </div>
             </div>
 
+            {/* Consentimentos LGPD */}
+            <div className="space-y-4 pt-4 border-t">
+              <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                <Shield className="h-4 w-4" />
+                Consentimentos Obrigatórios
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-start space-x-3">
+                  <Checkbox
+                    id="termos"
+                    checked={aceitouTermos}
+                    onCheckedChange={(checked) => setAceitouTermos(checked === true)}
+                  />
+                  <div className="grid gap-1.5 leading-none">
+                    <label
+                      htmlFor="termos"
+                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                    >
+                      Li e concordo com os{" "}
+                      <Link to="/termos" target="_blank" className="text-primary underline hover:no-underline">
+                        Termos de Uso
+                      </Link>
+                    </label>
+                    <p className="text-xs text-muted-foreground">
+                      Inclui regras de uso do serviço WiFi e responsabilidades
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-start space-x-3">
+                  <Checkbox
+                    id="privacidade"
+                    checked={aceitouPrivacidade}
+                    onCheckedChange={(checked) => setAceitouPrivacidade(checked === true)}
+                  />
+                  <div className="grid gap-1.5 leading-none">
+                    <label
+                      htmlFor="privacidade"
+                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                    >
+                      Li e concordo com a{" "}
+                      <Link to="/privacidade" target="_blank" className="text-primary underline hover:no-underline">
+                        Política de Privacidade
+                      </Link>
+                    </label>
+                    <p className="text-xs text-muted-foreground">
+                      Autorizo o tratamento dos meus dados pessoais conforme a LGPD
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <Button 
               type="submit" 
               className="w-full" 
-              disabled={isLoading || !formData.login || !formData.senha || !formData.nome}
+              disabled={isLoading || !formData.login || !formData.senha || !formData.nome || !aceitouTermos || !aceitouPrivacidade}
             >
               {isLoading ? (
                 <>
@@ -228,8 +293,8 @@ export default function CompletarCadastro() {
             </Button>
 
             <p className="text-xs text-center text-muted-foreground">
-              Ao completar o cadastro, você terá acesso à rede WiFi da embarcação 
-              de acordo com o perfil configurado pelo administrador.
+              Seus dados serão tratados conforme a Lei Geral de Proteção de Dados (LGPD).
+              Os registros de acesso são mantidos por 6 meses conforme Marco Civil da Internet.
             </p>
           </form>
         </CardContent>

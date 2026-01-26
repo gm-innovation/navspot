@@ -22,6 +22,9 @@ import Relatorios from "./pages/Relatorios";
 import Usuarios from "./pages/Usuarios";
 import StatusServico from "./pages/StatusServico";
 import CompletarCadastro from "./pages/CompletarCadastro";
+import PoliticaPrivacidade from "./pages/PoliticaPrivacidade";
+import TermosUso from "./pages/TermosUso";
+import GestaoLGPD from "./pages/GestaoLGPD";
 import NotFound from "./pages/NotFound";
 import { AppLayout } from "./components/AppLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
@@ -38,6 +41,8 @@ const App = () => (
           <AuthProvider>
             <Routes>
               <Route path="/completar-cadastro" element={<CompletarCadastro />} />
+              <Route path="/privacidade" element={<PoliticaPrivacidade />} />
+              <Route path="/termos" element={<TermosUso />} />
               <Route path="/login" element={<Login />} />
               <Route path="/" element={
                 <ProtectedRoute>
@@ -161,6 +166,15 @@ const App = () => (
                   <SidebarProvider>
                     <AppLayout>
                       <Usuarios />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/lgpd" element={
+                <ProtectedRoute allowedRoles={['super_admin', 'empresa_admin']}>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <GestaoLGPD />
                     </AppLayout>
                   </SidebarProvider>
                 </ProtectedRoute>

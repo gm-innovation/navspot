@@ -12,6 +12,8 @@ interface SelfRegisterRequest {
   email?: string;
   cpf?: string;
   cargo?: string;
+  aceite_termos?: boolean;
+  aceite_privacidade?: boolean;
 }
 
 Deno.serve(async (req) => {
@@ -34,7 +36,13 @@ Deno.serve(async (req) => {
     }
 
     const body: SelfRegisterRequest = await req.json();
-    const { login, senha, nome, email, cpf, cargo } = body;
+    const { login, senha, nome, email, cpf, cargo, aceite_termos, aceite_privacidade } = body;
+
+    // Capturar IP e User Agent para conformidade LGPD
+    const clientIP = req.headers.get("x-forwarded-for")?.split(",")[0] || 
+                     req.headers.get("x-real-ip") || 
+                     "unknown";
+    const userAgent = req.headers.get("user-agent") || "unknown";
 
     // Validate required fields
     if (!login || !senha || !nome) {
@@ -57,6 +65,15 @@ Deno.serve(async (req) => {
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return new Response(
         JSON.stringify({ error: "Formato de email inválido" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Validate consent (LGPD requirement)
+    if (!aceite_termos || !aceite_privacidade) {
+      console.log("Consent not provided:", { aceite_termos, aceite_privacidade });
+      return new Response(
+        JSON.stringify({ error: "É obrigatório aceitar os Termos de Uso e a Política de Privacidade" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -127,7 +144,64 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Register consent records (LGPD Art. 8)
+    const consentRecords = [
+      {
+        tripulante_id: tripulante.id,
+        tipo: "termos_uso",
+        versao: "v1.0",
+        aceito: true,
+        aceito_em: new Date().toISOString(),
+        ip_address: clientIP,
+        user_agent: userAgent,
+      },
+      {
+        tripulante_id: tripulante.id,
+        tipo: "politica_privacidade",
+        versao: "v1.0",
+        aceito: true,
+        aceito_em: new Date().toISOString(),
+        ip_address: clientIP,
+        user_agent: userAgent,
+      },
+    ];
+
+    const { error: consentError } = await supabase
+      .from("consentimentos")
+      .insert(consentRecords);
+
+    if (consentError) {
+      console.error("Error registering consent:", consentError);
+      // Continue anyway - consent registration failure shouldn't block registration
+    }
+
+    // Register audit log (Marco Civil)
+    const { error: auditError } = await supabase
+      .from("audit_logs")
+      .insert({
+        tripulante_id: tripulante.id,
+        acao: "create",
+        tabela: "tripulantes",
+        registro_id: tripulante.id,
+        dados_novos: {
+          nome: nome.trim(),
+          email: email?.trim() || null,
+          cpf: cpf?.trim() ? "***" : null, // Don't log full CPF
+          cargo: cargo?.trim() || null,
+          aceite_termos: true,
+          aceite_privacidade: true,
+        },
+        ip_address: clientIP,
+        user_agent: userAgent,
+      });
+
+    if (auditError) {
+      console.error("Error registering audit log:", auditError);
+      // Continue anyway - audit failure shouldn't block registration
+    }
+
     console.log("Tripulante self-registration completed:", tripulante.id);
+    console.log("Consent registered for:", tripulante.id, "IP:", clientIP);
 
     return new Response(
       JSON.stringify({ 
