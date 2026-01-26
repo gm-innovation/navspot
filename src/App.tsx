@@ -8,6 +8,7 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { AuthProvider } from "@/contexts/AuthContext";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
+import Monitoramento from "./pages/Monitoramento";
 import Empresas from "./pages/Empresas";
 import Embarcacoes from "./pages/Embarcacoes";
 import Tripulantes from "./pages/Tripulantes";
@@ -42,6 +43,15 @@ const App = () => (
                   <SidebarProvider>
                     <AppLayout>
                       <Dashboard />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/monitoramento" element={
+                <ProtectedRoute>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <Monitoramento />
                     </AppLayout>
                   </SidebarProvider>
                 </ProtectedRoute>
