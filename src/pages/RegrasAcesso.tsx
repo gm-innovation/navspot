@@ -57,9 +57,11 @@ import {
   useUpdateRegraAcesso, 
   useDeleteRegraAcesso,
   useUpdateRegrasPrioridade,
+  useCreateMultipleRegras,
   DIAS_SEMANA,
   RegraWithRelations 
 } from "@/hooks/useRegrasAcesso";
+import { ListaMultiSelect } from "@/components/forms/ListaMultiSelect";
 import { useListasAcesso } from "@/hooks/useListasAcesso";
 import { usePerfisVelocidade } from "@/hooks/usePerfisVelocidade";
 import { useTripulantes } from "@/hooks/useTripulantes";
@@ -88,6 +90,7 @@ export default function RegrasAcesso() {
   const { data: dispositivos } = useDispositivosRegistrados();
   
   const createRegra = useCreateRegraAcesso();
+  const createMultipleRegras = useCreateMultipleRegras();
   const updateRegra = useUpdateRegraAcesso();
   const deleteRegra = useDeleteRegraAcesso();
   const updatePrioridades = useUpdateRegrasPrioridade();
@@ -100,6 +103,7 @@ export default function RegrasAcesso() {
 
   const [formData, setFormData] = useState({
     lista_id: "",
+    lista_ids: [] as string[],
     perfil_id: "",
     tripulante_id: "",
     mac_address: "",
@@ -116,6 +120,7 @@ export default function RegrasAcesso() {
     if (editingRegra) {
       setFormData({
         lista_id: editingRegra.lista_id,
+        lista_ids: [editingRegra.lista_id], // For editing, use single list
         perfil_id: editingRegra.perfil_id || "",
         tripulante_id: editingRegra.tripulante_id || "",
         mac_address: editingRegra.mac_address || "",
@@ -131,6 +136,7 @@ export default function RegrasAcesso() {
     } else {
       setFormData({
         lista_id: "",
+        lista_ids: [],
         perfil_id: "",
         tripulante_id: "",
         mac_address: "",
@@ -186,18 +192,9 @@ export default function RegrasAcesso() {
     updatePrioridades.mutate(updates);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!formData.lista_id) {
-      toast({
-        title: "Erro",
-        description: "Selecione uma lista de acesso.",
-        variant: "destructive"
-      });
-      return;
-    }
-
     const empresaId = user?.role === 'super_admin' 
       ? selectedEmpresaId 
       : user?.empresa_id;
@@ -211,30 +208,68 @@ export default function RegrasAcesso() {
       return;
     }
 
-    const dataToSubmit = {
-      lista_id: formData.lista_id,
+    // Editing mode: use single lista_id
+    if (editingRegra) {
+      if (!formData.lista_id) {
+        toast({
+          title: "Erro",
+          description: "Selecione uma lista de acesso.",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      const dataToSubmit = {
+        lista_id: formData.lista_id,
+        perfil_id: formData.perfil_id || null,
+        tripulante_id: formData.tripulante_id || null,
+        mac_address: formData.mac_address.trim() || null,
+        hotspot_id: formData.hotspot_id || null,
+        acao: formData.acao,
+        prioridade: formData.prioridade,
+        horario_inicio: formData.horario_inicio || null,
+        horario_fim: formData.horario_fim || null,
+        dias_semana: formData.dias_semana as unknown as Json,
+        ativo: formData.ativo,
+        empresa_id: empresaId,
+      };
+
+      updateRegra.mutate({ ...dataToSubmit, id: editingRegra.id }, {
+        onSuccess: () => setFormOpen(false),
+      });
+      return;
+    }
+
+    // Creating mode: use lista_ids for batch creation
+    if (formData.lista_ids.length === 0) {
+      toast({
+        title: "Erro",
+        description: "Selecione ao menos uma lista de acesso.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // Create multiple rules (one per selected list)
+    const basePrioridade = formData.prioridade;
+    const regrasToCreate = formData.lista_ids.map((lista_id, index) => ({
+      lista_id,
       perfil_id: formData.perfil_id || null,
       tripulante_id: formData.tripulante_id || null,
       mac_address: formData.mac_address.trim() || null,
       hotspot_id: formData.hotspot_id || null,
       acao: formData.acao,
-      prioridade: formData.prioridade,
+      prioridade: basePrioridade + index,
       horario_inicio: formData.horario_inicio || null,
       horario_fim: formData.horario_fim || null,
       dias_semana: formData.dias_semana as unknown as Json,
       ativo: formData.ativo,
       empresa_id: empresaId,
-    };
+    }));
 
-    if (editingRegra) {
-      updateRegra.mutate({ ...dataToSubmit, id: editingRegra.id }, {
-        onSuccess: () => setFormOpen(false),
-      });
-    } else {
-      createRegra.mutate(dataToSubmit, {
-        onSuccess: () => setFormOpen(false),
-      });
-    }
+    createMultipleRegras.mutate(regrasToCreate, {
+      onSuccess: () => setFormOpen(false),
+    });
   };
 
   const toggleDia = (dia: string) => {
@@ -502,29 +537,45 @@ export default function RegrasAcesso() {
               )}
 
               {/* Lista de Acesso */}
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="lista" className="text-right">
-                  Lista *
+              <div className="grid grid-cols-4 items-start gap-4">
+                <Label className="text-right pt-2">
+                  Lista(s) *
                 </Label>
-                <Select
-                  value={formData.lista_id}
-                  onValueChange={(value) => setFormData(prev => ({ ...prev, lista_id: value }))}
-                >
-                  <SelectTrigger className="col-span-3">
-                    <SelectValue placeholder="Selecione uma lista" />
-                  </SelectTrigger>
-                  <SelectContent className="z-50 bg-background border shadow-lg">
-                    {listas?.filter(lista => 
-                      user?.role === 'super_admin' 
-                        ? (!selectedEmpresaId || lista.empresa_id === selectedEmpresaId)
-                        : true
-                    ).map(lista => (
-                      <SelectItem key={lista.id} value={lista.id}>
-                        {lista.nome} ({lista.tipo})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="col-span-3">
+                  {editingRegra ? (
+                    // Editing mode: single select
+                    <Select
+                      value={formData.lista_id}
+                      onValueChange={(value) => setFormData(prev => ({ ...prev, lista_id: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecione uma lista" />
+                      </SelectTrigger>
+                      <SelectContent className="z-50 bg-background border shadow-lg">
+                        {listas?.filter(lista => 
+                          user?.role === 'super_admin' 
+                            ? (!selectedEmpresaId || lista.empresa_id === selectedEmpresaId)
+                            : true
+                        ).map(lista => (
+                          <SelectItem key={lista.id} value={lista.id}>
+                            {lista.nome} ({lista.tipo})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    // Creating mode: multi-select
+                    <ListaMultiSelect
+                      listas={listas?.filter(lista => 
+                        user?.role === 'super_admin' 
+                          ? (!selectedEmpresaId || lista.empresa_id === selectedEmpresaId)
+                          : true
+                      ) || []}
+                      selectedIds={formData.lista_ids}
+                      onSelectionChange={(ids) => setFormData(prev => ({ ...prev, lista_ids: ids }))}
+                    />
+                  )}
+                </div>
               </div>
 
               {/* Ação */}
@@ -704,8 +755,15 @@ export default function RegrasAcesso() {
               <Button type="button" variant="outline" onClick={() => setFormOpen(false)}>
                 Cancelar
               </Button>
-              <Button type="submit" disabled={createRegra.isPending || updateRegra.isPending}>
-                {createRegra.isPending || updateRegra.isPending ? "Salvando..." : editingRegra ? "Salvar" : "Cadastrar"}
+              <Button type="submit" disabled={createMultipleRegras.isPending || updateRegra.isPending}>
+                {createMultipleRegras.isPending || updateRegra.isPending 
+                  ? "Salvando..." 
+                  : editingRegra 
+                    ? "Salvar" 
+                    : formData.lista_ids.length > 1 
+                      ? `Cadastrar ${formData.lista_ids.length} regras`
+                      : "Cadastrar"
+                }
               </Button>
             </DialogFooter>
           </form>
