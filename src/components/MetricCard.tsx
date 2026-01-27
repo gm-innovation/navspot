@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ReactNode } from "react";
+import { ReactNode, isValidElement } from "react";
 
 export interface MetricCardProps {
   title: string;
@@ -30,9 +30,19 @@ export function MetricCard({
     neutral: "text-muted-foreground"
   };
 
-  // Check if icon is a LucideIcon (function) or ReactNode (element)
-  const isIconComponent = typeof icon === 'function';
-  const IconComponent = isIconComponent ? icon as LucideIcon : null;
+  // Check if icon is already a rendered React element (JSX like <Icon />)
+  // If not, it's a LucideIcon component that needs to be instantiated
+  const isRenderedElement = isValidElement(icon);
+
+  const renderIcon = () => {
+    if (isRenderedElement) {
+      // Already a JSX element like <Clock className="..." />
+      return icon;
+    }
+    // It's a LucideIcon component reference, instantiate it
+    const IconComponent = icon as LucideIcon;
+    return <IconComponent className={cn("h-4 w-4 text-muted-foreground", iconColor)} />;
+  };
 
   return (
     <Card className={cn("transition-all hover:shadow-md", className)}>
@@ -40,11 +50,7 @@ export function MetricCard({
         <CardTitle className="text-sm font-medium text-muted-foreground">
           {title}
         </CardTitle>
-        {isIconComponent && IconComponent ? (
-          <IconComponent className={cn("h-4 w-4 text-muted-foreground", iconColor)} />
-        ) : (
-          <span className="h-4 w-4 flex items-center justify-center">{icon as ReactNode}</span>
-        )}
+        {renderIcon()}
       </CardHeader>
       <CardContent>
         <div className="text-2xl font-bold">{value}</div>
