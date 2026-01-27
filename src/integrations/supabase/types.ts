@@ -388,6 +388,35 @@ export type Database = {
         }
         Relationships: []
       }
+      gerente_embarcacoes: {
+        Row: {
+          created_at: string
+          embarcacao_id: string
+          id: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          embarcacao_id: string
+          id?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          embarcacao_id?: string
+          id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "gerente_embarcacoes_embarcacao_id_fkey"
+            columns: ["embarcacao_id"]
+            isOneToOne: false
+            referencedRelation: "embarcacoes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       hotspot_status_history: {
         Row: {
           created_at: string
@@ -1067,6 +1096,7 @@ export type Database = {
     Functions: {
       cleanup_old_logs: { Args: never; Returns: undefined }
       get_user_embarcacao_id: { Args: { _user_id: string }; Returns: string }
+      get_user_embarcacao_ids: { Args: { _user_id: string }; Returns: string[] }
       get_user_empresa_id: { Args: { _user_id: string }; Returns: string }
       get_user_role: {
         Args: { _user_id: string }
