@@ -2,7 +2,16 @@ import { useState, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Ship, Users, Wifi, Plus, Settings, Trash2, Clock, Code, Loader2 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Ship, Users, Wifi, Plus, Settings, Trash2, Code, Loader2, Search } from "lucide-react";
 import { 
   useEmbarcacoes, 
   useDeleteEmbarcacao,
@@ -16,8 +25,8 @@ import { useTableRealtime } from "@/hooks/useRealtimeSubscription";
 import { EmbarcacaoForm } from "@/components/forms/EmbarcacaoForm";
 import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { EmptyState, ErrorState } from "@/components/ui/empty-state";
-import { TIMEZONES_BRASIL } from "@/hooks/usePerfisVelocidade";
 import { getTipoEmbarcacaoLabel } from "@/constants/embarcacoes";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,6 +39,10 @@ import {
 } from "@/components/ui/alert-dialog";
 
 export default function Embarcacoes() {
+  // Auth and permissions
+  const { hasRole } = useAuth();
+  const isSuperAdmin = hasRole(['super_admin']);
+
   // Enable realtime updates
   useTableRealtime('embarcacoes', ['embarcacoes']);
   useTableRealtime('hotspots', ['hotspots']);
@@ -50,6 +63,7 @@ export default function Embarcacoes() {
   const [currentHotspotName, setCurrentHotspotName] = useState("");
   const [currentHotspotId, setCurrentHotspotId] = useState("");
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
 
   const generateScript = useGenerateHotspotScript();
 
@@ -72,6 +86,19 @@ export default function Embarcacoes() {
     const hotspot = getHotspotForEmbarcacao(editingEmbarcacao.id);
     return getListasAplicadasForHotspot(hotspot?.id);
   }, [editingEmbarcacao, hotspots, regras]);
+
+  // Filter embarcacoes based on search term
+  const filteredEmbarcacoes = useMemo(() => {
+    if (!embarcacoes) return [];
+    if (!searchTerm) return embarcacoes;
+    
+    const term = searchTerm.toLowerCase();
+    return embarcacoes.filter(embarcacao =>
+      embarcacao.nome.toLowerCase().includes(term) ||
+      embarcacao.empresa_nome?.toLowerCase().includes(term) ||
+      embarcacao.tipo.toLowerCase().includes(term)
+    );
+  }, [embarcacoes, searchTerm]);
 
   const handleCreate = () => {
     setEditingEmbarcacao(null);
@@ -144,13 +171,6 @@ export default function Embarcacoes() {
   const totalTripulantes = embarcacoes?.reduce((acc, e) => acc + (e.tripulantes_count || 0), 0) || 0;
   const hotspotsOnline = hotspots?.filter((h) => h.status === "online").length || 0;
 
-  // Get timezone label
-  const getTimezoneLabel = (timezone: string | null) => {
-    if (!timezone) return null;
-    const tz = TIMEZONES_BRASIL.find(t => t.value === timezone);
-    return tz?.label || timezone;
-  };
-
   // Get hotspot status info
   const getHotspotStatusInfo = (embarcacaoId: string) => {
     const hotspot = getHotspotForEmbarcacao(embarcacaoId);
@@ -184,13 +204,17 @@ export default function Embarcacoes() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Embarcações</h1>
           <p className="text-muted-foreground">
-            Gerencie embarcações e suas configurações de rede
+            {isSuperAdmin 
+              ? "Gerencie embarcações e suas configurações de rede"
+              : "Visualize as embarcações e suas informações"}
           </p>
         </div>
-        <Button onClick={handleCreate}>
-          <Plus className="h-4 w-4 mr-2" />
-          Nova Embarcação
-        </Button>
+        {isSuperAdmin && (
+          <Button onClick={handleCreate}>
+            <Plus className="h-4 w-4 mr-2" />
+            Nova Embarcação
+          </Button>
+        )}
       </div>
 
       {/* Estatísticas */}
@@ -235,130 +259,136 @@ export default function Embarcacoes() {
         </Card>
       </div>
 
-      {/* Lista de embarcações */}
+      {/* Lista de embarcações em tabela */}
       {embarcacoes && embarcacoes.length > 0 ? (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {embarcacoes.map((embarcacao) => {
-            const hotspotStatus = getHotspotStatusInfo(embarcacao.id);
-            const hotspot = getHotspotForEmbarcacao(embarcacao.id);
-            
-            return (
-              <Card key={embarcacao.id} className="hover:shadow-md transition-shadow">
-                <CardHeader className="pb-3">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                        <Ship className="h-5 w-5 text-primary" />
-                      </div>
-                      <div>
-                        <CardTitle className="text-lg">{embarcacao.nome}</CardTitle>
-                        <p className="text-sm text-muted-foreground">{getTipoEmbarcacaoLabel(embarcacao.tipo)}</p>
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end gap-1">
-                      <Badge 
-                        variant={embarcacao.status === "ativo" ? "default" : "secondary"}
-                        className={embarcacao.status === "ativo" ? "bg-green-100 text-green-800 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400" : ""}
-                      >
-                        {embarcacao.status === "ativo" ? "Ativo" : "Inativo"}
-                      </Badge>
-                      <Badge variant="outline" className={hotspotStatus.color}>
-                        <Wifi className="h-3 w-3 mr-1" />
-                        {hotspotStatus.label}
-                      </Badge>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* Responsável */}
-                  {embarcacao.responsavel_nome && (
-                    <div>
-                      <p className="text-sm font-medium">{embarcacao.responsavel_nome}</p>
-                      <p className="text-sm text-muted-foreground">{embarcacao.responsavel_email}</p>
-                    </div>
-                  )}
-
-                  {/* Timezone */}
-                  {embarcacao.timezone && (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Clock className="h-4 w-4" />
-                      <span>{getTimezoneLabel(embarcacao.timezone)}</span>
-                    </div>
-                  )}
-
-                  {/* Empresa */}
-                  {embarcacao.empresa_nome && (
-                    <p className="text-xs text-muted-foreground">
-                      Empresa: {embarcacao.empresa_nome}
-                    </p>
-                  )}
-
-                  {/* Hotspot info */}
-                  {hotspot && (
-                    <div className="text-xs text-muted-foreground bg-muted/50 rounded p-2">
-                      <div className="flex justify-between">
-                        <span>Rede: {hotspot.rede}</span>
-                        <span>Sync: {hotspot.sync_interval_minutes}min</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Estatísticas */}
-                  <div className="grid grid-cols-2 gap-4 pt-2 border-t">
-                    <div className="text-center">
-                      <p className="text-lg font-semibold">{embarcacao.tripulantes_count || 0}</p>
-                      <p className="text-xs text-muted-foreground">Tripulantes</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-lg font-semibold">{hotspot?.max_usuarios || 0}</p>
-                      <p className="text-xs text-muted-foreground">Max Usuários</p>
-                    </div>
-                  </div>
-
-                  {/* Ações */}
-                  <div className="flex gap-2 pt-2">
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      className="flex-1"
-                      onClick={() => handleEdit(embarcacao)}
-                    >
-                      <Settings className="h-4 w-4 mr-2" />
-                      Editar
-                    </Button>
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      onClick={() => handleGenerateScript(embarcacao)}
-                      disabled={!hotspot || generatingFor === embarcacao.id}
-                      title={hotspot ? "Gerar Script MikroTik" : "Configure a rede primeiro"}
-                    >
-                      {generatingFor === embarcacao.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Code className="h-4 w-4" />
-                      )}
-                    </Button>
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      onClick={() => handleDelete(embarcacao)}
-                    >
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle>Lista de Embarcações</CardTitle>
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar embarcações..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-8 w-[250px]"
+                />
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Nome</TableHead>
+                  <TableHead>Tipo</TableHead>
+                  <TableHead>Empresa</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Hotspot</TableHead>
+                  <TableHead className="text-center">Tripulantes</TableHead>
+                  {isSuperAdmin && <TableHead className="text-right">Ações</TableHead>}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredEmbarcacoes.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={isSuperAdmin ? 7 : 6} className="text-center py-8 text-muted-foreground">
+                      Nenhuma embarcação encontrada para "{searchTerm}"
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  filteredEmbarcacoes.map((embarcacao) => {
+                    const hotspotStatus = getHotspotStatusInfo(embarcacao.id);
+                    const hotspot = getHotspotForEmbarcacao(embarcacao.id);
+                    
+                    return (
+                      <TableRow key={embarcacao.id}>
+                        <TableCell>
+                          <div className="flex items-center gap-3">
+                            <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center">
+                              <Ship className="h-4 w-4 text-primary" />
+                            </div>
+                            <div>
+                              <p className="font-medium">{embarcacao.nome}</p>
+                              {embarcacao.responsavel_nome && (
+                                <p className="text-sm text-muted-foreground">
+                                  {embarcacao.responsavel_nome}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell>{getTipoEmbarcacaoLabel(embarcacao.tipo)}</TableCell>
+                        <TableCell>{embarcacao.empresa_nome || "-"}</TableCell>
+                        <TableCell>
+                          <Badge 
+                            variant={embarcacao.status === "ativo" ? "default" : "secondary"}
+                            className={embarcacao.status === "ativo" 
+                              ? "bg-green-100 text-green-800 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400" 
+                              : ""}
+                          >
+                            {embarcacao.status === "ativo" ? "Ativo" : "Inativo"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className={hotspotStatus.color}>
+                            <Wifi className="h-3 w-3 mr-1" />
+                            {hotspotStatus.label}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-center">{embarcacao.tripulantes_count || 0}</TableCell>
+                        {isSuperAdmin && (
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1">
+                              <Button 
+                                variant="outline" 
+                                size="sm"
+                                onClick={() => handleEdit(embarcacao)}
+                                title="Editar"
+                              >
+                                <Settings className="h-4 w-4" />
+                              </Button>
+                              <Button 
+                                variant="outline" 
+                                size="sm"
+                                onClick={() => handleGenerateScript(embarcacao)}
+                                disabled={!hotspot || generatingFor === embarcacao.id}
+                                title={hotspot ? "Gerar Script MikroTik" : "Configure a rede primeiro"}
+                              >
+                                {generatingFor === embarcacao.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Code className="h-4 w-4" />
+                                )}
+                              </Button>
+                              <Button 
+                                variant="outline" 
+                                size="sm"
+                                onClick={() => handleDelete(embarcacao)}
+                                title="Excluir"
+                              >
+                                <Trash2 className="h-4 w-4 text-destructive" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        )}
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
       ) : (
         <EmptyState
           icon={Ship}
           title="Nenhuma embarcação cadastrada"
-          description="Comece adicionando sua primeira embarcação."
-          actionLabel="Nova Embarcação"
-          onAction={handleCreate}
+          description={isSuperAdmin 
+            ? "Comece adicionando sua primeira embarcação." 
+            : "Não há embarcações disponíveis para visualização."}
+          actionLabel={isSuperAdmin ? "Nova Embarcação" : undefined}
+          onAction={isSuperAdmin ? handleCreate : undefined}
         />
       )}
 
