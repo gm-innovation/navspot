@@ -1,46 +1,69 @@
 
 
-# Plano: Funcionalidades Completas de Usuários e Perfil
+# Plano: Corrigir Layout de Usuários e Aprimorar Edição de Perfil
 
 ## Problemas Identificados
 
-### 1. Página de Usuários (`/usuarios`)
-| Problema | Status atual |
-|----------|--------------|
-| Não exibe email | Mostra apenas "ID: abc123..." |
-| Sem botão de editar | Só existe excluir |
-| Não existe edge function | Apenas `create-user` e `delete-user` |
+### 1. Layout da Página de Usuários
+O conteúdo está colado no sidebar porque a página não tem padding adequado.
 
-### 2. Dropdown do Header
-| Problema | Status atual |
-|----------|--------------|
-| Item "Perfil" removido | Usuário não tem acesso rápido às suas informações |
+| Problema | Causa |
+|----------|-------|
+| Conteúdo colado | `<div className="space-y-6">` sem `p-6` |
+| Colunas de ações vazias | Você é o único usuário e não pode editar a si mesmo (comportamento correto de segurança) |
+
+### 2. Modal de Perfil Limitado
+O modal atual só exibe informações. O usuário espera poder editar:
+- Nome de exibição
+- Avatar
+- Senha
+- Email (somente visualização - requer verificação)
+
+### 3. Falta Tabela de Perfis
+Atualmente não existe uma tabela `profiles` no banco. Os dados do usuário estão apenas em:
+- `auth.users` (email, senha - gerenciado pelo sistema de auth)
+- `user_roles` (role, empresa_id, embarcacao_id)
 
 ---
 
 ## Solução Proposta
 
-### Parte 1: Mostrar Email na Tabela de Usuários
+### Parte 1: Corrigir Layout
 
-O hook `useUsuarios` busca da tabela `user_roles`, que não tem email. Precisamos buscar os emails via edge function usando o admin client (que tem acesso à `auth.users`).
+Adicionar padding na página de Usuários:
 
-**Nova abordagem**: Criar uma edge function `list-users` que retorna usuários com emails.
+```tsx
+// Antes (linha 292 de Usuarios.tsx)
+<div className="space-y-6">
 
-### Parte 2: Funcionalidade de Editar Usuário
+// Depois
+<div className="flex-1 space-y-6 p-6">
+```
 
-Criar modal de edição e edge function `update-user`:
+### Parte 2: Criar Tabela de Perfis
 
-| Campo editável | Descrição |
-|----------------|-----------|
-| Role | Mudar tipo de usuário |
-| Empresa | Mudar empresa associada |
-| Embarcação | Mudar embarcação associada |
+Criar tabela para armazenar dados editáveis:
 
-**Nota**: O email não será editável (requer verificação).
+| Coluna | Tipo | Descrição |
+|--------|------|-----------|
+| id | uuid | PK, referencia auth.users.id |
+| display_name | text | Nome de exibição |
+| avatar_url | text | URL do avatar (storage) |
+| created_at | timestamp | Data de criação |
+| updated_at | timestamp | Última atualização |
 
-### Parte 3: Restaurar Item "Perfil" no Header
+### Parte 3: Transformar Modal de Perfil
 
-Adicionar de volta o item "Perfil" que abre um dialog com informações do usuário logado (não navega para outra página).
+Converter o modal em uma página completa de edição com abas ou seções:
+
+**Seção 1 - Informações Básicas:**
+- Avatar (upload de imagem)
+- Nome de exibição (editável)
+- Email (somente leitura)
+- Papel no sistema (badge)
+
+**Seção 2 - Segurança:**
+- Alterar senha (formulário inline)
 
 ---
 
@@ -48,135 +71,119 @@ Adicionar de volta o item "Perfil" que abre um dialog com informações do usuá
 
 | Arquivo | Ação |
 |---------|------|
-| `supabase/functions/list-users/index.ts` | Criar - lista usuários com emails |
-| `supabase/functions/update-user/index.ts` | Criar - atualiza role/empresa/embarcação |
-| `src/hooks/useUsuarios.ts` | Modificar - usar nova edge function |
-| `src/pages/Usuarios.tsx` | Modificar - adicionar modal de edição |
-| `src/components/AppLayout.tsx` | Modificar - adicionar item Perfil |
-| `src/components/modals/UserProfileModal.tsx` | Criar - modal de perfil |
+| `src/pages/Usuarios.tsx` | Modificar - adicionar padding |
+| `src/components/modals/UserProfileModal.tsx` | Modificar - adicionar edição |
+| `src/hooks/useProfile.ts` | Criar - hook para gerenciar perfil |
+| Migração SQL | Criar - tabela profiles |
 
 ---
 
 ## Detalhes Técnicos
 
-### Edge Function: `list-users`
+### Migração SQL
 
-```typescript
-// Busca usuários com emails usando admin client
-const { data: users } = await adminClient.auth.admin.listUsers()
+```sql
+-- Criar tabela de perfis
+CREATE TABLE public.profiles (
+  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  display_name text,
+  avatar_url text,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now()
+);
 
-// Junta com user_roles
-const { data: roles } = await adminClient
-  .from('user_roles')
-  .select('*, empresas(nome), embarcacoes(nome)')
+-- RLS
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 
-// Merge dos dados
-return users.map(u => ({
-  id: u.id,
-  email: u.email,
-  created_at: u.created_at,
-  ...roles.find(r => r.user_id === u.id)
-}))
+-- Política: usuário pode ver e editar seu próprio perfil
+CREATE POLICY "Users can view own profile"
+  ON public.profiles FOR SELECT
+  USING (id = auth.uid());
+
+CREATE POLICY "Users can update own profile"
+  ON public.profiles FOR UPDATE
+  USING (id = auth.uid());
+
+CREATE POLICY "Users can insert own profile"
+  ON public.profiles FOR INSERT
+  WITH CHECK (id = auth.uid());
+
+-- Trigger para criar perfil automaticamente
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger AS $$
+BEGIN
+  INSERT INTO public.profiles (id, display_name)
+  VALUES (new.id, split_part(new.email, '@', 1));
+  RETURN new;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 ```
 
-### Edge Function: `update-user`
+### Hook useProfile
 
 ```typescript
-interface UpdateUserRequest {
-  user_id: string
-  role: 'super_admin' | 'empresa_admin' | 'gerente_embarcacao'
-  empresa_id?: string
-  embarcacao_id?: string
+export function useProfile() {
+  const { user } = useAuth();
+  
+  const query = useQuery({
+    queryKey: ['profile', user?.id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+      
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!user?.id,
+  });
+  
+  const updateProfile = useMutation({
+    mutationFn: async (updates: { display_name?: string; avatar_url?: string }) => {
+      const { error } = await supabase
+        .from('profiles')
+        .update(updates)
+        .eq('id', user.id);
+      
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries(['profile']),
+  });
+  
+  return { ...query, updateProfile };
 }
-
-// Validações hierárquicas:
-// - Super Admin pode editar qualquer usuário
-// - Empresa Admin pode editar gerentes da sua empresa
-// - Ninguém pode editar a si mesmo para evitar escalação de privilégio
 ```
 
-### Modal de Edição na Página Usuários
+### Modal de Perfil Aprimorado
 
 ```tsx
-// Estado para controlar edição
-const [editingUser, setEditingUser] = useState<SystemUser | null>(null);
-
-// Botão de editar na tabela (ao lado do excluir)
-<Button variant="ghost" size="icon" onClick={() => setEditingUser(usuario)}>
-  <Pencil className="h-4 w-4" />
-</Button>
-
-// Dialog de edição similar ao de criação
-<Dialog open={!!editingUser} onOpenChange={() => setEditingUser(null)}>
-  {/* Formulário com role, empresa, embarcação */}
-</Dialog>
-```
-
-### Item Perfil no Header
-
-```tsx
-// Novo estado para modal de perfil
-const [isProfileOpen, setIsProfileOpen] = useState(false);
-
-// No dropdown
-<DropdownMenuItem onClick={() => setIsProfileOpen(true)}>
-  <User className="h-4 w-4 mr-2" />
-  Meu Perfil
-</DropdownMenuItem>
-
-// Modal de perfil
-<UserProfileModal 
-  open={isProfileOpen} 
-  onOpenChange={setIsProfileOpen} 
-/>
-```
-
-### Modal de Perfil (UserProfileModal)
-
-```tsx
-// Mostra informações do usuário logado:
-// - Email
-// - Papel (badge)
-// - Empresa (se tiver)
-// - Embarcação (se tiver)
-// - Data de criação
-// - Botão para alterar senha (abre página de Configurações)
-```
-
----
-
-## Hierarquia de Permissões (Edição)
-
-| Quem edita | Pode editar |
-|------------|-------------|
-| Super Admin | Qualquer usuário (exceto a si mesmo) |
-| Empresa Admin | Apenas gerentes da própria empresa |
-| Gerente | Ninguém |
-
-### Restrições de Segurança
-
-1. **Não pode editar a si mesmo** - Evita escalação de privilégio
-2. **Empresa Admin não pode promover** - Só edita gerentes
-3. **Validação no backend** - Todas as regras verificadas na edge function
-
----
-
-## Fluxo Visual: Página de Usuários
-
-```text
-+-------------------------------------------------------------------+
-| USUÁRIOS DO SISTEMA                        [+ Novo Usuário]       |
-+-------------------------------------------------------------------+
-
-+-------------------------------------------------------------------+
-| Usuário              | Tipo           | Empresa    | Ações        |
-+-------------------------------------------------------------------+
-| admin@navspot.com    | Super Admin    | -          | ✏️ 🗑️        |
-| joao@empresa.com     | Admin Empresa  | NavCo      | ✏️ 🗑️        |
-| maria@empresa.com    | Gerente Embar. | NavCo      | ✏️ 🗑️        |
-+-------------------------------------------------------------------+
-
-[✏️ = Editar] [🗑️ = Excluir]
+export function UserProfileModal({ open, onOpenChange }: Props) {
+  const { user } = useAuth();
+  const { data: profile, updateProfile } = useProfile();
+  const [displayName, setDisplayName] = useState('');
+  const [isEditingName, setIsEditingName] = useState(false);
+  
+  // Seção de avatar com upload
+  // Seção de nome editável inline
+  // Seção de alteração de senha integrada
+  
+  return (
+    <Dialog>
+      <DialogContent className="sm:max-w-lg">
+        {/* Avatar com botão de upload */}
+        {/* Nome editável */}
+        {/* Informações do sistema (read-only) */}
+        {/* Formulário de alteração de senha */}
+      </DialogContent>
+    </Dialog>
+  );
+}
 ```
 
 ---
@@ -184,21 +191,54 @@ const [isProfileOpen, setIsProfileOpen] = useState(false);
 ## Fluxo Visual: Modal de Perfil
 
 ```text
-+-----------------------------------+
-|           MEU PERFIL              |
-+-----------------------------------+
-|                                   |
-|  [👤] joao.silva                  |
-|      joao.silva@empresa.com       |
-|                                   |
-+-----------------------------------+
-|  Papel: [Administrador Empresa]   |
-|  Empresa: Navegação ABC Ltda      |
-|  Desde: 15/01/2025                |
-+-----------------------------------+
-|        [🔧 Configurações]         |
-+-----------------------------------+
++-------------------------------------------+
+|              MEU PERFIL                   |
++-------------------------------------------+
+|                                           |
+|     [====]  👤  [====]                    |
+|          Trocar foto                      |
+|                                           |
+|  Nome de Exibição                         |
+|  ┌─────────────────────────────┐  [✏️]   |
+|  │ João Silva                  │          |
+|  └─────────────────────────────┘          |
+|                                           |
+|  Email (não editável)                     |
+|  joao.silva@empresa.com                   |
+|                                           |
+|  Papel: [Admin Empresa]                   |
+|  Empresa: Navegação ABC                   |
+|                                           |
++-------------------------------------------+
+|  🔒 SEGURANÇA                             |
++-------------------------------------------+
+|                                           |
+|  [ Alterar Senha ]                        |
+|                                           |
++-------------------------------------------+
 ```
+
+---
+
+## Página de Usuários Corrigida
+
+```text
++------ SIDEBAR ------+------- CONTEÚDO (com padding) -------+
+|                     |                                       |
+|  VISÃO GERAL        |  Usuários do Sistema                  |
+|    Dashboard        |  Gerencie os usuários...    [+ Novo]  |
+|    ...              |                                       |
+|                     |  ┌─────────────────────────────────┐  |
+|  ADMINISTRAÇÃO      |  │ Lista de Usuários               │  |
+|    Usuários ←       |  │                                 │  |
+|    LGPD             |  │  Email    Tipo    Empresa Ações │  |
+|    Configurações    |  │  ──────  ──────  ─────── ────── │  |
+|                     |  │  user@.. Admin   NavCo    -     │  |
+|                     |  └─────────────────────────────────┘  |
++---------------------+---------------------------------------+
+```
+
+**Nota sobre Ações**: Como você é o único usuário e não pode editar a si mesmo (regra de segurança), a coluna de ações aparece vazia. Isso é o comportamento correto. Quando criar outros usuários, os botões aparecerão.
 
 ---
 
@@ -206,10 +246,9 @@ const [isProfileOpen, setIsProfileOpen] = useState(false);
 
 | Mudança | Descrição |
 |---------|-----------|
-| Nova edge function `list-users` | Lista usuários com emails |
-| Nova edge function `update-user` | Atualiza role/empresa/embarcação |
-| Hook `useUsuarios` atualizado | Usa nova edge function |
-| Modal de edição em Usuarios.tsx | Permite editar usuários existentes |
-| Item "Perfil" no header | Abre modal com informações do usuário |
-| Modal UserProfileModal | Exibe dados do usuário logado |
+| Padding na página Usuarios | Corrige layout colado |
+| Tabela profiles | Armazena nome e avatar |
+| Hook useProfile | Gerencia dados do perfil |
+| Modal de perfil aprimorado | Permite editar nome, avatar, senha |
+| Trigger para novos usuários | Cria perfil automaticamente |
 
