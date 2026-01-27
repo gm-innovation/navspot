@@ -22,43 +22,32 @@ interface CreateUserData {
   embarcacao_id?: string;
 }
 
+interface UpdateUserData {
+  user_id: string;
+  role: UserRole;
+  empresa_id?: string | null;
+  embarcacao_id?: string | null;
+}
+
 export function useUsuarios() {
   const { toast } = useToast();
 
   return useQuery({
     queryKey: ['usuarios'],
     queryFn: async (): Promise<SystemUser[]> => {
-      // Get all user roles with empresa and embarcacao names
-      const { data: userRoles, error: rolesError } = await supabase
-        .from('user_roles')
-        .select(`
-          user_id,
-          role,
-          empresa_id,
-          embarcacao_id,
-          created_at,
-          empresas:empresa_id(nome),
-          embarcacoes:embarcacao_id(nome)
-        `);
+      // Use edge function to get users with emails
+      const { data: response, error } = await supabase.functions.invoke('list-users');
 
-      if (rolesError) {
-        console.error('Error fetching user roles:', rolesError);
-        throw rolesError;
+      if (error) {
+        console.error('Error fetching users:', error);
+        throw new Error(error.message || 'Erro ao buscar usuários');
       }
 
-      // Map to SystemUser format
-      const users: SystemUser[] = (userRoles || []).map((ur: any) => ({
-        id: ur.user_id,
-        email: '', // Will be populated if we have access
-        created_at: ur.created_at,
-        role: ur.role as UserRole,
-        empresa_id: ur.empresa_id,
-        embarcacao_id: ur.embarcacao_id,
-        empresa_nome: ur.empresas?.nome || null,
-        embarcacao_nome: ur.embarcacoes?.nome || null,
-      }));
+      if (response?.error) {
+        throw new Error(response.error);
+      }
 
-      return users;
+      return response?.users || [];
     },
   });
 }
@@ -93,6 +82,43 @@ export function useCreateUser() {
     onError: (error: Error) => {
       toast({
         title: 'Erro ao criar usuário',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+}
+
+export function useUpdateUser() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (data: UpdateUserData) => {
+      const { data: response, error } = await supabase.functions.invoke('update-user', {
+        body: data,
+      });
+
+      if (error) {
+        throw new Error(error.message || 'Erro ao atualizar usuário');
+      }
+
+      if (response?.error) {
+        throw new Error(response.error);
+      }
+
+      return response;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['usuarios'] });
+      toast({
+        title: 'Usuário atualizado',
+        description: 'O usuário foi atualizado com sucesso.',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Erro ao atualizar usuário',
         description: error.message,
         variant: 'destructive',
       });

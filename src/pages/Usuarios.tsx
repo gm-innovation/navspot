@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Trash2, UserCog, Shield, Building2, Ship } from "lucide-react";
+import { Plus, Trash2, UserCog, Shield, Building2, Ship, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { TableSkeleton } from "@/components/ui/loading-skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
-import { useUsuarios, useCreateUser, useDeleteUser, SystemUser } from "@/hooks/useUsuarios";
+import { useUsuarios, useCreateUser, useDeleteUser, useUpdateUser, SystemUser } from "@/hooks/useUsuarios";
 import { useEmpresas } from "@/hooks/useEmpresas";
 import { useEmbarcacoes } from "@/hooks/useEmbarcacoes";
 import { useAuth, UserRole } from "@/contexts/AuthContext";
@@ -44,8 +44,10 @@ export default function Usuarios() {
   const { data: embarcacoes = [] } = useEmbarcacoes();
   const createUserMutation = useCreateUser();
   const deleteUserMutation = useDeleteUser();
+  const updateUserMutation = useUpdateUser();
 
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<SystemUser | null>(null);
   const [formData, setFormData] = useState({
     email: '',
     password: '',
@@ -53,7 +55,13 @@ export default function Usuarios() {
     empresa_id: '',
     embarcacao_id: '',
   });
+  const [editFormData, setEditFormData] = useState({
+    role: '' as UserRole | '',
+    empresa_id: '',
+    embarcacao_id: '',
+  });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [editErrors, setEditErrors] = useState<Record<string, string>>({});
 
   const isSuperAdmin = hasRole(['super_admin']);
   const isEmpresaAdmin = hasRole(['empresa_admin']);
@@ -68,6 +76,10 @@ export default function Usuarios() {
   // Filter embarcacoes based on selected empresa
   const filteredEmbarcacoes = formData.empresa_id 
     ? embarcacoes.filter(e => e.empresa_id === formData.empresa_id)
+    : embarcacoes;
+
+  const editFilteredEmbarcacoes = editFormData.empresa_id 
+    ? embarcacoes.filter(e => e.empresa_id === editFormData.empresa_id)
     : embarcacoes;
 
   const handleInputChange = (field: string, value: string) => {
@@ -93,6 +105,28 @@ export default function Usuarios() {
       return newData;
     });
     setErrors(prev => ({ ...prev, [field]: '' }));
+  };
+
+  const handleEditInputChange = (field: string, value: string) => {
+    setEditFormData(prev => {
+      const newData = { ...prev, [field]: value };
+      
+      if (field === 'empresa_id') {
+        newData.embarcacao_id = '';
+      }
+      
+      if (field === 'role' && value === 'super_admin') {
+        newData.empresa_id = '';
+        newData.embarcacao_id = '';
+      }
+      
+      if (field === 'role' && value === 'empresa_admin') {
+        newData.embarcacao_id = '';
+      }
+      
+      return newData;
+    });
+    setEditErrors(prev => ({ ...prev, [field]: '' }));
   };
 
   const validateForm = () => {
@@ -125,6 +159,30 @@ export default function Usuarios() {
     return Object.keys(newErrors).length === 0;
   };
 
+  const validateEditForm = () => {
+    const newErrors: Record<string, string> = {};
+
+    if (!editFormData.role) {
+      newErrors.role = 'Selecione um tipo';
+    }
+
+    if (editFormData.role === 'empresa_admin' && !editFormData.empresa_id) {
+      newErrors.empresa_id = 'Selecione uma empresa';
+    }
+    
+    if (editFormData.role === 'gerente_embarcacao') {
+      if (!editFormData.empresa_id) {
+        newErrors.empresa_id = 'Selecione uma empresa';
+      }
+      if (!editFormData.embarcacao_id) {
+        newErrors.embarcacao_id = 'Selecione uma embarcação';
+      }
+    }
+
+    setEditErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
   const handleCreate = async () => {
     if (!validateForm()) return;
 
@@ -144,12 +202,56 @@ export default function Usuarios() {
     }
   };
 
+  const handleEdit = async () => {
+    if (!editingUser || !validateEditForm()) return;
+
+    try {
+      await updateUserMutation.mutateAsync({
+        user_id: editingUser.id,
+        role: editFormData.role as UserRole,
+        empresa_id: editFormData.empresa_id || null,
+        embarcacao_id: editFormData.embarcacao_id || null,
+      });
+
+      setEditingUser(null);
+      setEditFormData({ role: '', empresa_id: '', embarcacao_id: '' });
+    } catch (error) {
+      // Error handled by mutation
+    }
+  };
+
+  const openEditModal = (usuario: SystemUser) => {
+    setEditingUser(usuario);
+    setEditFormData({
+      role: usuario.role || '',
+      empresa_id: usuario.empresa_id || '',
+      embarcacao_id: usuario.embarcacao_id || '',
+    });
+    setEditErrors({});
+  };
+
   const handleDelete = async (userId: string) => {
     try {
       await deleteUserMutation.mutateAsync(userId);
     } catch (error) {
       // Error handled by mutation
     }
+  };
+
+  const canEditUser = (targetUser: SystemUser) => {
+    // Can't edit yourself
+    if (targetUser.id === user?.id) return false;
+    
+    // Super admin can edit anyone (except themselves)
+    if (isSuperAdmin) return true;
+    
+    // Empresa admin can only edit gerente_embarcacao from their company
+    if (isEmpresaAdmin) {
+      return targetUser.role === 'gerente_embarcacao' && 
+             targetUser.empresa_id === user?.empresa_id;
+    }
+    
+    return false;
   };
 
   const canDeleteUser = (targetUser: SystemUser) => {
@@ -261,7 +363,7 @@ export default function Usuarios() {
                     <Select
                       value={formData.empresa_id}
                       onValueChange={(value) => handleInputChange('empresa_id', value)}
-                      disabled={isEmpresaAdmin} // Empresa admin can only create for their own company
+                      disabled={isEmpresaAdmin}
                     >
                       <SelectTrigger className={errors.empresa_id ? 'border-destructive' : ''}>
                         <SelectValue placeholder="Selecione a empresa" />
@@ -317,6 +419,96 @@ export default function Usuarios() {
         )}
       </div>
 
+      {/* Edit User Dialog */}
+      <Dialog open={!!editingUser} onOpenChange={(open) => !open && setEditingUser(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Editar Usuário</DialogTitle>
+            <DialogDescription>
+              {editingUser?.email}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-role">Tipo de Usuário *</Label>
+              <Select
+                value={editFormData.role}
+                onValueChange={(value) => handleEditInputChange('role', value)}
+              >
+                <SelectTrigger className={editErrors.role ? 'border-destructive' : ''}>
+                  <SelectValue placeholder="Selecione o tipo" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableRoles.map(role => (
+                    <SelectItem key={role} value={role}>
+                      {roleLabels[role]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {editErrors.role && <p className="text-sm text-destructive">{editErrors.role}</p>}
+            </div>
+
+            {(editFormData.role === 'empresa_admin' || editFormData.role === 'gerente_embarcacao') && (
+              <div className="space-y-2">
+                <Label htmlFor="edit-empresa_id">Empresa *</Label>
+                <Select
+                  value={editFormData.empresa_id}
+                  onValueChange={(value) => handleEditInputChange('empresa_id', value)}
+                  disabled={isEmpresaAdmin}
+                >
+                  <SelectTrigger className={editErrors.empresa_id ? 'border-destructive' : ''}>
+                    <SelectValue placeholder="Selecione a empresa" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(isEmpresaAdmin 
+                      ? empresas.filter(e => e.id === user?.empresa_id)
+                      : empresas
+                    ).map(empresa => (
+                      <SelectItem key={empresa.id} value={empresa.id}>
+                        {empresa.nome}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {editErrors.empresa_id && <p className="text-sm text-destructive">{editErrors.empresa_id}</p>}
+              </div>
+            )}
+
+            {editFormData.role === 'gerente_embarcacao' && (
+              <div className="space-y-2">
+                <Label htmlFor="edit-embarcacao_id">Embarcação *</Label>
+                <Select
+                  value={editFormData.embarcacao_id}
+                  onValueChange={(value) => handleEditInputChange('embarcacao_id', value)}
+                  disabled={!editFormData.empresa_id}
+                >
+                  <SelectTrigger className={editErrors.embarcacao_id ? 'border-destructive' : ''}>
+                    <SelectValue placeholder={editFormData.empresa_id ? "Selecione a embarcação" : "Selecione uma empresa primeiro"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {editFilteredEmbarcacoes.map(embarcacao => (
+                      <SelectItem key={embarcacao.id} value={embarcacao.id}>
+                        {embarcacao.nome}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {editErrors.embarcacao_id && <p className="text-sm text-destructive">{editErrors.embarcacao_id}</p>}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingUser(null)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleEdit} disabled={updateUserMutation.isPending}>
+              {updateUserMutation.isPending ? 'Salvando...' : 'Salvar'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -354,7 +546,7 @@ export default function Usuarios() {
                           <Shield className="h-4 w-4 text-primary" />
                         </div>
                         <div>
-                          <p className="font-medium">ID: {usuario.id.substring(0, 8)}...</p>
+                          <p className="font-medium">{usuario.email}</p>
                           <p className="text-xs text-muted-foreground">
                             Criado em {new Date(usuario.created_at).toLocaleDateString('pt-BR')}
                           </p>
@@ -393,32 +585,43 @@ export default function Usuarios() {
                       )}
                     </TableCell>
                     <TableCell className="text-right">
-                      {canDeleteUser(usuario) && (
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive">
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>Excluir Usuário</AlertDialogTitle>
-                              <AlertDialogDescription>
-                                Tem certeza que deseja excluir este usuário? Esta ação não pode ser desfeita.
-                              </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                              <AlertDialogAction
-                                onClick={() => handleDelete(usuario.id)}
-                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                              >
-                                Excluir
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
-                      )}
+                      <div className="flex justify-end gap-1">
+                        {canEditUser(usuario) && (
+                          <Button 
+                            variant="ghost" 
+                            size="icon"
+                            onClick={() => openEditModal(usuario)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        )}
+                        {canDeleteUser(usuario) && (
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive">
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Excluir Usuário</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  Tem certeza que deseja excluir este usuário? Esta ação não pode ser desfeita.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                <AlertDialogAction
+                                  onClick={() => handleDelete(usuario.id)}
+                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                >
+                                  Excluir
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}

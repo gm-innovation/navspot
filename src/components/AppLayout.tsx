@@ -1,4 +1,4 @@
-
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AppSidebar } from "./AppSidebar";
 import { SidebarTrigger } from "@/components/ui/sidebar";
@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/contexts/AuthContext";
 import { NotificationsDropdown } from "./NotificationsDropdown";
+import { UserProfileModal } from "./modals/UserProfileModal";
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -22,6 +23,7 @@ interface AppLayoutProps {
 export function AppLayout({ children }: AppLayoutProps) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   return (
     <div className="min-h-screen w-full bg-background">
@@ -62,6 +64,10 @@ export function AppLayout({ children }: AppLayoutProps) {
                   </div>
                 </div>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setIsProfileOpen(true)}>
+                  <User className="h-4 w-4 mr-2" />
+                  Meu Perfil
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => navigate('/configuracoes')}>
                   <Settings className="h-4 w-4 mr-2" />
                   Configurações
@@ -88,6 +94,12 @@ export function AppLayout({ children }: AppLayoutProps) {
           </div>
         </main>
       </div>
+
+      {/* Profile Modal */}
+      <UserProfileModal 
+        open={isProfileOpen} 
+        onOpenChange={setIsProfileOpen} 
+      />
     </div>
   );
 }
