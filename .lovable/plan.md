@@ -1,310 +1,127 @@
 
 
-# Filtros e Acesso Multi-Embarcacao no Dashboard
+# Otimizacao das Regras de Firewall no MikroTik Script Generator
 
-## Resumo
+## Objetivo
+Substituir as regras de firewall que usam `src-address` fixo por regras baseadas em `in-interface=$navspotInterface`, tornando o script mais robusto, universal e independente de configuracao de IP.
 
-Este plano adiciona:
-1. Suporte para gerentes gerenciarem multiplas embarcacoes (nova tabela de associacao)
-2. Filtros de periodo e busca em todos os componentes
-3. Seletor de embarcacao para todos os perfis (incluindo gerente)
+## Problema Atual
 
-## Alteracoes no Banco de Dados
+Nas linhas 469-515 do arquivo `supabase/functions/mikrotik-script-generator/index.ts`, as regras de firewall usam:
 
-### Nova Tabela: gerente_embarcacoes
-
-Tabela para associar um gerente a multiplas embarcacoes:
-
-| Coluna | Tipo | Descricao |
-|--------|------|-----------|
-| id | uuid | Primary key |
-| user_id | uuid | FK para auth.users |
-| embarcacao_id | uuid | FK para embarcacoes |
-| created_at | timestamp | Data de criacao |
-
-### Nova Funcao: get_user_embarcacao_ids
-
-Funcao que retorna todas as embarcacoes do usuario:
-
-```sql
-CREATE OR REPLACE FUNCTION public.get_user_embarcacao_ids(_user_id uuid)
-RETURNS SETOF uuid
-LANGUAGE sql
-STABLE SECURITY DEFINER
-SET search_path = 'public'
-AS $$
-  SELECT embarcacao_id
-  FROM public.gerente_embarcacoes
-  WHERE user_id = _user_id
-$$;
+```routeros
+add chain=input action=accept src-address=${networkCidr} dst-port=53 protocol=udp ...
 ```
 
-### Atualizacao das RLS Policies
+### Problemas identificados:
 
-Atualizar policies que usam `get_user_embarcacao_id()` para usar a nova funcao:
+1. **IP Temporario**: Quando um usuario conecta mas ainda nao fez login, o Hotspot pode atribuir IP temporario
+2. **Mascara de origem**: O MikroTik Hotspot as vezes mascara a origem do trafego
+3. **Falta de flexibilidade**: Se a rede mudar (ex: de 192.168.88.0 para 10.0.0.0), todas as regras precisam ser editadas
+4. **Falta de regra para portal**: Nao ha permissao explicita para portas 80/443/8080 vindas da interface
 
-```sql
--- Exemplo: tripulantes
-embarcacao_id IN (SELECT get_user_embarcacao_ids(auth.uid()))
+## Solucao Proposta
+
+Substituir o bloco Firewall Rules (Security) usando `in-interface=$navspotInterface` para regras de servicos de rede, mantendo `src-address` apenas para WinBox e SSH (que exigem autenticacao local por seguranca):
+
+```routeros
+# Firewall Rules (Security) - VERSAO OTIMIZADA
+/ip firewall filter
+:foreach f in=[find comment~"navspot-security"] do={ remove $f }
+
+# Accept established/related connections
+add chain=input action=accept connection-state=established,related comment="navspot-security-established"
+
+# Allow DNS (UDP/TCP) from hotspot interface
+add chain=input action=accept in-interface=$navspotInterface dst-port=53 protocol=udp comment="navspot-security-dns"
+add chain=input action=accept in-interface=$navspotInterface dst-port=53 protocol=tcp comment="navspot-security-dns-tcp"
+
+# Allow WinBox from local network only (security - keep src-address)
+add chain=input action=accept src-address=${networkCidr} dst-port=8291 protocol=tcp comment="navspot-security-winbox"
+
+# Allow SSH from local network only (security - keep src-address)
+add chain=input action=accept src-address=${networkCidr} dst-port=22 protocol=tcp comment="navspot-security-ssh"
+
+# Allow ICMP from hotspot interface
+add chain=input action=accept in-interface=$navspotInterface protocol=icmp comment="navspot-security-ping"
+
+# Allow DHCP (discover, renew, release)
+add chain=input action=accept dst-port=67-68 protocol=udp comment="navspot-security-dhcp"
+
+# CRITICAL: Allow hotspot HTTP redirect (portal capture)
+add chain=input action=accept in-interface=$navspotInterface dst-port=80,443,8080 protocol=tcp comment="navspot-security-hotspot-http"
+
+# Drop all other input from hotspot interface
+add chain=input action=drop in-interface=$navspotInterface comment="navspot-security-drop-other"
+
+# Client Isolation - prevent clients from reaching each other
+add chain=forward action=drop src-address=${networkCidr} dst-address=${networkCidr} comment="navspot-security-client-isolation"
 ```
 
-## Arquivos a Criar
-
-| Arquivo | Descricao |
-|---------|-----------|
-| `src/components/dashboards/EmbarcacaoDashboardFilters.tsx` | Componente de filtros (embarcacao, periodo, busca) |
-| `src/hooks/useGerenteEmbarcacoes.ts` | Hook para buscar embarcacoes do gerente |
-
-## Arquivos a Modificar
+## Arquivo a Modificar
 
 | Arquivo | Alteracoes |
 |---------|------------|
-| `src/hooks/useEmbarcacaoDashboard.ts` | Adicionar parametro periodoDias nos hooks |
-| `src/components/dashboards/EmbarcacaoOnlineUsers.tsx` | Adicionar campo de busca |
-| `src/components/dashboards/EmbarcacaoConsumptionChart.tsx` | Receber periodo dinamico |
-| `src/components/dashboards/EmbarcacaoTopConsumers.tsx` | Receber periodo dinamico |
-| `src/components/dashboards/EmbarcacaoTopDuration.tsx` | Receber periodo dinamico |
-| `src/components/dashboards/GerenteEmbarcacaoDashboard.tsx` | Integrar filtros e seletor |
-| `src/contexts/AuthContext.tsx` | Adicionar embarcacao_ids (array) ao AppUser |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Atualizar bloco de regras de firewall (linhas 469-515) |
 
-## Detalhes Tecnicos
+## Alteracoes Detalhadas
 
-### 1. Hook useGerenteEmbarcacoes
+### Linha 469-515: Substituir bloco completo de Firewall Rules (Security)
 
-Busca as embarcacoes que o usuario pode acessar:
-
+**DE:**
 ```typescript
-export function useGerenteEmbarcacoes() {
-  const { user, hasRole } = useAuth();
-  
-  return useQuery({
-    queryKey: ['gerente-embarcacoes', user?.id],
-    queryFn: async () => {
-      if (hasRole(['super_admin'])) {
-        // Super admin: todas as embarcacoes
-        return supabase.from('embarcacoes').select('*').order('nome');
-      } else if (hasRole(['empresa_admin'])) {
-        // Empresa admin: embarcacoes da empresa
-        return supabase.from('embarcacoes')
-          .select('*')
-          .eq('empresa_id', user?.empresa_id)
-          .order('nome');
-      } else {
-        // Gerente: buscar da tabela gerente_embarcacoes
-        return supabase.from('gerente_embarcacoes')
-          .select('embarcacoes(*)')
-          .eq('user_id', user?.id);
-      }
-    },
-    enabled: !!user?.id,
-  });
-}
+script += `
+# Firewall Rules (Security)
+...
+add chain=input action=accept src-address=${networkCidr} dst-port=53 protocol=udp ...
+add chain=input action=accept src-address=${networkCidr} dst-port=53 protocol=tcp ...
+add chain=input action=accept src-address=${networkCidr} dst-port=8291 protocol=tcp ...
+add chain=input action=accept src-address=${networkCidr} dst-port=22 protocol=tcp ...
+add chain=input action=accept src-address=${networkCidr} protocol=icmp ...
+add chain=input action=accept src-address=${networkCidr} dst-port=80,443,8080 protocol=tcp ...
+...
+`
 ```
 
-### 2. Componente EmbarcacaoDashboardFilters
-
-Layout visual:
-
-```text
-+------------------------------------------------------------------+
-| [Embarcacao: Sonda NS-01 v]  [Periodo: 7 dias] [15d] [30d]       |
-+------------------------------------------------------------------+
-```
-
-Props:
+**PARA:**
 ```typescript
-interface Props {
-  embarcacoes: Embarcacao[];
-  selectedEmbarcacaoId: string | undefined;
-  onEmbarcacaoChange: (id: string) => void;
-  periodo: number;
-  onPeriodoChange: (dias: number) => void;
-}
+script += `
+# Firewall Rules (Security) - Optimized with in-interface
+...
+add chain=input action=accept in-interface=\\$navspotInterface dst-port=53 protocol=udp ...
+add chain=input action=accept in-interface=\\$navspotInterface dst-port=53 protocol=tcp ...
+add chain=input action=accept src-address=${networkCidr} dst-port=8291 protocol=tcp ...  // Mantem src-address
+add chain=input action=accept src-address=${networkCidr} dst-port=22 protocol=tcp ...    // Mantem src-address
+add chain=input action=accept in-interface=\\$navspotInterface protocol=icmp ...
+add chain=input action=accept in-interface=\\$navspotInterface dst-port=80,443,8080 protocol=tcp ...
+...
+`
 ```
 
-### 3. Modificacoes nos Hooks
+## Resumo das Mudancas por Regra
 
-Adicionar parametro `periodoDias` com valor padrao 7:
+| Regra | Antes | Depois | Justificativa |
+|-------|-------|--------|---------------|
+| DNS (UDP/TCP) | src-address | in-interface | Deve funcionar mesmo antes do login |
+| WinBox | src-address | src-address | Manter restrito a rede local (seguranca) |
+| SSH | src-address | src-address | Manter restrito a rede local (seguranca) |
+| ICMP | src-address | in-interface | Permitir ping de qualquer cliente |
+| DHCP | dst-port | dst-port | Ja esta correto (sem filtro de origem) |
+| Hotspot HTTP | src-address | in-interface | CRITICO: Portal deve capturar requisicoes |
+| Drop other | in-interface | in-interface | Ja esta correto |
+| Client isolation | src/dst-address | src/dst-address | Manter para bloquear comunicacao entre clientes |
 
-```typescript
-// useConsumoHistoricoEmbarcacao
-export function useConsumoHistoricoEmbarcacao(
-  embarcacaoId?: string, 
-  periodoDias: number = 7
-) {
-  // ...
-  const dataInicio = new Date();
-  dataInicio.setDate(dataInicio.getDate() - periodoDias);
-  // ...
-}
+## Beneficios
 
-// useTopConsumidoresEmbarcacao  
-export function useTopConsumidoresEmbarcacao(
-  embarcacaoId?: string,
-  periodoDias: number = 7,
-  limit: number = 5
-)
+1. **Universalidade**: Script funciona independente do range de IP configurado
+2. **Robustez**: Funciona mesmo quando o Hotspot ainda nao atribuiu IP definitivo
+3. **Manutencao**: Mudancas de rede nao exigem regeneracao do script de firewall
+4. **Portal funcional**: Garante que o portal captive funcione corretamente
+5. **Seguranca mantida**: WinBox e SSH continuam restritos por IP
 
-// useTopDuracaoEmbarcacao
-export function useTopDuracaoEmbarcacao(
-  embarcacaoId?: string,
-  periodoDias: number = 7, 
-  limit: number = 5
-)
-```
+## Consideracoes
 
-### 4. Filtro de Busca em EmbarcacaoOnlineUsers
-
-Adicionar prop de busca:
-
-```typescript
-interface Props {
-  sessoes: SessaoAtiva[] | undefined;
-  isLoading: boolean;
-  searchTerm?: string;
-  onSearchChange?: (term: string) => void;
-}
-
-// Filtrar por nome/cargo
-const filteredSessoes = sessoes?.filter(s =>
-  s.tripulante_nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
-  s.tripulante_cargo?.toLowerCase().includes(searchTerm.toLowerCase())
-) || [];
-```
-
-### 5. Periodo Dinamico nos Charts
-
-Atualizar props dos componentes:
-
-```typescript
-// EmbarcacaoConsumptionChart
-interface Props {
-  data: ConsumoHistorico[] | undefined;
-  isLoading: boolean;
-  periodoDias?: number; // Novo - para titulo dinamico
-}
-
-// Titulo: "Consumo - Ultimos {periodoDias} Dias"
-```
-
-### 6. GerenteEmbarcacaoDashboard Atualizado
-
-```typescript
-export function GerenteEmbarcacaoDashboard() {
-  const { user, hasRole } = useAuth();
-  
-  // Estados de filtro
-  const [selectedEmbarcacaoId, setSelectedEmbarcacaoId] = useState<string>();
-  const [periodoDias, setPeriodoDias] = useState(7);
-  const [searchTerm, setSearchTerm] = useState("");
-
-  // Buscar embarcacoes disponiveis
-  const { data: embarcacoesDisponiveis } = useGerenteEmbarcacoes();
-  
-  // Selecionar primeira embarcacao por padrao
-  useEffect(() => {
-    if (!selectedEmbarcacaoId && embarcacoesDisponiveis?.length) {
-      setSelectedEmbarcacaoId(embarcacoesDisponiveis[0].id);
-    }
-  }, [embarcacoesDisponiveis]);
-
-  // Usar embarcacao selecionada nos hooks
-  const { data: sessoesAtivas } = useSessoesAtivasEmbarcacao(selectedEmbarcacaoId);
-  const { data: consumoHistorico } = useConsumoHistoricoEmbarcacao(
-    selectedEmbarcacaoId, 
-    periodoDias
-  );
-  // ...
-}
-```
-
-## Layout Final
-
-```text
-+------------------------------------------------------------------+
-| Dashboard da Embarcacao                                           |
-| Monitoramento em tempo real                                       |
-+------------------------------------------------------------------+
-| FILTROS                                                           |
-| [Embarcacao: Sonda NS-01 v]    [7 dias] [15 dias] [30 dias]      |
-+------------------------------------------------------------------+
-| [Tripulantes] [Status Hotspot] [Consumo Periodo] [Sessoes Ativas]|
-+------------------------------------------------------------------+
-| Usuarios Online                           [Buscar tripulante...] |
-| +--------------------------------------------------------------+ |
-| | Tripulante | Dispositivo | Duracao | Consumo | IP            | |
-| +--------------------------------------------------------------+ |
-+------------------------------------------------------------------+
-| [  Consumo Ultimos X Dias  ] [    Top Consumidores de Dados    ] |
-+------------------------------------------------------------------+
-| [   Top Tempo de Uso       ] [   Informacoes da Embarcacao     ] |
-+------------------------------------------------------------------+
-```
-
-## Fluxo de Acesso
-
-```text
-super_admin
-    |
-    +-> Todas embarcacoes (via SELECT na tabela embarcacoes)
-    
-empresa_admin  
-    |
-    +-> Embarcacoes da empresa (filtro por empresa_id)
-    
-gerente_embarcacao
-    |
-    +-> Embarcacoes associadas (via tabela gerente_embarcacoes)
-```
-
-## Seguranca
-
-### RLS na tabela gerente_embarcacoes
-
-```sql
--- Super admin: acesso total
-CREATE POLICY "Super admin full access"
-ON public.gerente_embarcacoes FOR ALL
-USING (has_role(auth.uid(), 'super_admin'));
-
--- Empresa admin: gerentes da empresa
-CREATE POLICY "Empresa admin access"
-ON public.gerente_embarcacoes FOR ALL
-USING (
-  has_role(auth.uid(), 'empresa_admin') AND
-  embarcacao_id IN (
-    SELECT id FROM embarcacoes WHERE empresa_id = get_user_empresa_id(auth.uid())
-  )
-);
-
--- Gerente: apenas proprias associacoes
-CREATE POLICY "Gerente view own"
-ON public.gerente_embarcacoes FOR SELECT
-USING (user_id = auth.uid());
-```
-
-### Migracao de Dados
-
-Para gerentes existentes que tem `embarcacao_id` em `user_roles`:
-
-```sql
-INSERT INTO gerente_embarcacoes (user_id, embarcacao_id)
-SELECT user_id, embarcacao_id 
-FROM user_roles 
-WHERE role = 'gerente_embarcacao' 
-AND embarcacao_id IS NOT NULL;
-```
-
-## Ordem de Implementacao
-
-1. Criar tabela `gerente_embarcacoes` com RLS
-2. Migrar dados de user_roles para nova tabela
-3. Criar funcao `get_user_embarcacao_ids`
-4. Atualizar RLS policies das tabelas afetadas
-5. Criar hook `useGerenteEmbarcacoes`
-6. Criar componente `EmbarcacaoDashboardFilters`
-7. Atualizar hooks com parametro periodoDias
-8. Atualizar componentes de charts
-9. Atualizar `EmbarcacaoOnlineUsers` com busca
-10. Atualizar `GerenteEmbarcacaoDashboard`
+- A variavel `$navspotInterface` ja esta definida no inicio do script (linha 258)
+- As regras de WinBox e SSH mantem `src-address` por seguranca (apenas rede local autenticada)
+- O isolamento de clientes mantem `src-address` e `dst-address` pois precisa bloquear comunicacao entre IPs da mesma rede
 
