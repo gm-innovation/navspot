@@ -128,14 +128,23 @@ export default function Dispositivos() {
   const [selectedDevice, setSelectedDevice] = useState<DispositivoWithTripulante | null>(null);
   const [blockReason, setBlockReason] = useState("");
 
-  // New device form - expanded with profile and rules
+  // New device form - expanded with profile/custom config and rules
   const [newDevice, setNewDevice] = useState({
     mac_address: "",
     nome: "",
     tipo: "outro",
     embarcacao_id: "",
     autorizado: true,
+    // Configuration mode
+    modo_config: "personalizado" as "perfil" | "personalizado",
     perfil_id: "",
+    // Custom config fields
+    velocidade_download: "5M",
+    velocidade_upload: "2M",
+    limite_dados_mb: null as number | null,
+    quota_ilimitada: true,
+    modo_acesso: "permitir_tudo" as "permitir_tudo" | "bloquear_tudo",
+    // Access rules
     criar_regras: false,
     lista_ids: [] as string[],
   });
@@ -206,6 +215,16 @@ export default function Dispositivos() {
 
     const formattedMac = newDevice.mac_address.toUpperCase().replace(/[^A-F0-9]/g, "").match(/.{1,2}/g)?.join(":") || newDevice.mac_address;
     
+    // Build config_personalizada if using custom mode
+    const configPersonalizada = newDevice.modo_config === "personalizado" 
+      ? {
+          velocidade_download: newDevice.velocidade_download,
+          velocidade_upload: newDevice.velocidade_upload,
+          limite_dados_mb: newDevice.quota_ilimitada ? null : newDevice.limite_dados_mb,
+          modo_acesso: newDevice.modo_acesso,
+        } 
+      : null;
+    
     createDispositivo.mutate(
       {
         mac_address: formattedMac,
@@ -213,7 +232,9 @@ export default function Dispositivos() {
         tipo: newDevice.tipo,
         embarcacao_id: newDevice.embarcacao_id,
         autorizado: newDevice.autorizado,
-        perfil_id: newDevice.perfil_id || null,
+        // If profile mode, use perfil_id; if custom, use config_personalizada
+        perfil_id: newDevice.modo_config === "perfil" ? (newDevice.perfil_id || null) : null,
+        config_personalizada: configPersonalizada,
       },
       {
         onSuccess: async () => {
@@ -237,7 +258,13 @@ export default function Dispositivos() {
             tipo: "outro", 
             embarcacao_id: "", 
             autorizado: true,
+            modo_config: "personalizado",
             perfil_id: "",
+            velocidade_download: "5M",
+            velocidade_upload: "2M",
+            limite_dados_mb: null,
+            quota_ilimitada: true,
+            modo_acesso: "permitir_tudo",
             criar_regras: false,
             lista_ids: [],
           });
@@ -617,35 +644,160 @@ export default function Dispositivos() {
                 <Gauge className="h-4 w-4" />
                 Configuração de Acesso
               </h3>
-              <div>
-                <Label htmlFor="perfil">Perfil de Velocidade</Label>
-                <Select
-                  value={newDevice.perfil_id || "_none_"}
-                  onValueChange={(v) => setNewDevice((prev) => ({ ...prev, perfil_id: v === "_none_" ? "" : v }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecione um perfil (opcional)" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-background">
-                    <SelectItem value="_none_">Sem perfil específico</SelectItem>
-                    {allPerfis.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.nome}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {newDevice.perfil_id && (() => {
-                  const selectedPerfil = allPerfis.find(p => p.id === newDevice.perfil_id);
-                  if (!selectedPerfil) return null;
-                  return (
-                    <p className="text-xs text-muted-foreground mt-1">
-                      ↳ {selectedPerfil.velocidade_download}/{selectedPerfil.velocidade_upload}
-                      {selectedPerfil.limite_dados_mb && ` • Quota: ${selectedPerfil.limite_dados_mb}MB`}
-                    </p>
-                  );
-                })()}
+              
+              {/* Mode Selection */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <input
+                    type="radio"
+                    id="modo_perfil"
+                    name="modo_config"
+                    checked={newDevice.modo_config === "perfil"}
+                    onChange={() => setNewDevice((prev) => ({ ...prev, modo_config: "perfil" }))}
+                    className="h-4 w-4 text-primary"
+                  />
+                  <Label htmlFor="modo_perfil" className="cursor-pointer">Usar Perfil Pré-configurado</Label>
+                </div>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="radio"
+                    id="modo_personalizado"
+                    name="modo_config"
+                    checked={newDevice.modo_config === "personalizado"}
+                    onChange={() => setNewDevice((prev) => ({ ...prev, modo_config: "personalizado" }))}
+                    className="h-4 w-4 text-primary"
+                  />
+                  <Label htmlFor="modo_personalizado" className="cursor-pointer">Configuração Personalizada</Label>
+                </div>
               </div>
+
+              {/* Profile Selection Mode */}
+              {newDevice.modo_config === "perfil" && (
+                <div className="pl-7 space-y-2">
+                  <Label htmlFor="perfil">Perfil de Velocidade</Label>
+                  <Select
+                    value={newDevice.perfil_id || "_none_"}
+                    onValueChange={(v) => setNewDevice((prev) => ({ ...prev, perfil_id: v === "_none_" ? "" : v }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione um perfil" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-background">
+                      <SelectItem value="_none_">Sem perfil específico</SelectItem>
+                      {allPerfis.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.nome}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {newDevice.perfil_id && (() => {
+                    const selectedPerfil = allPerfis.find(p => p.id === newDevice.perfil_id);
+                    if (!selectedPerfil) return null;
+                    return (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        ↳ {selectedPerfil.velocidade_download}/{selectedPerfil.velocidade_upload}
+                        {selectedPerfil.limite_dados_mb && ` • Quota: ${selectedPerfil.limite_dados_mb}MB`}
+                      </p>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {/* Custom Configuration Mode */}
+              {newDevice.modo_config === "personalizado" && (
+                <div className="pl-7 space-y-4 p-4 border rounded-lg bg-muted/30">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="vel_download">Velocidade Download</Label>
+                      <Select
+                        value={newDevice.velocidade_download}
+                        onValueChange={(v) => setNewDevice((prev) => ({ ...prev, velocidade_download: v }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="bg-background">
+                          <SelectItem value="1M">1 Mbps</SelectItem>
+                          <SelectItem value="2M">2 Mbps</SelectItem>
+                          <SelectItem value="5M">5 Mbps</SelectItem>
+                          <SelectItem value="10M">10 Mbps</SelectItem>
+                          <SelectItem value="20M">20 Mbps</SelectItem>
+                          <SelectItem value="50M">50 Mbps</SelectItem>
+                          <SelectItem value="100M">100 Mbps</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label htmlFor="vel_upload">Velocidade Upload</Label>
+                      <Select
+                        value={newDevice.velocidade_upload}
+                        onValueChange={(v) => setNewDevice((prev) => ({ ...prev, velocidade_upload: v }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="bg-background">
+                          <SelectItem value="1M">1 Mbps</SelectItem>
+                          <SelectItem value="2M">2 Mbps</SelectItem>
+                          <SelectItem value="5M">5 Mbps</SelectItem>
+                          <SelectItem value="10M">10 Mbps</SelectItem>
+                          <SelectItem value="20M">20 Mbps</SelectItem>
+                          <SelectItem value="50M">50 Mbps</SelectItem>
+                          <SelectItem value="100M">100 Mbps</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <Label>Quota de Dados</Label>
+                    <div className="flex items-center gap-3 mt-2">
+                      <Input
+                        type="number"
+                        placeholder="500"
+                        className="w-24"
+                        value={newDevice.limite_dados_mb || ""}
+                        onChange={(e) => setNewDevice((prev) => ({ 
+                          ...prev, 
+                          limite_dados_mb: e.target.value ? parseInt(e.target.value) : null,
+                          quota_ilimitada: false
+                        }))}
+                        disabled={newDevice.quota_ilimitada}
+                      />
+                      <span className="text-sm text-muted-foreground">MB</span>
+                      <div className="flex items-center gap-2 ml-4">
+                        <Checkbox
+                          id="quota_ilimitada"
+                          checked={newDevice.quota_ilimitada}
+                          onCheckedChange={(checked) => setNewDevice((prev) => ({ 
+                            ...prev, 
+                            quota_ilimitada: !!checked,
+                            limite_dados_mb: checked ? null : prev.limite_dados_mb
+                          }))}
+                        />
+                        <Label htmlFor="quota_ilimitada" className="text-sm cursor-pointer">Ilimitado</Label>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <Label htmlFor="modo_acesso">Modo de Acesso</Label>
+                    <Select
+                      value={newDevice.modo_acesso}
+                      onValueChange={(v) => setNewDevice((prev) => ({ ...prev, modo_acesso: v as "permitir_tudo" | "bloquear_tudo" }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="bg-background">
+                        <SelectItem value="permitir_tudo">Permitir tudo (padrão)</SelectItem>
+                        <SelectItem value="bloquear_tudo">Whitelist Only (bloquear tudo, exceto whitelists)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              )}
             </div>
 
             <Separator />
