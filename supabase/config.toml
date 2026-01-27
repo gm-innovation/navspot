@@ -20,3 +20,9 @@ verify_jwt = false
 
 [functions.send-alert-notification]
 verify_jwt = false
+
+[functions.list-users]
+verify_jwt = false
+
+[functions.update-user]
+verify_jwt = false
