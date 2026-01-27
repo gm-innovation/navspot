@@ -227,7 +227,7 @@ function generateMikroTikScript(
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
-# Version: 3.1 - Minor Fixes + Parameter Validation
+# Version: 3.2 - Fixed Walled-Garden Logic (use lista.tipo)
 # ============================================
 
 # AVISO: Este script configura o hotspot do zero.
@@ -362,40 +362,51 @@ add name=hs-${hotspotSlug} interface=\$targetIf address-pool=hs-pool-${hotspotSl
   }
 
   // Walled Garden based on access rules
+  // IMPORTANT: Walled Garden controls access BEFORE login
+  // - action=allow: Allows access without authentication (captive portal bypass)
+  // - action=reject: Blocks access even before login
+  // Only system domains should have action=allow
+  // Blacklisted domains should have action=reject
+  // Whitelisted domains don't need walled-garden entries (accessible after login by default)
+  
   script += `
 # ============================================
-# Walled Garden (Domains allowed/blocked)
+# Walled Garden (APENAS sistema e bloqueios)
 # ============================================
 /ip hotspot walled-garden
 # Remove existing walled garden entries for this hotspot
 :foreach w in=[find comment~"navspot-${hotspotSlug}"] do={ remove \$w }
 
-# NAVSPOT system domains (always allowed)
+# NAVSPOT system domains (APENAS estes com action=allow)
 add dst-host="*.navspot.local" action=allow comment="navspot-${hotspotSlug}-system"
 add dst-host="*.supabase.co" action=allow comment="navspot-${hotspotSlug}-system"
 
 `
 
-  // Add walled garden entries from access rules
-  const allowedDomains = new Set<string>()
+  // Collect blocked domains from BLACKLISTS (using lista.tipo, not regra.acao)
   const blockedDomains = new Set<string>()
 
   for (const regra of regrasGlobais) {
     if (regra.listas_acesso) {
-      const dominios = regra.listas_acesso.dominios || []
-      for (const dominio of dominios) {
-        if (regra.acao === 'permitir') {
-          allowedDomains.add(dominio)
-        } else {
+      // Use lista.tipo to determine behavior - blacklists should be blocked
+      if (regra.listas_acesso.tipo === 'blacklist') {
+        const dominios = regra.listas_acesso.dominios || []
+        for (const dominio of dominios) {
           blockedDomains.add(dominio)
         }
       }
+      // Whitelists don't need walled-garden entries
+      // After login, hotspot allows all access by default
     }
   }
 
-  // Add allowed domains
-  for (const domain of allowedDomains) {
-    script += `add dst-host="${domain}" action=allow comment="navspot-${hotspotSlug}-whitelist"\n`
+  // Add blocked domains with action=reject (block even before login)
+  if (blockedDomains.size > 0) {
+    script += `# Blocked domains (blacklists - reject even before login)\n`
+    for (const domain of blockedDomains) {
+      script += `add dst-host="${domain}" action=reject comment="navspot-${hotspotSlug}-block"\n`
+    }
+    script += `\n`
   }
 
   // Walled Garden IP (essential traffic before auth)
