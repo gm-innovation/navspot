@@ -1,19 +1,39 @@
 
-# Plano: Melhorar Feedback de Loading e Exibir Regras no Modal de Perfil
+# Plano: Adicionar Configuração de Perfil, Quota e Regras de Acesso para Equipamentos de Embarcação
 
-## Problemas Identificados
+## Contexto
 
-### 1. Falta de Loading ao Gerar Script
-Na página de Embarcações, ao clicar no botão `<Code />`, o script começa a ser gerado mas não há indicação visual clara:
-- O botão tem `disabled={generateScript.isPending}` mas não mostra spinner
-- Não há overlay ou texto indicando que está processando
-- O usuário fica sem feedback por alguns segundos
+O modal atual de "Novo Equipamento de Embarcação" permite apenas cadastrar MAC, nome, tipo e embarcação. Os equipamentos de embarcação (câmeras, radar, GPS, etc.) precisam das mesmas configurações que tripulantes:
 
-### 2. Modal de Perfil não Mostra Regras
-O modal de edição/criação de perfil não exibe as regras de acesso associadas ao perfil:
-- As regras existem na tabela `regras_acesso` com `perfil_id`
-- O usuário não sabe quais listas estão aplicadas ao perfil
-- Seria útil exibir um resumo das regras (whitelists/blacklists)
+- **Perfil de Velocidade** - define limites de download/upload
+- **Pacote de Dados** - limite de consumo (quota)
+- **Regras de Acesso** - whitelists/blacklists aplicadas
+
+## Análise do Schema Atual
+
+A tabela `dispositivos_registrados` não possui campo `perfil_id`. As opções são:
+
+| Opção | Prós | Contras |
+|-------|------|---------|
+| Adicionar `perfil_id` na tabela | Simples, reutiliza infraestrutura existente | Requer migration |
+| Criar regras de acesso via `mac_address` | Já funciona para regras | Perfil ainda precisa de referência |
+
+**Solução escolhida**: Adicionar coluna `perfil_id` à tabela `dispositivos_registrados` para vincular equipamentos a perfis de velocidade.
+
+---
+
+## Mudanças no Banco de Dados
+
+### Nova Migration
+
+```sql
+-- Adicionar perfil_id à tabela dispositivos_registrados
+ALTER TABLE dispositivos_registrados 
+ADD COLUMN perfil_id uuid REFERENCES perfis_velocidade(id) ON DELETE SET NULL;
+
+-- Comentário para documentação
+COMMENT ON COLUMN dispositivos_registrados.perfil_id IS 'Perfil de velocidade aplicado ao dispositivo';
+```
 
 ---
 
@@ -21,198 +41,176 @@ O modal de edição/criação de perfil não exibe as regras de acesso associada
 
 | Arquivo | Mudança |
 |---------|---------|
-| `src/pages/Embarcacoes.tsx` | Adicionar loading spinner no botão de gerar script |
-| `src/pages/PerfisVelocidade.tsx` | Buscar e exibir regras do perfil no modal |
-| `src/hooks/useRegrasAcesso.ts` | Adicionar hook `useRegrasByPerfil` para filtrar regras |
+| `src/pages/Dispositivos.tsx` | Expandir formulário com seleção de perfil e regras |
+| `src/hooks/useDispositivosRegistrados.ts` | Incluir perfil no select/insert |
+| `src/components/modals/DispositivoDetailsModal.tsx` | Exibir perfil vinculado |
+
+---
+
+## Nova UI do Modal de Equipamento
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Novo Equipamento de Embarcação                       [X]  │
+│  Cadastre dispositivos de rede como radar, GPS, etc.       │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ═══ Identificação ═══                                      │
+│                                                             │
+│  MAC Address *        [AA:BB:CC:DD:EE:FF           ]       │
+│  Nome                 [Radar Principal              ]       │
+│  Tipo                 [Radar                      ▼]       │
+│  Embarcação *         [Sonda NS-01                ▼]       │
+│                                                             │
+│  ═══ Configuração de Acesso ═══                            │
+│                                                             │
+│  ○ Usar Perfil Pré-configurado                             │
+│  ○ Configuração Personalizada                              │
+│                                                             │
+│  Perfil               [Câmera/Streaming           ▼]       │
+│                       ↳ 50M/50M • Upload prioritário        │
+│                                                             │
+│  ═══ Regras de Acesso (opcional) ═══                       │
+│                                                             │
+│  ☐ Criar regras de acesso para este equipamento            │
+│                                                             │
+│  [Selecione listas...]                                     │
+│  ┌───────────────────────────────────────┐                 │
+│  │ ✓ Navegação Essencial  [whitelist]   │                 │
+│  │ ✓ APIs Externas        [whitelist]   │                 │
+│  └───────────────────────────────────────┘                 │
+│                                                             │
+│  ─────────────────────────────────────────────────         │
+│  [Autorizado] ●────○                                       │
+│  O dispositivo poderá se conectar à rede                   │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│                        [Cancelar]  [Cadastrar]             │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
 ## Detalhes Técnicos
 
-### 1. Loading no Botão de Gerar Script (Embarcacoes.tsx)
+### 1. Atualizar Hook de Dispositivos
 
-**Problema atual (linha 323-331):**
-```tsx
-<Button 
-  variant="outline" 
-  size="sm"
-  onClick={() => handleGenerateScript(embarcacao)}
-  disabled={!hotspot || generateScript.isPending}
-  title={hotspot ? "Gerar Script MikroTik" : "Configure a rede primeiro"}
->
-  <Code className="h-4 w-4" />
-</Button>
+```typescript
+// useDispositivosRegistrados.ts - Atualizar interface
+export interface DispositivoWithTripulante extends DispositivoRegistrado {
+  tripulante?: { ... } | null;
+  embarcacao?: { ... } | null;
+  perfil?: {  // NOVO
+    id: string;
+    nome: string;
+    velocidade_download: string;
+    velocidade_upload: string;
+    limite_dados_mb: number | null;
+  } | null;
+}
+
+// Atualizar query para incluir perfil
+.select(`
+  *,
+  tripulante:tripulantes(id, nome, cargo),
+  embarcacao:embarcacoes(id, nome),
+  perfil:perfis_velocidade(id, nome, velocidade_download, velocidade_upload, limite_dados_mb)
+`)
 ```
 
-**Solução:**
-- Adicionar estado para rastrear qual embarcação está gerando script
-- Mostrar spinner (Loader2) quando está gerando
-- Opcionalmente abrir modal de loading ou mostrar toast informativo
+### 2. Expandir Formulário (Dispositivos.tsx)
 
-```tsx
-// State para rastrear geração em andamento
-const [generatingFor, setGeneratingFor] = useState<string | null>(null);
-
-const handleGenerateScript = (embarcacao: EmbarcacaoWithStats) => {
-  const hotspot = getHotspotForEmbarcacao(embarcacao.id);
-  if (!hotspot) return;
-  
-  setGeneratingFor(embarcacao.id);
-  setCurrentHotspotId(hotspot.id);
-  setCurrentHotspotName(embarcacao.nome);
-  
-  generateScript.mutate(hotspot.id, {
-    onSuccess: (data) => {
-      setCurrentScript(data.script || "# Script não gerado");
-      setScriptModalOpen(true);
-      setGeneratingFor(null);
-    },
-    onError: () => {
-      setGeneratingFor(null);
-    }
-  });
-};
-
-// No botão:
-<Button 
-  variant="outline" 
-  size="sm"
-  onClick={() => handleGenerateScript(embarcacao)}
-  disabled={!hotspot || generatingFor === embarcacao.id}
->
-  {generatingFor === embarcacao.id ? (
-    <Loader2 className="h-4 w-4 animate-spin" />
-  ) : (
-    <Code className="h-4 w-4" />
-  )}
-</Button>
+```typescript
+// Estado expandido
+const [newDevice, setNewDevice] = useState({
+  mac_address: "",
+  nome: "",
+  tipo: "outro",
+  embarcacao_id: "",
+  autorizado: true,
+  // NOVOS CAMPOS
+  modo_config: "perfil" as "perfil" | "personalizado",
+  perfil_id: "",
+  velocidade_download: "5M",
+  velocidade_upload: "2M",
+  criar_regras: false,
+  lista_ids: [] as string[],
+});
 ```
 
-### 2. Exibir Regras no Modal de Perfil (PerfisVelocidade.tsx)
+### 3. Criar Regras Automaticamente
 
-**Nova seção no modal** após "Controle de Acesso":
+Quando `criar_regras` está ativo e há listas selecionadas, após criar o dispositivo:
+
+```typescript
+// Após criar dispositivo com sucesso
+if (newDevice.criar_regras && newDevice.lista_ids.length > 0) {
+  const regras = newDevice.lista_ids.map((lista_id, index) => ({
+    empresa_id: empresaId,
+    lista_id,
+    mac_address: formattedMac,
+    prioridade: 100 + index,
+    ativo: true,
+  }));
+  
+  await supabase.from('regras_acesso').insert(regras);
+}
+```
+
+### 4. Modal de Detalhes - Exibir Perfil
+
+No `DispositivoDetailsModal.tsx`, adicionar seção mostrando o perfil vinculado:
 
 ```tsx
-{/* Regras de Acesso Aplicadas */}
-{editingPerfil && (
-  <div className="space-y-4 border-t pt-4">
-    <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-      Regras de Acesso Aplicadas
-    </h3>
-    <RegrasDoPerfil perfilId={editingPerfil.id} />
+{dispositivo.perfil && (
+  <div className="space-y-1">
+    <p className="text-sm text-muted-foreground">Perfil de Velocidade</p>
+    <div className="flex items-center gap-2">
+      <Badge variant="outline">
+        {dispositivo.perfil.nome}
+      </Badge>
+      <span className="text-sm text-muted-foreground">
+        {dispositivo.perfil.velocidade_download}/{dispositivo.perfil.velocidade_upload}
+      </span>
+    </div>
   </div>
 )}
 ```
 
-**Componente RegrasDoPerfil:**
-- Buscar regras onde `perfil_id === perfilId`
-- Agrupar por tipo de lista (whitelist/blacklist)
-- Exibir badges com nome das listas
-- Link para página de Regras de Acesso
+---
 
-```tsx
-function RegrasDoPerfil({ perfilId }: { perfilId: string }) {
-  const { data: regras } = useRegrasAcesso();
-  
-  const regrasDoPerfil = regras?.filter(r => r.perfil_id === perfilId) || [];
-  const whitelists = regrasDoPerfil.filter(r => r.lista?.tipo === 'whitelist');
-  const blacklists = regrasDoPerfil.filter(r => r.lista?.tipo === 'blacklist');
-  
-  if (regrasDoPerfil.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        Nenhuma regra específica. 
-        {formData.herdar_regras_empresa && " Herda regras da empresa."}
-      </p>
-    );
-  }
-  
-  return (
-    <div className="space-y-3">
-      {whitelists.length > 0 && (
-        <div>
-          <p className="text-xs text-muted-foreground mb-1">Whitelists:</p>
-          <div className="flex flex-wrap gap-1">
-            {whitelists.map(r => (
-              <Badge key={r.id} variant="outline" className="bg-green-50">
-                {r.lista?.nome}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      )}
-      {blacklists.length > 0 && (
-        <div>
-          <p className="text-xs text-muted-foreground mb-1">Blacklists:</p>
-          <div className="flex flex-wrap gap-1">
-            {blacklists.map(r => (
-              <Badge key={r.id} variant="outline" className="bg-red-50">
-                {r.lista?.nome}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      )}
-      <p className="text-xs text-muted-foreground">
-        Gerencie regras em <Link to="/regras-acesso">Regras de Acesso</Link>
-      </p>
-    </div>
-  );
-}
-```
+## Fluxo Completo
 
-### 3. Hook Opcional para Filtrar Regras (useRegrasAcesso.ts)
-
-```typescript
-export function useRegrasByPerfil(perfilId: string | undefined) {
-  return useQuery({
-    queryKey: ['regras_acesso', 'by_perfil', perfilId],
-    queryFn: async () => {
-      if (!perfilId) return [];
-      
-      const { data, error } = await supabase
-        .from('regras_acesso')
-        .select(`
-          *,
-          lista:listas_acesso(id, nome, tipo)
-        `)
-        .eq('perfil_id', perfilId)
-        .order('prioridade');
-
-      if (error) throw error;
-      return data;
-    },
-    enabled: !!perfilId,
-  });
-}
+```text
+1. Admin abre modal "Novo Equipamento"
+2. Preenche MAC, nome, tipo, embarcação
+3. Seleciona perfil "Câmera/Streaming" (50M/50M, upload prioritário)
+4. Marca "Criar regras de acesso"
+5. Seleciona listas: "APIs Externas", "Navegação Essencial"
+6. Clica "Cadastrar"
+7. Sistema:
+   a. Cria dispositivo com perfil_id
+   b. Cria 2 regras de acesso (uma por lista) com mac_address
+8. Toast: "Dispositivo cadastrado com 2 regras de acesso"
 ```
 
 ---
 
-## Resumo Visual
+## Resumo das Mudanças
 
-| Componente | Antes | Depois |
-|------------|-------|--------|
-| Botão gerar script | Ícone estático, sem feedback | Spinner durante geração |
-| Modal de Perfil | Sem info de regras | Seção com whitelists/blacklists |
-| UX de loading | Usuário confuso | Feedback visual claro |
+| Componente | Mudança |
+|------------|---------|
+| **Banco de dados** | Nova coluna `perfil_id` em `dispositivos_registrados` |
+| **Formulário** | Seções de perfil + regras de acesso |
+| **Hook** | Select inclui dados do perfil vinculado |
+| **Modal detalhes** | Exibe perfil e permite edição |
+| **Criação** | Opcionalmente cria regras junto com dispositivo |
 
 ---
 
-## Fluxo de Usuário Melhorado
+## Benefícios
 
-```text
-1. Usuário clica em </> para gerar script
-2. Botão mostra spinner (Loader2 animando)
-3. Após 2-3 segundos, modal abre com script
-4. Spinner para, modal exibe conteúdo
-```
-
-```text
-1. Usuário edita um perfil
-2. Modal abre com informações do perfil
-3. Seção "Regras de Acesso Aplicadas" mostra:
-   - Whitelists: Email, WhatsApp
-   - Blacklists: Redes Sociais
-   - Link: "Gerencie regras em Regras de Acesso"
-```
+- Equipamentos têm mesmos controles que tripulantes
+- Câmeras de segurança podem ter upload prioritário
+- GPS/ECDIS podem ter acesso restrito apenas a APIs necessárias
+- Configuração centralizada em um único modal
