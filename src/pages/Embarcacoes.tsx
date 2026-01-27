@@ -16,6 +16,7 @@ import { EmbarcacaoForm } from "@/components/forms/EmbarcacaoForm";
 import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { EmptyState, ErrorState } from "@/components/ui/empty-state";
 import { TIMEZONES_BRASIL } from "@/hooks/usePerfisVelocidade";
+import { getTipoEmbarcacaoLabel } from "@/constants/embarcacoes";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -213,7 +214,7 @@ export default function Embarcacoes() {
                       </div>
                       <div>
                         <CardTitle className="text-lg">{embarcacao.nome}</CardTitle>
-                        <p className="text-sm text-muted-foreground capitalize">{embarcacao.tipo}</p>
+                        <p className="text-sm text-muted-foreground">{getTipoEmbarcacaoLabel(embarcacao.tipo)}</p>
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-1">
