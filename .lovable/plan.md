@@ -1,205 +1,310 @@
 
 
-# Melhoria do Dashboard da Embarcacao
+# Filtros e Acesso Multi-Embarcacao no Dashboard
 
-## Objetivo
-Adicionar ao dashboard do Gerente de Embarcacao (`GerenteEmbarcacaoDashboard.tsx`) uma visualizacao completa com lista de usuarios online, informacoes de consumo individual e global, e graficos de uso.
+## Resumo
 
-## Novas Funcionalidades
+Este plano adiciona:
+1. Suporte para gerentes gerenciarem multiplas embarcacoes (nova tabela de associacao)
+2. Filtros de periodo e busca em todos os componentes
+3. Seletor de embarcacao para todos os perfis (incluindo gerente)
 
-### 1. Lista de Usuarios Online (Sessoes Ativas)
-Tabela em tempo real mostrando:
-- Nome do tripulante e cargo
-- Dispositivo conectado (nome/MAC)
-- Duracao da sessao (atualiza ao vivo)
-- Consumo atual (download + upload)
-- IP do dispositivo
+## Alteracoes no Banco de Dados
 
-### 2. Metricas de Consumo
-Cards com informacoes:
-- Consumo total da embarcacao (bytes)
-- Total de sessoes hoje
-- Tempo medio de conexao
-- Dispositivos conectados agora
+### Nova Tabela: gerente_embarcacoes
 
-### 3. Graficos de Uso
-- **Grafico de consumo ao longo do tempo** (ultimos 7 dias)
-- **Top consumidores de dados** (ranking horizontal)
-- **Top usuarios por tempo de uso** (ranking por duracao)
+Tabela para associar um gerente a multiplas embarcacoes:
 
-### 4. Ranking de Tripulantes
-Tabela mostrando:
-- Maiores consumidores de dados (bytes)
-- Maior tempo de uso acumulado
-- Sessoes por tripulante
+| Coluna | Tipo | Descricao |
+|--------|------|-----------|
+| id | uuid | Primary key |
+| user_id | uuid | FK para auth.users |
+| embarcacao_id | uuid | FK para embarcacoes |
+| created_at | timestamp | Data de criacao |
+
+### Nova Funcao: get_user_embarcacao_ids
+
+Funcao que retorna todas as embarcacoes do usuario:
+
+```sql
+CREATE OR REPLACE FUNCTION public.get_user_embarcacao_ids(_user_id uuid)
+RETURNS SETOF uuid
+LANGUAGE sql
+STABLE SECURITY DEFINER
+SET search_path = 'public'
+AS $$
+  SELECT embarcacao_id
+  FROM public.gerente_embarcacoes
+  WHERE user_id = _user_id
+$$;
+```
+
+### Atualizacao das RLS Policies
+
+Atualizar policies que usam `get_user_embarcacao_id()` para usar a nova funcao:
+
+```sql
+-- Exemplo: tripulantes
+embarcacao_id IN (SELECT get_user_embarcacao_ids(auth.uid()))
+```
 
 ## Arquivos a Criar
 
 | Arquivo | Descricao |
 |---------|-----------|
-| `src/hooks/useEmbarcacaoDashboard.ts` | Hooks especificos para dados da embarcacao (sessoes ativas, consumo, rankings) |
-| `src/components/dashboards/EmbarcacaoOnlineUsers.tsx` | Componente de lista de usuarios online |
-| `src/components/dashboards/EmbarcacaoConsumptionChart.tsx` | Grafico de consumo da embarcacao |
-| `src/components/dashboards/EmbarcacaoTopConsumers.tsx` | Ranking de maiores consumidores |
-| `src/components/dashboards/EmbarcacaoTopDuration.tsx` | Ranking por tempo de uso |
+| `src/components/dashboards/EmbarcacaoDashboardFilters.tsx` | Componente de filtros (embarcacao, periodo, busca) |
+| `src/hooks/useGerenteEmbarcacoes.ts` | Hook para buscar embarcacoes do gerente |
 
-## Arquivo a Modificar
+## Arquivos a Modificar
 
 | Arquivo | Alteracoes |
 |---------|------------|
-| `src/components/dashboards/GerenteEmbarcacaoDashboard.tsx` | Integrar novos componentes e reorganizar layout |
+| `src/hooks/useEmbarcacaoDashboard.ts` | Adicionar parametro periodoDias nos hooks |
+| `src/components/dashboards/EmbarcacaoOnlineUsers.tsx` | Adicionar campo de busca |
+| `src/components/dashboards/EmbarcacaoConsumptionChart.tsx` | Receber periodo dinamico |
+| `src/components/dashboards/EmbarcacaoTopConsumers.tsx` | Receber periodo dinamico |
+| `src/components/dashboards/EmbarcacaoTopDuration.tsx` | Receber periodo dinamico |
+| `src/components/dashboards/GerenteEmbarcacaoDashboard.tsx` | Integrar filtros e seletor |
+| `src/contexts/AuthContext.tsx` | Adicionar embarcacao_ids (array) ao AppUser |
 
 ## Detalhes Tecnicos
 
-### Hook useEmbarcacaoDashboard.ts
+### 1. Hook useGerenteEmbarcacoes
+
+Busca as embarcacoes que o usuario pode acessar:
 
 ```typescript
-// Sessoes ativas da embarcacao
-export function useSessoesAtivasEmbarcacao(embarcacaoId?: string)
-
-// Consumo total da embarcacao (ultimos 7 dias)
-export function useConsumoEmbarcacao(embarcacaoId?: string)
-
-// Top consumidores da embarcacao
-export function useTopConsumidoresEmbarcacao(embarcacaoId?: string, limit?: number)
-
-// Top por duracao de uso
-export function useTopDuracaoEmbarcacao(embarcacaoId?: string, limit?: number)
-
-// Metricas gerais da embarcacao
-export function useMetricasEmbarcacao(embarcacaoId?: string)
+export function useGerenteEmbarcacoes() {
+  const { user, hasRole } = useAuth();
+  
+  return useQuery({
+    queryKey: ['gerente-embarcacoes', user?.id],
+    queryFn: async () => {
+      if (hasRole(['super_admin'])) {
+        // Super admin: todas as embarcacoes
+        return supabase.from('embarcacoes').select('*').order('nome');
+      } else if (hasRole(['empresa_admin'])) {
+        // Empresa admin: embarcacoes da empresa
+        return supabase.from('embarcacoes')
+          .select('*')
+          .eq('empresa_id', user?.empresa_id)
+          .order('nome');
+      } else {
+        // Gerente: buscar da tabela gerente_embarcacoes
+        return supabase.from('gerente_embarcacoes')
+          .select('embarcacoes(*)')
+          .eq('user_id', user?.id);
+      }
+    },
+    enabled: !!user?.id,
+  });
+}
 ```
 
-### Componente EmbarcacaoOnlineUsers
+### 2. Componente EmbarcacaoDashboardFilters
 
-Exibe tabela de usuarios conectados com atualizacao em tempo real:
-
-```text
-+------------------------------------------------------------+
-| Usuarios Online                              [3 conectados] |
-+------------------------------------------------------------+
-| Tripulante      | Dispositivo    | Duracao | Consumo | IP   |
-+-----------------+----------------+---------+---------+------+
-| Joao Silva      | iPhone 14      | 1h 23m  | 245 MB  | .101 |
-|   Marinheiro    | A1:B2:C3:D4... |         |         |      |
-+-----------------+----------------+---------+---------+------+
-| Maria Santos    | Samsung S23    | 45m 12s | 128 MB  | .102 |
-|   Comandante    | E5:F6:G7:H8... |         |         |      |
-+-----------------+----------------+---------+---------+------+
-```
-
-### Componente EmbarcacaoConsumptionChart
-
-Grafico de area mostrando consumo dos ultimos 7 dias (reutilizando logica do ConsumoChart existente).
-
-### Componente EmbarcacaoTopConsumers
-
-Grafico de barras horizontais (similar ao TopConsumidoresChart existente) filtrado para a embarcacao.
-
-### Componente EmbarcacaoTopDuration
-
-Novo grafico de barras horizontais mostrando tempo total de uso por tripulante:
-
-```text
-+------------------------------------------+
-| Maior Tempo de Uso                       |
-+------------------------------------------+
-| Joao Silva    ███████████████████  12h   |
-| Maria Santos  ████████████████     10h   |
-| Pedro Lima    ██████████████       8h    |
-| Ana Costa     ████████             5h    |
-| Carlos Souza  █████                3h    |
-+------------------------------------------+
-```
-
-## Layout Final do Dashboard
+Layout visual:
 
 ```text
 +------------------------------------------------------------------+
-| Minha Embarcacao                        [Cadastrar Tripulante]   |
-| Bem-vindo, usuario - Gerencie sua embarcacao                     |
+| [Embarcacao: Sonda NS-01 v]  [Periodo: 7 dias] [15d] [30d]       |
 +------------------------------------------------------------------+
-|                                                                   |
-| [Tripulantes] [Status Hotspot] [Consumo Hoje] [Sessoes Ativas]   |
-| [  Ativos   ] [   Online     ] [   245 MB   ] [      3       ]   |
-|                                                                   |
+```
+
+Props:
+```typescript
+interface Props {
+  embarcacoes: Embarcacao[];
+  selectedEmbarcacaoId: string | undefined;
+  onEmbarcacaoChange: (id: string) => void;
+  periodo: number;
+  onPeriodoChange: (dias: number) => void;
+}
+```
+
+### 3. Modificacoes nos Hooks
+
+Adicionar parametro `periodoDias` com valor padrao 7:
+
+```typescript
+// useConsumoHistoricoEmbarcacao
+export function useConsumoHistoricoEmbarcacao(
+  embarcacaoId?: string, 
+  periodoDias: number = 7
+) {
+  // ...
+  const dataInicio = new Date();
+  dataInicio.setDate(dataInicio.getDate() - periodoDias);
+  // ...
+}
+
+// useTopConsumidoresEmbarcacao  
+export function useTopConsumidoresEmbarcacao(
+  embarcacaoId?: string,
+  periodoDias: number = 7,
+  limit: number = 5
+)
+
+// useTopDuracaoEmbarcacao
+export function useTopDuracaoEmbarcacao(
+  embarcacaoId?: string,
+  periodoDias: number = 7, 
+  limit: number = 5
+)
+```
+
+### 4. Filtro de Busca em EmbarcacaoOnlineUsers
+
+Adicionar prop de busca:
+
+```typescript
+interface Props {
+  sessoes: SessaoAtiva[] | undefined;
+  isLoading: boolean;
+  searchTerm?: string;
+  onSearchChange?: (term: string) => void;
+}
+
+// Filtrar por nome/cargo
+const filteredSessoes = sessoes?.filter(s =>
+  s.tripulante_nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
+  s.tripulante_cargo?.toLowerCase().includes(searchTerm.toLowerCase())
+) || [];
+```
+
+### 5. Periodo Dinamico nos Charts
+
+Atualizar props dos componentes:
+
+```typescript
+// EmbarcacaoConsumptionChart
+interface Props {
+  data: ConsumoHistorico[] | undefined;
+  isLoading: boolean;
+  periodoDias?: number; // Novo - para titulo dinamico
+}
+
+// Titulo: "Consumo - Ultimos {periodoDias} Dias"
+```
+
+### 6. GerenteEmbarcacaoDashboard Atualizado
+
+```typescript
+export function GerenteEmbarcacaoDashboard() {
+  const { user, hasRole } = useAuth();
+  
+  // Estados de filtro
+  const [selectedEmbarcacaoId, setSelectedEmbarcacaoId] = useState<string>();
+  const [periodoDias, setPeriodoDias] = useState(7);
+  const [searchTerm, setSearchTerm] = useState("");
+
+  // Buscar embarcacoes disponiveis
+  const { data: embarcacoesDisponiveis } = useGerenteEmbarcacoes();
+  
+  // Selecionar primeira embarcacao por padrao
+  useEffect(() => {
+    if (!selectedEmbarcacaoId && embarcacoesDisponiveis?.length) {
+      setSelectedEmbarcacaoId(embarcacoesDisponiveis[0].id);
+    }
+  }, [embarcacoesDisponiveis]);
+
+  // Usar embarcacao selecionada nos hooks
+  const { data: sessoesAtivas } = useSessoesAtivasEmbarcacao(selectedEmbarcacaoId);
+  const { data: consumoHistorico } = useConsumoHistoricoEmbarcacao(
+    selectedEmbarcacaoId, 
+    periodoDias
+  );
+  // ...
+}
+```
+
+## Layout Final
+
+```text
 +------------------------------------------------------------------+
-|                                                                   |
-| Usuarios Online                                   [3 conectados] |
+| Dashboard da Embarcacao                                           |
+| Monitoramento em tempo real                                       |
++------------------------------------------------------------------+
+| FILTROS                                                           |
+| [Embarcacao: Sonda NS-01 v]    [7 dias] [15 dias] [30 dias]      |
++------------------------------------------------------------------+
+| [Tripulantes] [Status Hotspot] [Consumo Periodo] [Sessoes Ativas]|
++------------------------------------------------------------------+
+| Usuarios Online                           [Buscar tripulante...] |
 | +--------------------------------------------------------------+ |
 | | Tripulante | Dispositivo | Duracao | Consumo | IP            | |
 | +--------------------------------------------------------------+ |
-| | Joao Silva | iPhone 14   | 1h 23m  | 245 MB  | 192.168.1.101 | |
-| | Maria ...  | Samsung...  | 45m 12s | 128 MB  | 192.168.1.102 | |
-| +--------------------------------------------------------------+ |
-|                                                                   |
 +------------------------------------------------------------------+
-|                                                                   |
-| [   Consumo Ultimos 7 Dias   ] [   Top Consumidores de Dados   ] |
-| |   Grafico de Area          | |  Ranking Horizontal          | |
-| |   Download / Upload        | |  Por bytes consumidos        | |
-|                                                                   |
+| [  Consumo Ultimos X Dias  ] [    Top Consumidores de Dados    ] |
 +------------------------------------------------------------------+
-|                                                                   |
-| [    Top Tempo de Uso        ] [   Informacoes da Embarcacao   ] |
-| |  Ranking por duracao       | |  Nome, tipo, status, etc     | |
-| |  total de conexao          | |                              | |
-|                                                                   |
+| [   Top Tempo de Uso       ] [   Informacoes da Embarcacao     ] |
 +------------------------------------------------------------------+
 ```
 
-## Queries SQL Necessarias
+## Fluxo de Acesso
 
-### Sessoes Ativas da Embarcacao
-```sql
-SELECT sw.*, t.nome, t.cargo, d.nome as disp_nome, d.mac_address
-FROM sessoes_wifi sw
-JOIN tripulantes t ON sw.tripulante_id = t.id
-JOIN hotspots h ON sw.hotspot_id = h.id
-LEFT JOIN dispositivos_registrados d ON sw.dispositivo_id = d.id
-WHERE h.embarcacao_id = :embarcacao_id
-AND sw.status = 'ativa'
+```text
+super_admin
+    |
+    +-> Todas embarcacoes (via SELECT na tabela embarcacoes)
+    
+empresa_admin  
+    |
+    +-> Embarcacoes da empresa (filtro por empresa_id)
+    
+gerente_embarcacao
+    |
+    +-> Embarcacoes associadas (via tabela gerente_embarcacoes)
 ```
 
-### Top Consumidores da Embarcacao
+## Seguranca
+
+### RLS na tabela gerente_embarcacoes
+
 ```sql
-SELECT t.id, t.nome, t.cargo, t.bytes_consumidos
-FROM tripulantes t
-WHERE t.embarcacao_id = :embarcacao_id
-AND t.bytes_consumidos > 0
-ORDER BY t.bytes_consumidos DESC
-LIMIT 10
+-- Super admin: acesso total
+CREATE POLICY "Super admin full access"
+ON public.gerente_embarcacoes FOR ALL
+USING (has_role(auth.uid(), 'super_admin'));
+
+-- Empresa admin: gerentes da empresa
+CREATE POLICY "Empresa admin access"
+ON public.gerente_embarcacoes FOR ALL
+USING (
+  has_role(auth.uid(), 'empresa_admin') AND
+  embarcacao_id IN (
+    SELECT id FROM embarcacoes WHERE empresa_id = get_user_empresa_id(auth.uid())
+  )
+);
+
+-- Gerente: apenas proprias associacoes
+CREATE POLICY "Gerente view own"
+ON public.gerente_embarcacoes FOR SELECT
+USING (user_id = auth.uid());
 ```
 
-### Top por Duracao (calculado das sessoes)
+### Migracao de Dados
+
+Para gerentes existentes que tem `embarcacao_id` em `user_roles`:
+
 ```sql
-SELECT 
-  t.id, 
-  t.nome, 
-  t.cargo,
-  SUM(
-    EXTRACT(EPOCH FROM (COALESCE(sw.fim, now()) - sw.inicio))
-  ) as duracao_total_segundos
-FROM sessoes_wifi sw
-JOIN tripulantes t ON sw.tripulante_id = t.id
-JOIN hotspots h ON sw.hotspot_id = h.id
-WHERE h.embarcacao_id = :embarcacao_id
-GROUP BY t.id, t.nome, t.cargo
-ORDER BY duracao_total_segundos DESC
-LIMIT 10
+INSERT INTO gerente_embarcacoes (user_id, embarcacao_id)
+SELECT user_id, embarcacao_id 
+FROM user_roles 
+WHERE role = 'gerente_embarcacao' 
+AND embarcacao_id IS NOT NULL;
 ```
 
-## Dependencias Utilizadas
+## Ordem de Implementacao
 
-- Recharts (ja instalado) - para graficos
-- date-fns (ja instalado) - formatacao de datas e duracao
-- Supabase Realtime (ja configurado) - atualizacao em tempo real
-- TanStack Query (ja instalado) - gerenciamento de estado e cache
-
-## Consideracoes
-
-1. **Performance**: Os hooks usarao `refetchInterval` de 5-10 segundos para manter dados atualizados
-2. **Realtime**: Aproveitar subscricoes ja existentes em `useMonitoramentoRealtime`
-3. **Responsividade**: Layout adaptavel para mobile com cards empilhados
-4. **Reuso**: Aproveitar componentes de graficos existentes (ConsumoChart, TopConsumidoresChart)
+1. Criar tabela `gerente_embarcacoes` com RLS
+2. Migrar dados de user_roles para nova tabela
+3. Criar funcao `get_user_embarcacao_ids`
+4. Atualizar RLS policies das tabelas afetadas
+5. Criar hook `useGerenteEmbarcacoes`
+6. Criar componente `EmbarcacaoDashboardFilters`
+7. Atualizar hooks com parametro periodoDias
+8. Atualizar componentes de charts
+9. Atualizar `EmbarcacaoOnlineUsers` com busca
+10. Atualizar `GerenteEmbarcacaoDashboard`
 
