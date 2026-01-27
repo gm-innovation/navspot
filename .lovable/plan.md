@@ -1,24 +1,19 @@
 
-# Plano: Remover Campo "Ação" Redundante das Regras de Acesso
+# Plano: Melhorar Feedback de Loading e Exibir Regras no Modal de Perfil
 
-## Problema Identificado
+## Problemas Identificados
 
-O campo `acao` (Permitir/Bloquear) nas regras de acesso é **redundante e confuso** porque:
+### 1. Falta de Loading ao Gerar Script
+Na página de Embarcações, ao clicar no botão `<Code />`, o script começa a ser gerado mas não há indicação visual clara:
+- O botão tem `disabled={generateScript.isPending}` mas não mostra spinner
+- Não há overlay ou texto indicando que está processando
+- O usuário fica sem feedback por alguns segundos
 
-| Lista Tipo | acao Atual | Comportamento Real |
-|------------|------------|-------------------|
-| whitelist | permitir | Domínios que o usuário PODE acessar |
-| blacklist | permitir | Domínios que devem ser BLOQUEADOS |
-
-Como visto no banco, todas as 5 regras têm `acao=permitir`, inclusive as listas de `blacklist`. O campo não serve para nada e causa confusão na geração do script MikroTik.
-
-## Solução
-
-O tipo da lista (`whitelist`/`blacklist`) já define o comportamento:
-- **Whitelist**: Domínios permitidos (não precisa de ação especial no MikroTik)
-- **Blacklist**: Domínios bloqueados (adicionar `action=reject` no walled-garden + Layer7+Firewall)
-
-Remover o campo `acao` do formulário e usar `lista.tipo` na lógica.
+### 2. Modal de Perfil não Mostra Regras
+O modal de edição/criação de perfil não exibe as regras de acesso associadas ao perfil:
+- As regras existem na tabela `regras_acesso` com `perfil_id`
+- O usuário não sabe quais listas estão aplicadas ao perfil
+- Seria útil exibir um resumo das regras (whitelists/blacklists)
 
 ---
 
@@ -26,167 +21,198 @@ Remover o campo `acao` do formulário e usar `lista.tipo` na lógica.
 
 | Arquivo | Mudança |
 |---------|---------|
-| `src/pages/RegrasAcesso.tsx` | Remover campo "Ação" do formulário e da tabela |
-| `src/components/modals/DispositivoDetailsModal.tsx` | Remover exibição de `acao` |
-| `src/hooks/useEmbarcacoesWithHotspot.ts` | Remover `acao` da criação automática de regras |
-| `supabase/functions/mikrotik-script-generator/index.ts` | Usar `lista.tipo` ao invés de `regra.acao` |
-| `supabase/functions/mikrotik-sync/index.ts` | Usar `lista.tipo` ao invés de `regra.acao` |
+| `src/pages/Embarcacoes.tsx` | Adicionar loading spinner no botão de gerar script |
+| `src/pages/PerfisVelocidade.tsx` | Buscar e exibir regras do perfil no modal |
+| `src/hooks/useRegrasAcesso.ts` | Adicionar hook `useRegrasByPerfil` para filtrar regras |
 
 ---
 
-## Detalhes das Mudanças
+## Detalhes Técnicos
 
-### 1. Formulário (RegrasAcesso.tsx)
+### 1. Loading no Botão de Gerar Script (Embarcacoes.tsx)
 
-**Remover linhas 581-600** (campo "Ação"):
+**Problema atual (linha 323-331):**
 ```tsx
-// REMOVER este bloco inteiro
-<div className="grid grid-cols-4 items-center gap-4">
-  <Label htmlFor="acao" className="text-right">
-    Ação
-  </Label>
-  <Select
-    value={formData.acao}
-    onValueChange={(value: "permitir" | "bloquear") => 
-      setFormData(prev => ({ ...prev, acao: value }))
-    }
-  >
-    ...
-  </Select>
-</div>
+<Button 
+  variant="outline" 
+  size="sm"
+  onClick={() => handleGenerateScript(embarcacao)}
+  disabled={!hotspot || generateScript.isPending}
+  title={hotspot ? "Gerar Script MikroTik" : "Configure a rede primeiro"}
+>
+  <Code className="h-4 w-4" />
+</Button>
 ```
 
-**Remover do state** (linhas 104-117):
-- Remover `acao: "permitir" as "permitir" | "bloquear"` do formData
+**Solução:**
+- Adicionar estado para rastrear qual embarcação está gerando script
+- Mostrar spinner (Loader2) quando está gerando
+- Opcionalmente abrir modal de loading ou mostrar toast informativo
 
-**Remover da tabela** (linhas 441-451):
-- Remover coluna "Ação" que exibe o badge permitir/bloquear
-
-### 2. Coluna da Tabela
-
-Substituir a coluna "Ação" por exibir o tipo da lista diretamente (já existe na coluna "Lista"):
 ```tsx
-// Remover TableHead e TableCell da coluna "Ação"
-```
+// State para rastrear geração em andamento
+const [generatingFor, setGeneratingFor] = useState<string | null>(null);
 
-### 3. Script Generator (mikrotik-script-generator/index.ts)
-
-**Antes (linhas 383-394)**:
-```typescript
-for (const regra of regrasGlobais) {
-  if (regra.listas_acesso) {
-    const dominios = regra.listas_acesso.dominios || []
-    for (const dominio of dominios) {
-      if (regra.acao === 'permitir') {  // ❌ ERRADO
-        allowedDomains.add(dominio)
-      } else {
-        blockedDomains.add(dominio)
-      }
+const handleGenerateScript = (embarcacao: EmbarcacaoWithStats) => {
+  const hotspot = getHotspotForEmbarcacao(embarcacao.id);
+  if (!hotspot) return;
+  
+  setGeneratingFor(embarcacao.id);
+  setCurrentHotspotId(hotspot.id);
+  setCurrentHotspotName(embarcacao.nome);
+  
+  generateScript.mutate(hotspot.id, {
+    onSuccess: (data) => {
+      setCurrentScript(data.script || "# Script não gerado");
+      setScriptModalOpen(true);
+      setGeneratingFor(null);
+    },
+    onError: () => {
+      setGeneratingFor(null);
     }
+  });
+};
+
+// No botão:
+<Button 
+  variant="outline" 
+  size="sm"
+  onClick={() => handleGenerateScript(embarcacao)}
+  disabled={!hotspot || generatingFor === embarcacao.id}
+>
+  {generatingFor === embarcacao.id ? (
+    <Loader2 className="h-4 w-4 animate-spin" />
+  ) : (
+    <Code className="h-4 w-4" />
+  )}
+</Button>
+```
+
+### 2. Exibir Regras no Modal de Perfil (PerfisVelocidade.tsx)
+
+**Nova seção no modal** após "Controle de Acesso":
+
+```tsx
+{/* Regras de Acesso Aplicadas */}
+{editingPerfil && (
+  <div className="space-y-4 border-t pt-4">
+    <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+      Regras de Acesso Aplicadas
+    </h3>
+    <RegrasDoPerfil perfilId={editingPerfil.id} />
+  </div>
+)}
+```
+
+**Componente RegrasDoPerfil:**
+- Buscar regras onde `perfil_id === perfilId`
+- Agrupar por tipo de lista (whitelist/blacklist)
+- Exibir badges com nome das listas
+- Link para página de Regras de Acesso
+
+```tsx
+function RegrasDoPerfil({ perfilId }: { perfilId: string }) {
+  const { data: regras } = useRegrasAcesso();
+  
+  const regrasDoPerfil = regras?.filter(r => r.perfil_id === perfilId) || [];
+  const whitelists = regrasDoPerfil.filter(r => r.lista?.tipo === 'whitelist');
+  const blacklists = regrasDoPerfil.filter(r => r.lista?.tipo === 'blacklist');
+  
+  if (regrasDoPerfil.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        Nenhuma regra específica. 
+        {formData.herdar_regras_empresa && " Herda regras da empresa."}
+      </p>
+    );
   }
+  
+  return (
+    <div className="space-y-3">
+      {whitelists.length > 0 && (
+        <div>
+          <p className="text-xs text-muted-foreground mb-1">Whitelists:</p>
+          <div className="flex flex-wrap gap-1">
+            {whitelists.map(r => (
+              <Badge key={r.id} variant="outline" className="bg-green-50">
+                {r.lista?.nome}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+      {blacklists.length > 0 && (
+        <div>
+          <p className="text-xs text-muted-foreground mb-1">Blacklists:</p>
+          <div className="flex flex-wrap gap-1">
+            {blacklists.map(r => (
+              <Badge key={r.id} variant="outline" className="bg-red-50">
+                {r.lista?.nome}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">
+        Gerencie regras em <Link to="/regras-acesso">Regras de Acesso</Link>
+      </p>
+    </div>
+  );
 }
 ```
 
-**Depois**:
+### 3. Hook Opcional para Filtrar Regras (useRegrasAcesso.ts)
+
 ```typescript
-for (const regra of regrasGlobais) {
-  if (regra.listas_acesso) {
-    const dominios = regra.listas_acesso.dominios || []
-    for (const dominio of dominios) {
-      if (regra.listas_acesso.tipo === 'blacklist') {  // ✅ CORRETO
-        blockedDomains.add(dominio)
-      }
-      // Whitelists não precisam de ação especial no walled-garden
-      // O hotspot permite acesso após login por padrão
-    }
-  }
+export function useRegrasByPerfil(perfilId: string | undefined) {
+  return useQuery({
+    queryKey: ['regras_acesso', 'by_perfil', perfilId],
+    queryFn: async () => {
+      if (!perfilId) return [];
+      
+      const { data, error } = await supabase
+        .from('regras_acesso')
+        .select(`
+          *,
+          lista:listas_acesso(id, nome, tipo)
+        `)
+        .eq('perfil_id', perfilId)
+        .order('prioridade');
+
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!perfilId,
+  });
 }
 ```
-
-**Remover a seção de allowed domains no walled-garden**:
-```typescript
-// REMOVER: Whitelists não devem estar no walled-garden
-// for (const domain of allowedDomains) {
-//   script += `add dst-host="${domain}" action=allow comment="..."\n`
-// }
-```
-
-### 4. MikroTik Sync (mikrotik-sync/index.ts)
-
-**Antes**:
-```typescript
-return {
-  action: regra.acao,
-  domains: (lista?.dominios || []) as string[],
-  apps: (lista?.aplicativos || []) as string[]
-}
-```
-
-**Depois**:
-```typescript
-return {
-  action: lista?.tipo === 'blacklist' ? 'block' : 'allow',
-  domains: (lista?.dominios || []) as string[],
-  apps: (lista?.aplicativos || []) as string[]
-}
-```
-
-### 5. Hook de Embarcações (useEmbarcacoesWithHotspot.ts)
-
-Remover `acao: 'permitir'` da criação automática de regras (linhas 63 e 184):
-```typescript
-// Remover ou manter como legacy - o campo ainda existe no banco
-// Mas não será mais usado na lógica
-acao: 'permitir', // Manter para compatibilidade, mas ignorar
-```
-
----
-
-## Banco de Dados
-
-**Opção 1 - Manter coluna (recomendado):**
-- Manter a coluna `acao` no banco com default `'permitir'`
-- Ignorar na lógica - usar sempre `lista.tipo`
-- Sem migration necessária
-
-**Opção 2 - Remover coluna (futuro):**
-- Criar migration para remover coluna `acao`
-- Só fazer depois que tudo estiver funcionando
 
 ---
 
 ## Resumo Visual
 
-| Local | Antes | Depois |
-|-------|-------|--------|
-| Formulário | Campo "Ação" com dropdown | Removido |
-| Tabela | Coluna "Ação" com badge | Removida |
-| Script Generator | Usa `regra.acao` | Usa `lista.tipo` |
-| MikroTik Sync | Usa `regra.acao` | Usa `lista.tipo` |
-| Banco de dados | Mantém coluna `acao` | Mantém (mas ignora) |
+| Componente | Antes | Depois |
+|------------|-------|--------|
+| Botão gerar script | Ícone estático, sem feedback | Spinner durante geração |
+| Modal de Perfil | Sem info de regras | Seção com whitelists/blacklists |
+| UX de loading | Usuário confuso | Feedback visual claro |
 
 ---
 
-## Fluxo Corrigido
+## Fluxo de Usuário Melhorado
 
 ```text
-Lista "Redes Sociais" (tipo=blacklist)
-  ↓
-Script Generator verifica lista.tipo === 'blacklist'
-  ↓
-Adiciona ao walled-garden: action=reject
-  ↓
-Adiciona ao Layer7+Firewall: drop
-  ↓
-Resultado: Facebook bloqueado ✅
+1. Usuário clica em </> para gerar script
+2. Botão mostra spinner (Loader2 animando)
+3. Após 2-3 segundos, modal abre com script
+4. Spinner para, modal exibe conteúdo
 ```
 
 ```text
-Lista "Email" (tipo=whitelist)
-  ↓
-Script Generator verifica lista.tipo === 'whitelist'
-  ↓
-NÃO adiciona ao walled-garden (acesso após login é permitido por padrão)
-  ↓
-Resultado: Gmail acessível após login ✅
+1. Usuário edita um perfil
+2. Modal abre com informações do perfil
+3. Seção "Regras de Acesso Aplicadas" mostra:
+   - Whitelists: Email, WhatsApp
+   - Blacklists: Redes Sociais
+   - Link: "Gerencie regras em Regras de Acesso"
 ```
