@@ -649,7 +649,8 @@ Deno.serve(async (req) => {
           break
         case 'add_user':
         case 'create_user':
-          parts.push(String(p.user || ''), String(p.password || ''), String(p.profile || 'default-navspot'))
+          // Use profile from payload, or 'default' as final fallback
+          parts.push(String(p.user || ''), String(p.password || ''), String(p.profile || 'default'))
           break
         case 'update_profile':
         case 'update_user_profile':

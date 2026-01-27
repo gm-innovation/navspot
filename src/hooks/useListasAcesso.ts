@@ -3,6 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { Tables, TablesInsert, TablesUpdate } from '@/integrations/supabase/types';
 import { toast } from '@/hooks/use-toast';
 import { Json } from '@/integrations/supabase/types';
+import { createMikrotikActionForEmpresa } from '@/hooks/useMikrotikSync';
 
 export type ListaAcesso = Tables<'listas_acesso'>;
 export type ListaAcessoInsert = TablesInsert<'listas_acesso'>;
@@ -180,13 +181,31 @@ export function useCreateListaAcesso() {
         .single();
 
       if (error) throw error;
+
+      // Trigger firewall update on all hotspots
+      try {
+        await createMikrotikActionForEmpresa({
+          empresaId: data.empresa_id,
+          tipo: 'update_firewall_rules',
+          payload: { 
+            lista_id: data.id,
+            action: 'add',
+            tipo: data.tipo,
+            dominios: data.dominios,
+          },
+        });
+      } catch (actionError) {
+        console.error('[useListasAcesso] Failed to create MikroTik action:', actionError);
+      }
+
       return data as ListaAcesso;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['listas_acesso'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
       toast({
         title: 'Lista criada',
-        description: 'A lista de acesso foi cadastrada com sucesso.',
+        description: 'A lista de acesso foi cadastrada e será sincronizada.',
       });
     },
     onError: (error) => {
@@ -212,10 +231,28 @@ export function useUpdateListaAcesso() {
         .single();
 
       if (error) throw error;
+
+      // Trigger firewall update on all hotspots
+      try {
+        await createMikrotikActionForEmpresa({
+          empresaId: data.empresa_id,
+          tipo: 'update_firewall_rules',
+          payload: { 
+            lista_id: data.id,
+            action: 'update',
+            tipo: data.tipo,
+            dominios: data.dominios,
+          },
+        });
+      } catch (actionError) {
+        console.error('[useListasAcesso] Failed to create MikroTik action:', actionError);
+      }
+
       return data as ListaAcesso;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['listas_acesso'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
       toast({
         title: 'Lista atualizada',
         description: 'A lista de acesso foi atualizada.',
@@ -236,15 +273,43 @@ export function useDeleteListaAcesso() {
 
   return useMutation({
     mutationFn: async (id: string) => {
+      // Fetch lista data before deleting
+      const { data: lista, error: fetchError } = await supabase
+        .from('listas_acesso')
+        .select('empresa_id, dominios, tipo')
+        .eq('id', id)
+        .single();
+
+      if (fetchError) throw fetchError;
+
       const { error } = await supabase
         .from('listas_acesso')
         .delete()
         .eq('id', id);
 
       if (error) throw error;
+
+      // Trigger firewall update on all hotspots
+      if (lista) {
+        try {
+          await createMikrotikActionForEmpresa({
+            empresaId: lista.empresa_id,
+            tipo: 'update_firewall_rules',
+            payload: { 
+              lista_id: id,
+              action: 'remove',
+              tipo: lista.tipo,
+              dominios: lista.dominios,
+            },
+          });
+        } catch (actionError) {
+          console.error('[useListasAcesso] Failed to create MikroTik action:', actionError);
+        }
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['listas_acesso'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
       toast({
         title: 'Lista excluída',
         description: 'A lista de acesso foi removida do sistema.',

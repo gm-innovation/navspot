@@ -3,6 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { Tables, TablesInsert, TablesUpdate } from '@/integrations/supabase/types';
 import { toast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
+import { createMikrotikAction, createMikrotikActionForHotspot } from '@/hooks/useMikrotikSync';
 
 export type DispositivoRegistrado = Tables<'dispositivos_registrados'>;
 export type DispositivoRegistradoInsert = TablesInsert<'dispositivos_registrados'>;
@@ -249,6 +250,15 @@ export function useBlockDispositivo() {
 
   return useMutation({
     mutationFn: async ({ id, bloqueio_motivo }: { id: string; bloqueio_motivo: string }) => {
+      // Fetch device data first
+      const { data: device, error: fetchError } = await supabase
+        .from('dispositivos_registrados')
+        .select('mac_address, embarcacao_id, tripulante_id, tripulantes(embarcacao_id)')
+        .eq('id', id)
+        .single();
+
+      if (fetchError) throw fetchError;
+
       const { data, error } = await supabase
         .from('dispositivos_registrados')
         .update({
@@ -262,10 +272,26 @@ export function useBlockDispositivo() {
         .single();
 
       if (error) throw error;
+
+      // Create MikroTik action to block device
+      const embarcacaoId = device.embarcacao_id || (device.tripulantes as any)?.embarcacao_id;
+      if (embarcacaoId) {
+        try {
+          await createMikrotikAction({
+            embarcacaoId,
+            tipo: 'block_device',
+            payload: { mac: device.mac_address },
+          });
+        } catch (actionError) {
+          console.error('[useDispositivos] Failed to create MikroTik action:', actionError);
+        }
+      }
+
       return data as DispositivoRegistrado;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['dispositivos_registrados'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
       toast({
         title: 'Dispositivo bloqueado',
         description: 'O dispositivo foi bloqueado e não poderá se conectar.',
@@ -287,6 +313,15 @@ export function useUnblockDispositivo() {
 
   return useMutation({
     mutationFn: async (id: string) => {
+      // Fetch device data first
+      const { data: device, error: fetchError } = await supabase
+        .from('dispositivos_registrados')
+        .select('mac_address, embarcacao_id, tripulante_id, tripulantes(embarcacao_id)')
+        .eq('id', id)
+        .single();
+
+      if (fetchError) throw fetchError;
+
       const { data, error } = await supabase
         .from('dispositivos_registrados')
         .update({
@@ -300,10 +335,26 @@ export function useUnblockDispositivo() {
         .single();
 
       if (error) throw error;
+
+      // Create MikroTik action to unblock device
+      const embarcacaoId = device.embarcacao_id || (device.tripulantes as any)?.embarcacao_id;
+      if (embarcacaoId) {
+        try {
+          await createMikrotikAction({
+            embarcacaoId,
+            tipo: 'unblock_device',
+            payload: { mac: device.mac_address },
+          });
+        } catch (actionError) {
+          console.error('[useDispositivos] Failed to create MikroTik action:', actionError);
+        }
+      }
+
       return data as DispositivoRegistrado;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['dispositivos_registrados'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
       toast({
         title: 'Dispositivo desbloqueado',
         description: 'O dispositivo foi autorizado a conectar novamente.',

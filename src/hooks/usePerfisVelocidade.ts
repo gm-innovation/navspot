@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables, TablesInsert, TablesUpdate } from '@/integrations/supabase/types';
 import { toast } from '@/hooks/use-toast';
+import { createMikrotikActionForEmpresa, toProfileSlug } from '@/hooks/useMikrotikSync';
 
 export type PerfilVelocidade = Tables<'perfis_velocidade'>;
 export type PerfilVelocidadeInsert = TablesInsert<'perfis_velocidade'>;
@@ -105,13 +106,32 @@ export function useCreatePerfilVelocidade() {
         .single();
 
       if (error) throw error;
+
+      // Create MikroTik action to add profile to all hotspots
+      try {
+        await createMikrotikActionForEmpresa({
+          empresaId: data.empresa_id,
+          tipo: 'add_profile',
+          payload: {
+            name: toProfileSlug(data.nome),
+            rateLimit: `${data.velocidade_upload}/${data.velocidade_download}`,
+            sharedUsers: data.max_dispositivos,
+            limitBytes: data.limite_dados_mb ? data.limite_dados_mb * 1024 * 1024 : 0,
+            sessionTimeout: data.session_timeout_minutos ? `${data.session_timeout_minutos}m` : null,
+          },
+        });
+      } catch (actionError) {
+        console.error('[usePerfisVelocidade] Failed to create MikroTik action:', actionError);
+      }
+
       return data as PerfilVelocidade;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['perfis_velocidade'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
       toast({
         title: 'Perfil criado',
-        description: 'O perfil de velocidade foi cadastrado com sucesso.',
+        description: 'O perfil de velocidade foi cadastrado e será sincronizado.',
       });
     },
     onError: (error) => {
@@ -129,6 +149,15 @@ export function useUpdatePerfilVelocidade() {
 
   return useMutation({
     mutationFn: async ({ id, ...updates }: PerfilVelocidadeUpdate & { id: string }) => {
+      // Fetch old data to get empresa_id
+      const { data: oldData, error: oldError } = await supabase
+        .from('perfis_velocidade')
+        .select('nome, empresa_id, velocidade_download, velocidade_upload, max_dispositivos, limite_dados_mb, session_timeout_minutos')
+        .eq('id', id)
+        .single();
+
+      if (oldError) throw oldError;
+
       const { data, error } = await supabase
         .from('perfis_velocidade')
         .update(updates)
@@ -137,10 +166,30 @@ export function useUpdatePerfilVelocidade() {
         .single();
 
       if (error) throw error;
+
+      // Create MikroTik action to update profile config
+      try {
+        await createMikrotikActionForEmpresa({
+          empresaId: oldData.empresa_id,
+          tipo: 'update_profile_config',
+          payload: {
+            name: toProfileSlug(data.nome),
+            oldName: toProfileSlug(oldData.nome), // In case name changed
+            rateLimit: `${data.velocidade_upload}/${data.velocidade_download}`,
+            sharedUsers: data.max_dispositivos,
+            limitBytes: data.limite_dados_mb ? data.limite_dados_mb * 1024 * 1024 : 0,
+            sessionTimeout: data.session_timeout_minutos ? `${data.session_timeout_minutos}m` : null,
+          },
+        });
+      } catch (actionError) {
+        console.error('[usePerfisVelocidade] Failed to create MikroTik action:', actionError);
+      }
+
       return data as PerfilVelocidade;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['perfis_velocidade'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
       toast({
         title: 'Perfil atualizado',
         description: 'Os dados do perfil foram atualizados.',
@@ -161,15 +210,38 @@ export function useDeletePerfilVelocidade() {
 
   return useMutation({
     mutationFn: async (id: string) => {
+      // Fetch perfil data before deleting
+      const { data: perfil, error: fetchError } = await supabase
+        .from('perfis_velocidade')
+        .select('nome, empresa_id')
+        .eq('id', id)
+        .single();
+
+      if (fetchError) throw fetchError;
+
       const { error } = await supabase
         .from('perfis_velocidade')
         .delete()
         .eq('id', id);
 
       if (error) throw error;
+
+      // Create MikroTik action to remove profile
+      if (perfil) {
+        try {
+          await createMikrotikActionForEmpresa({
+            empresaId: perfil.empresa_id,
+            tipo: 'remove_profile',
+            payload: { name: toProfileSlug(perfil.nome) },
+          });
+        } catch (actionError) {
+          console.error('[usePerfisVelocidade] Failed to create MikroTik action:', actionError);
+        }
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['perfis_velocidade'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
       toast({
         title: 'Perfil excluído',
         description: 'O perfil de velocidade foi removido do sistema.',
