@@ -1,183 +1,205 @@
 
 
-# Alteração de Layout para Tabela na Página de Embarcações
+# Melhoria do Dashboard da Embarcacao
 
 ## Objetivo
+Adicionar ao dashboard do Gerente de Embarcacao (`GerenteEmbarcacaoDashboard.tsx`) uma visualizacao completa com lista de usuarios online, informacoes de consumo individual e global, e graficos de uso.
 
-Alterar o layout da página de Embarcações de **cards** para **tabela** para todos os usuários, mantendo os botões de ação (criar, editar, excluir, gerar script) visíveis apenas para `super_admin`.
+## Novas Funcionalidades
 
-## Resumo das Permissões
+### 1. Lista de Usuarios Online (Sessoes Ativas)
+Tabela em tempo real mostrando:
+- Nome do tripulante e cargo
+- Dispositivo conectado (nome/MAC)
+- Duracao da sessao (atualiza ao vivo)
+- Consumo atual (download + upload)
+- IP do dispositivo
 
-| Papel | Visualizar | Layout | Criar | Editar | Excluir | Gerar Script |
-|-------|------------|--------|-------|--------|---------|--------------|
-| super_admin | Todas | Tabela | Sim | Sim | Sim | Sim |
-| empresa_admin | Da empresa | Tabela | Nao | Nao | Nao | Nao |
-| gerente_embarcacao | Que gerencia | Tabela | Nao | Nao | Nao | Nao |
+### 2. Metricas de Consumo
+Cards com informacoes:
+- Consumo total da embarcacao (bytes)
+- Total de sessoes hoje
+- Tempo medio de conexao
+- Dispositivos conectados agora
+
+### 3. Graficos de Uso
+- **Grafico de consumo ao longo do tempo** (ultimos 7 dias)
+- **Top consumidores de dados** (ranking horizontal)
+- **Top usuarios por tempo de uso** (ranking por duracao)
+
+### 4. Ranking de Tripulantes
+Tabela mostrando:
+- Maiores consumidores de dados (bytes)
+- Maior tempo de uso acumulado
+- Sessoes por tripulante
+
+## Arquivos a Criar
+
+| Arquivo | Descricao |
+|---------|-----------|
+| `src/hooks/useEmbarcacaoDashboard.ts` | Hooks especificos para dados da embarcacao (sessoes ativas, consumo, rankings) |
+| `src/components/dashboards/EmbarcacaoOnlineUsers.tsx` | Componente de lista de usuarios online |
+| `src/components/dashboards/EmbarcacaoConsumptionChart.tsx` | Grafico de consumo da embarcacao |
+| `src/components/dashboards/EmbarcacaoTopConsumers.tsx` | Ranking de maiores consumidores |
+| `src/components/dashboards/EmbarcacaoTopDuration.tsx` | Ranking por tempo de uso |
 
 ## Arquivo a Modificar
 
 | Arquivo | Alteracoes |
 |---------|------------|
-| `src/pages/Embarcacoes.tsx` | Substituir cards por tabela, adicionar verificacao de role para acoes |
+| `src/components/dashboards/GerenteEmbarcacaoDashboard.tsx` | Integrar novos componentes e reorganizar layout |
 
-## Alteracoes Detalhadas
+## Detalhes Tecnicos
 
-### 1. Novos Imports Necessarios
-
-```typescript
-import { useAuth } from "@/contexts/AuthContext";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Input } from "@/components/ui/input";
-import { Search } from "lucide-react";
-```
-
-### 2. Adicionar Verificacao de Papel e Estado de Busca
-
-No inicio do componente:
+### Hook useEmbarcacaoDashboard.ts
 
 ```typescript
-const { hasRole } = useAuth();
-const isSuperAdmin = hasRole(['super_admin']);
-const [searchTerm, setSearchTerm] = useState("");
+// Sessoes ativas da embarcacao
+export function useSessoesAtivasEmbarcacao(embarcacaoId?: string)
+
+// Consumo total da embarcacao (ultimos 7 dias)
+export function useConsumoEmbarcacao(embarcacaoId?: string)
+
+// Top consumidores da embarcacao
+export function useTopConsumidoresEmbarcacao(embarcacaoId?: string, limit?: number)
+
+// Top por duracao de uso
+export function useTopDuracaoEmbarcacao(embarcacaoId?: string, limit?: number)
+
+// Metricas gerais da embarcacao
+export function useMetricasEmbarcacao(embarcacaoId?: string)
 ```
 
-### 3. Adicionar Filtro de Busca
+### Componente EmbarcacaoOnlineUsers
 
-```typescript
-const filteredEmbarcacoes = embarcacoes?.filter(embarcacao =>
-  embarcacao.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
-  embarcacao.empresa_nome?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-  embarcacao.tipo.toLowerCase().includes(searchTerm.toLowerCase())
-) || [];
+Exibe tabela de usuarios conectados com atualizacao em tempo real:
+
+```text
++------------------------------------------------------------+
+| Usuarios Online                              [3 conectados] |
++------------------------------------------------------------+
+| Tripulante      | Dispositivo    | Duracao | Consumo | IP   |
++-----------------+----------------+---------+---------+------+
+| Joao Silva      | iPhone 14      | 1h 23m  | 245 MB  | .101 |
+|   Marinheiro    | A1:B2:C3:D4... |         |         |      |
++-----------------+----------------+---------+---------+------+
+| Maria Santos    | Samsung S23    | 45m 12s | 128 MB  | .102 |
+|   Comandante    | E5:F6:G7:H8... |         |         |      |
++-----------------+----------------+---------+---------+------+
 ```
 
-### 4. Modificar Header
+### Componente EmbarcacaoConsumptionChart
 
-Condicionar botao "Nova Embarcacao" e descricao ao papel do usuario:
+Grafico de area mostrando consumo dos ultimos 7 dias (reutilizando logica do ConsumoChart existente).
 
-```typescript
-<div className="flex items-center justify-between">
-  <div>
-    <h1>Embarcacoes</h1>
-    <p className="text-muted-foreground">
-      {isSuperAdmin 
-        ? "Gerencie embarcacoes e suas configuracoes de rede"
-        : "Visualize as embarcacoes e suas informacoes"}
-    </p>
-  </div>
-  {isSuperAdmin && (
-    <Button onClick={handleCreate}>
-      <Plus /> Nova Embarcacao
-    </Button>
-  )}
-</div>
+### Componente EmbarcacaoTopConsumers
+
+Grafico de barras horizontais (similar ao TopConsumidoresChart existente) filtrado para a embarcacao.
+
+### Componente EmbarcacaoTopDuration
+
+Novo grafico de barras horizontais mostrando tempo total de uso por tripulante:
+
+```text
++------------------------------------------+
+| Maior Tempo de Uso                       |
++------------------------------------------+
+| Joao Silva    ███████████████████  12h   |
+| Maria Santos  ████████████████     10h   |
+| Pedro Lima    ██████████████       8h    |
+| Ana Costa     ████████             5h    |
+| Carlos Souza  █████                3h    |
++------------------------------------------+
 ```
 
-### 5. Substituir Grid de Cards por Tabela
-
-Estrutura da tabela com colunas:
-
-| Nome | Tipo | Empresa | Status | Hotspot | Tripulantes | Acoes (so super_admin) |
-|------|------|---------|--------|---------|-------------|------------------------|
-
-### 6. Layout Visual da Tabela
+## Layout Final do Dashboard
 
 ```text
 +------------------------------------------------------------------+
-| Lista de Embarcacoes               [Buscar embarcacoes...]       |
-+---------------+--------+---------+--------+---------+------+-----+
-| Nome          | Tipo   | Empresa | Status | Hotspot | Trip | ... |
-+---------------+--------+---------+--------+---------+------+-----+
-| Sonda NS-01   | Sonda  | NavSA   | Ativo  | Online  | 12   | [E][S][X] (super_admin)
-| PSV Aurora    | PSV    | NavSA   | Ativo  | Offline | 8    | [E][S][X] (super_admin)
-| AHTS Titan    | AHTS   | NavSA   | Inativo| Sem cfg | 15   | [E][S][X] (super_admin)
-+---------------+--------+---------+--------+---------+------+-----+
-
-[E] = Editar    [S] = Script    [X] = Excluir
+| Minha Embarcacao                        [Cadastrar Tripulante]   |
+| Bem-vindo, usuario - Gerencie sua embarcacao                     |
++------------------------------------------------------------------+
+|                                                                   |
+| [Tripulantes] [Status Hotspot] [Consumo Hoje] [Sessoes Ativas]   |
+| [  Ativos   ] [   Online     ] [   245 MB   ] [      3       ]   |
+|                                                                   |
++------------------------------------------------------------------+
+|                                                                   |
+| Usuarios Online                                   [3 conectados] |
+| +--------------------------------------------------------------+ |
+| | Tripulante | Dispositivo | Duracao | Consumo | IP            | |
+| +--------------------------------------------------------------+ |
+| | Joao Silva | iPhone 14   | 1h 23m  | 245 MB  | 192.168.1.101 | |
+| | Maria ...  | Samsung...  | 45m 12s | 128 MB  | 192.168.1.102 | |
+| +--------------------------------------------------------------+ |
+|                                                                   |
++------------------------------------------------------------------+
+|                                                                   |
+| [   Consumo Ultimos 7 Dias   ] [   Top Consumidores de Dados   ] |
+| |   Grafico de Area          | |  Ranking Horizontal          | |
+| |   Download / Upload        | |  Por bytes consumidos        | |
+|                                                                   |
++------------------------------------------------------------------+
+|                                                                   |
+| [    Top Tempo de Uso        ] [   Informacoes da Embarcacao   ] |
+| |  Ranking por duracao       | |  Nome, tipo, status, etc     | |
+| |  total de conexao          | |                              | |
+|                                                                   |
++------------------------------------------------------------------+
 ```
 
-### 7. Coluna de Acoes (apenas super_admin)
+## Queries SQL Necessarias
 
-```typescript
-{isSuperAdmin && (
-  <TableHead className="text-right">Acoes</TableHead>
-)}
-
-// Na linha:
-{isSuperAdmin && (
-  <TableCell className="text-right">
-    <div className="flex justify-end gap-1">
-      <Button size="sm" onClick={() => handleEdit(embarcacao)}>
-        <Settings />
-      </Button>
-      <Button size="sm" onClick={() => handleGenerateScript(embarcacao)}>
-        <Code />
-      </Button>
-      <Button size="sm" onClick={() => handleDelete(embarcacao)}>
-        <Trash2 />
-      </Button>
-    </div>
-  </TableCell>
-)}
+### Sessoes Ativas da Embarcacao
+```sql
+SELECT sw.*, t.nome, t.cargo, d.nome as disp_nome, d.mac_address
+FROM sessoes_wifi sw
+JOIN tripulantes t ON sw.tripulante_id = t.id
+JOIN hotspots h ON sw.hotspot_id = h.id
+LEFT JOIN dispositivos_registrados d ON sw.dispositivo_id = d.id
+WHERE h.embarcacao_id = :embarcacao_id
+AND sw.status = 'ativa'
 ```
 
-### 8. Ajustar Empty State
-
-```typescript
-<EmptyState
-  icon={Ship}
-  title="Nenhuma embarcacao cadastrada"
-  description={isSuperAdmin 
-    ? "Comece adicionando sua primeira embarcacao." 
-    : "Nao ha embarcacoes disponiveis para visualizacao."}
-  actionLabel={isSuperAdmin ? "Nova Embarcacao" : undefined}
-  onAction={isSuperAdmin ? handleCreate : undefined}
-/>
+### Top Consumidores da Embarcacao
+```sql
+SELECT t.id, t.nome, t.cargo, t.bytes_consumidos
+FROM tripulantes t
+WHERE t.embarcacao_id = :embarcacao_id
+AND t.bytes_consumidos > 0
+ORDER BY t.bytes_consumidos DESC
+LIMIT 10
 ```
 
-## Estrutura Final da Pagina
-
-```text
-+------------------------------------------------------------------+
-| Embarcacoes                                                       |
-| Gerencie/Visualize embarcacoes...     [Nova Embarcacao] (super)  |
-+------------------------------------------------------------------+
-| [Total: 10] [Ativas: 8] [Tripulantes: 120] [Hotspots Online: 7]  |
-+------------------------------------------------------------------+
-| Lista de Embarcacoes                   [Buscar embarcacoes...]   |
-+------------------------------------------------------------------+
-| Nome          | Tipo  | Empresa | Status | Hotspot | Trip | Acoes|
-+---------------+-------+---------+--------+---------+------+------+
-| Sonda NS-01   | Sonda | NavSA   | Ativo  | Online  | 12   | ...  |
-| PSV Aurora    | PSV   | NavSA   | Ativo  | Offline | 8    | ...  |
-+---------------+-------+---------+--------+---------+------+------+
+### Top por Duracao (calculado das sessoes)
+```sql
+SELECT 
+  t.id, 
+  t.nome, 
+  t.cargo,
+  SUM(
+    EXTRACT(EPOCH FROM (COALESCE(sw.fim, now()) - sw.inicio))
+  ) as duracao_total_segundos
+FROM sessoes_wifi sw
+JOIN tripulantes t ON sw.tripulante_id = t.id
+JOIN hotspots h ON sw.hotspot_id = h.id
+WHERE h.embarcacao_id = :embarcacao_id
+GROUP BY t.id, t.nome, t.cargo
+ORDER BY duracao_total_segundos DESC
+LIMIT 10
 ```
 
-## Resumo das Modificacoes por Linha
+## Dependencias Utilizadas
 
-| Linhas Atuais | Modificacao |
-|---------------|-------------|
-| 1-30 | Adicionar imports (useAuth, Table, Input, Search) |
-| ~35 | Adicionar estado searchTerm e verificacao isSuperAdmin |
-| ~88 | Adicionar filteredEmbarcacoes |
-| 186-188 | Condicionar descricao do header |
-| 190-193 | Condicionar botao "Nova Embarcacao" |
-| 239-354 | Substituir grid de cards por Card com tabela |
-| 356-362 | Ajustar EmptyState para nao-admins |
+- Recharts (ja instalado) - para graficos
+- date-fns (ja instalado) - formatacao de datas e duracao
+- Supabase Realtime (ja configurado) - atualizacao em tempo real
+- TanStack Query (ja instalado) - gerenciamento de estado e cache
 
-## Seguranca
+## Consideracoes
 
-As RLS policies no banco de dados ja garantem a protecao:
-- **super_admin**: Full access (SELECT, INSERT, UPDATE, DELETE)
-- **empresa_admin**: SELECT apenas nas embarcacoes da propria empresa
-- **gerente_embarcacao**: SELECT apenas na embarcacao que gerencia
-
-A alteracao na UI melhora a experiencia mostrando apenas o que cada perfil pode fazer.
+1. **Performance**: Os hooks usarao `refetchInterval` de 5-10 segundos para manter dados atualizados
+2. **Realtime**: Aproveitar subscricoes ja existentes em `useMonitoramentoRealtime`
+3. **Responsividade**: Layout adaptavel para mobile com cards empilhados
+4. **Reuso**: Aproveitar componentes de graficos existentes (ConsumoChart, TopConsumidoresChart)
 
