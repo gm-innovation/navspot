@@ -10,9 +10,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { 
   Shield, Settings, FileText, History, AlertTriangle, CheckCircle, Clock, XCircle, 
-  Users, Loader2, Eye, Trash2, Download, Building2, Info, ExternalLink 
+  Users, Loader2, Eye, Trash2, Download, Building2, Info, ExternalLink, Plus 
 } from "lucide-react";
 import { format, formatDistanceToNow, isPast } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -22,8 +24,10 @@ import {
   useAtenderSolicitacao,
   useAuditLogs,
   useConsentimentosStats,
-  useAnonimizarTripulante
+  useAnonimizarTripulante,
+  useCreateSolicitacao
 } from "@/hooks/useLGPD";
+import { useTripulantes } from "@/hooks/useTripulantes";
 import { useAuth } from "@/contexts/AuthContext";
 
 export function EmpresaLGPDView() {
@@ -33,9 +37,12 @@ export function EmpresaLGPDView() {
   const { data: auditLogs, isLoading: loadingLogs } = useAuditLogs({ limit: 50 });
   const { data: stats } = useConsentimentosStats();
   
+  const { data: tripulantes } = useTripulantes();
+  
   const updateSettings = useUpdateLGPDSettings();
   const atenderSolicitacao = useAtenderSolicitacao();
   const anonimizarTripulante = useAnonimizarTripulante();
+  const createSolicitacao = useCreateSolicitacao();
 
   const [configForm, setConfigForm] = useState({
     dpo_nome: "",
@@ -47,6 +54,29 @@ export function EmpresaLGPDView() {
   const [selectedSolicitacao, setSelectedSolicitacao] = useState<any>(null);
   const [resposta, setResposta] = useState("");
   const [isRespondendo, setIsRespondendo] = useState(false);
+
+  // Estado para nova solicitação
+  const [novaSolicitacaoOpen, setNovaSolicitacaoOpen] = useState(false);
+  const [novaForm, setNovaForm] = useState({
+    tripulante_id: '',
+    tipo: 'acesso' as 'acesso' | 'retificacao' | 'exclusao' | 'portabilidade' | 'oposicao',
+    descricao: '',
+  });
+
+  const handleCreateSolicitacao = () => {
+    if (!novaForm.tripulante_id) return;
+    
+    createSolicitacao.mutate({
+      tripulante_id: novaForm.tripulante_id,
+      tipo: novaForm.tipo,
+      descricao: novaForm.descricao || undefined,
+    }, {
+      onSuccess: () => {
+        setNovaSolicitacaoOpen(false);
+        setNovaForm({ tripulante_id: '', tipo: 'acesso', descricao: '' });
+      },
+    });
+  };
 
   // Atualizar form quando config carregar
   useEffect(() => {
@@ -366,14 +396,21 @@ export function EmpresaLGPDView() {
           )}
         </TabsContent>
 
-        {/* Aba Solicitações */}
         <TabsContent value="solicitacoes">
           <Card>
             <CardHeader>
-              <CardTitle>Solicitações de Titulares</CardTitle>
-              <CardDescription>
-                Gerencie solicitações de acesso, retificação, exclusão e portabilidade de dados
-              </CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Solicitações de Titulares</CardTitle>
+                  <CardDescription>
+                    Gerencie solicitações de acesso, retificação, exclusão e portabilidade de dados
+                  </CardDescription>
+                </div>
+                <Button onClick={() => setNovaSolicitacaoOpen(true)}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Nova Solicitação
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {loadingSolicitacoes ? (
@@ -601,6 +638,123 @@ export function EmpresaLGPDView() {
                 Fechar
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Nova Solicitação */}
+      <Dialog open={novaSolicitacaoOpen} onOpenChange={setNovaSolicitacaoOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Shield className="h-5 w-5 text-primary" />
+              Nova Solicitação LGPD
+            </DialogTitle>
+            <DialogDescription>
+              Registrar solicitação em nome de um tripulante
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Tripulante</Label>
+              <Select
+                value={novaForm.tripulante_id}
+                onValueChange={(v) => setNovaForm(prev => ({ ...prev, tripulante_id: v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione um tripulante..." />
+                </SelectTrigger>
+                <SelectContent className="bg-background border shadow-lg z-50">
+                  {tripulantes?.filter(t => t.status !== 'excluido').map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.nome} - {t.embarcacao_nome}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Tipo de Solicitação</Label>
+              <RadioGroup 
+                value={novaForm.tipo} 
+                onValueChange={(v) => setNovaForm(prev => ({ ...prev, tipo: v as typeof novaForm.tipo }))}
+              >
+                <div className="flex items-start space-x-3 p-2 rounded-md hover:bg-muted/50">
+                  <RadioGroupItem value="acesso" id="nova-acesso" className="mt-1" />
+                  <div className="flex-1">
+                    <Label htmlFor="nova-acesso" className="font-medium cursor-pointer">Acesso aos dados</Label>
+                    <p className="text-xs text-muted-foreground">Art. 18, II da LGPD</p>
+                  </div>
+                </div>
+                <div className="flex items-start space-x-3 p-2 rounded-md hover:bg-muted/50">
+                  <RadioGroupItem value="retificacao" id="nova-retificacao" className="mt-1" />
+                  <div className="flex-1">
+                    <Label htmlFor="nova-retificacao" className="font-medium cursor-pointer">Retificação de dados</Label>
+                    <p className="text-xs text-muted-foreground">Art. 18, III da LGPD</p>
+                  </div>
+                </div>
+                <div className="flex items-start space-x-3 p-2 rounded-md hover:bg-muted/50">
+                  <RadioGroupItem value="exclusao" id="nova-exclusao" className="mt-1" />
+                  <div className="flex-1">
+                    <Label htmlFor="nova-exclusao" className="font-medium cursor-pointer">Exclusão de dados</Label>
+                    <p className="text-xs text-muted-foreground">Art. 18, VI da LGPD</p>
+                  </div>
+                </div>
+                <div className="flex items-start space-x-3 p-2 rounded-md hover:bg-muted/50">
+                  <RadioGroupItem value="portabilidade" id="nova-portabilidade" className="mt-1" />
+                  <div className="flex-1">
+                    <Label htmlFor="nova-portabilidade" className="font-medium cursor-pointer">Portabilidade</Label>
+                    <p className="text-xs text-muted-foreground">Art. 18, V da LGPD</p>
+                  </div>
+                </div>
+                <div className="flex items-start space-x-3 p-2 rounded-md hover:bg-muted/50">
+                  <RadioGroupItem value="oposicao" id="nova-oposicao" className="mt-1" />
+                  <div className="flex-1">
+                    <Label htmlFor="nova-oposicao" className="font-medium cursor-pointer">Oposição ao tratamento</Label>
+                    <p className="text-xs text-muted-foreground">Art. 18, IV da LGPD</p>
+                  </div>
+                </div>
+              </RadioGroup>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="nova-descricao">Descrição (opcional)</Label>
+              <Textarea
+                id="nova-descricao"
+                placeholder="Descreva o pedido do tripulante..."
+                value={novaForm.descricao}
+                onChange={(e) => setNovaForm(prev => ({ ...prev, descricao: e.target.value }))}
+                rows={3}
+              />
+            </div>
+
+            <Alert className="border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950/50">
+              <AlertTriangle className="h-4 w-4 text-yellow-600" />
+              <AlertDescription className="text-yellow-800 dark:text-yellow-200 text-sm">
+                <strong>Prazo legal:</strong> 15 dias úteis para resposta (Art. 18, §3º da LGPD)
+              </AlertDescription>
+            </Alert>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNovaSolicitacaoOpen(false)}>
+              Cancelar
+            </Button>
+            <Button 
+              onClick={handleCreateSolicitacao} 
+              disabled={!novaForm.tripulante_id || createSolicitacao.isPending}
+            >
+              {createSolicitacao.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Registrando...
+                </>
+              ) : (
+                "Registrar Solicitação"
+              )}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

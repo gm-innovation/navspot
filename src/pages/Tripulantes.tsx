@@ -17,7 +17,8 @@ import {
   LogOut,
   RotateCcw,
   QrCode,
-  Eye
+  Eye,
+  Shield
 } from "lucide-react";
 import {
   Table,
@@ -53,9 +54,11 @@ import {
   TripulanteWithDetails 
 } from "@/hooks/useTripulantes";
 import { useTripulantesRealtime } from "@/hooks/useRealtimeSubscription";
+import { useCreateSolicitacao } from "@/hooks/useLGPD";
 import { TripulanteForm } from "@/components/forms/TripulanteForm";
 import { QRCodeModal } from "@/components/modals/QRCodeModal";
 import { TripulanteDetailsModal } from "@/components/modals/TripulanteDetailsModal";
+import { LGPDSolicitacaoModal } from "@/components/modals/LGPDSolicitacaoModal";
 import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { EmptyState, ErrorState } from "@/components/ui/empty-state";
 import { formatDistanceToNow } from "date-fns";
@@ -69,6 +72,7 @@ export default function Tripulantes() {
   const updateTripulante = useUpdateTripulante();
   const deleteTripulante = useDeleteTripulante();
   const createAction = useCreateTripulanteAction();
+  const createSolicitacao = useCreateSolicitacao();
 
   const [searchTerm, setSearchTerm] = useState("");
   const [formOpen, setFormOpen] = useState(false);
@@ -79,6 +83,8 @@ export default function Tripulantes() {
   const [qrTripulante, setQrTripulante] = useState<TripulanteWithDetails | null>(null);
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
   const [selectedTripulante, setSelectedTripulante] = useState<TripulanteWithDetails | null>(null);
+  const [lgpdModalOpen, setLgpdModalOpen] = useState(false);
+  const [lgpdTripulante, setLgpdTripulante] = useState<TripulanteWithDetails | null>(null);
 
   const filteredTripulantes = tripulantes?.filter(tripulante =>
     tripulante.nome.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -176,6 +182,11 @@ export default function Tripulantes() {
   const handleShowDetails = (tripulante: TripulanteWithDetails) => {
     setSelectedTripulante(tripulante);
     setDetailsModalOpen(true);
+  };
+
+  const handleOpenLGPDSolicitacao = (tripulante: TripulanteWithDetails) => {
+    setLgpdTripulante(tripulante);
+    setLgpdModalOpen(true);
   };
 
   const formatLastLogin = (dateStr: string | null) => {
@@ -404,6 +415,10 @@ export default function Tripulantes() {
                             Resetar Senha
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => handleOpenLGPDSolicitacao(tripulante)}>
+                            <Shield className="h-4 w-4 mr-2" />
+                            Solicitação LGPD
+                          </DropdownMenuItem>
                           <DropdownMenuItem 
                             onClick={() => handleDelete(tripulante)}
                             className="text-destructive"
@@ -471,6 +486,13 @@ export default function Tripulantes() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* LGPD Solicitação Modal */}
+      <LGPDSolicitacaoModal
+        open={lgpdModalOpen}
+        onOpenChange={setLgpdModalOpen}
+        tripulante={lgpdTripulante}
+      />
     </div>
   );
 }
