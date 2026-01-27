@@ -30,12 +30,16 @@ export function useNotificationSettings() {
   const { user } = useAuth();
 
   return useQuery({
-    queryKey: ['notification-settings'],
+    queryKey: ['notification-settings', user?.empresa_id],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('notification_settings')
-        .select('*')
-        .maybeSingle();
+      let query = supabase.from('notification_settings').select('*');
+      
+      // Para empresa_admin e gerente, filtrar pela empresa
+      if (user?.empresa_id) {
+        query = query.eq('empresa_id', user.empresa_id);
+      }
+
+      const { data, error } = await query.maybeSingle();
 
       if (error) {
         console.error('Error fetching notification settings:', error);
