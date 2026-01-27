@@ -1,244 +1,191 @@
 
 
-# Plano: Corrigir Layout de Usuários e Aprimorar Edição de Perfil
+# Plano: Permitir Admins Registrarem Solicitações LGPD em Nome de Tripulantes
 
-## Problemas Identificados
+## Contexto
 
-### 1. Layout da Página de Usuários
-O conteúdo está colado no sidebar porque a página não tem padding adequado.
-
-| Problema | Causa |
-|----------|-------|
-| Conteúdo colado | `<div className="space-y-6">` sem `p-6` |
-| Colunas de ações vazias | Você é o único usuário e não pode editar a si mesmo (comportamento correto de segurança) |
-
-### 2. Modal de Perfil Limitado
-O modal atual só exibe informações. O usuário espera poder editar:
-- Nome de exibição
-- Avatar
-- Senha
-- Email (somente visualização - requer verificação)
-
-### 3. Falta Tabela de Perfis
-Atualmente não existe uma tabela `profiles` no banco. Os dados do usuário estão apenas em:
-- `auth.users` (email, senha - gerenciado pelo sistema de auth)
-- `user_roles` (role, empresa_id, embarcacao_id)
+O tripulante não tem acesso ao sistema. Quando um tripulante faz uma solicitação LGPD (ex: pedir seus dados, solicitar exclusão), ele comunica verbalmente ou por escrito ao administrador da empresa/embarcação, que então registra essa solicitação no sistema.
 
 ---
 
 ## Solução Proposta
 
-### Parte 1: Corrigir Layout
+### Opção 1: Botão na Aba de Solicitações (Recomendado)
 
-Adicionar padding na página de Usuários:
+Adicionar um botão "Nova Solicitação" na aba de Solicitações da página LGPD que abre um modal para registrar a solicitação.
 
-```tsx
-// Antes (linha 292 de Usuarios.tsx)
-<div className="space-y-6">
+| Campo | Descrição |
+|-------|-----------|
+| Tripulante | Select com lista de tripulantes da empresa |
+| Tipo | Acesso, Retificação, Exclusão, Portabilidade, Oposição |
+| Descrição | Texto livre descrevendo o pedido |
 
-// Depois
-<div className="flex-1 space-y-6 p-6">
-```
+### Opção 2: Ação no Menu de Tripulantes
 
-### Parte 2: Criar Tabela de Perfis
+Adicionar item "Registrar Solicitação LGPD" no dropdown de ações da tabela de tripulantes. Essa opção já vem com o tripulante pré-selecionado.
 
-Criar tabela para armazenar dados editáveis:
-
-| Coluna | Tipo | Descrição |
-|--------|------|-----------|
-| id | uuid | PK, referencia auth.users.id |
-| display_name | text | Nome de exibição |
-| avatar_url | text | URL do avatar (storage) |
-| created_at | timestamp | Data de criação |
-| updated_at | timestamp | Última atualização |
-
-### Parte 3: Transformar Modal de Perfil
-
-Converter o modal em uma página completa de edição com abas ou seções:
-
-**Seção 1 - Informações Básicas:**
-- Avatar (upload de imagem)
-- Nome de exibição (editável)
-- Email (somente leitura)
-- Papel no sistema (badge)
-
-**Seção 2 - Segurança:**
-- Alterar senha (formulário inline)
+**Implementação**: Faremos **ambas as opções** para flexibilidade.
 
 ---
 
-## Arquivos a Criar/Modificar
+## Arquivos a Modificar
 
 | Arquivo | Ação |
 |---------|------|
-| `src/pages/Usuarios.tsx` | Modificar - adicionar padding |
-| `src/components/modals/UserProfileModal.tsx` | Modificar - adicionar edição |
-| `src/hooks/useProfile.ts` | Criar - hook para gerenciar perfil |
-| Migração SQL | Criar - tabela profiles |
+| `src/hooks/useLGPD.ts` | Adicionar hook `useCreateSolicitacao` |
+| `src/components/lgpd/EmpresaLGPDView.tsx` | Adicionar botão e modal na aba Solicitações |
+| `src/pages/Tripulantes.tsx` | Adicionar item no dropdown de ações |
 
 ---
 
 ## Detalhes Técnicos
 
-### Migração SQL
-
-```sql
--- Criar tabela de perfis
-CREATE TABLE public.profiles (
-  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  display_name text,
-  avatar_url text,
-  created_at timestamp with time zone DEFAULT now(),
-  updated_at timestamp with time zone DEFAULT now()
-);
-
--- RLS
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-
--- Política: usuário pode ver e editar seu próprio perfil
-CREATE POLICY "Users can view own profile"
-  ON public.profiles FOR SELECT
-  USING (id = auth.uid());
-
-CREATE POLICY "Users can update own profile"
-  ON public.profiles FOR UPDATE
-  USING (id = auth.uid());
-
-CREATE POLICY "Users can insert own profile"
-  ON public.profiles FOR INSERT
-  WITH CHECK (id = auth.uid());
-
--- Trigger para criar perfil automaticamente
-CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS trigger AS $$
-BEGIN
-  INSERT INTO public.profiles (id, display_name)
-  VALUES (new.id, split_part(new.email, '@', 1));
-  RETURN new;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-CREATE TRIGGER on_auth_user_created
-  AFTER INSERT ON auth.users
-  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
-```
-
-### Hook useProfile
+### Hook useCreateSolicitacao
 
 ```typescript
-export function useProfile() {
-  const { user } = useAuth();
-  
-  const query = useQuery({
-    queryKey: ['profile', user?.id],
-    queryFn: async () => {
+export function useCreateSolicitacao() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async ({
+      tripulante_id,
+      tipo,
+      descricao,
+    }: {
+      tripulante_id: string;
+      tipo: 'acesso' | 'retificacao' | 'exclusao' | 'portabilidade' | 'oposicao';
+      descricao?: string;
+    }) => {
       const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', user.id)
+        .from("solicitacoes_lgpd")
+        .insert({
+          tripulante_id,
+          tipo,
+          descricao,
+          status: 'pendente',
+          // prazo_legal é calculado automaticamente pelo default do banco (15 dias)
+        })
+        .select()
         .single();
-      
+
       if (error) throw error;
       return data;
     },
-    enabled: !!user?.id,
-  });
-  
-  const updateProfile = useMutation({
-    mutationFn: async (updates: { display_name?: string; avatar_url?: string }) => {
-      const { error } = await supabase
-        .from('profiles')
-        .update(updates)
-        .eq('id', user.id);
-      
-      if (error) throw error;
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["solicitacoes-lgpd"] });
+      toast({
+        title: "Solicitação registrada",
+        description: "A solicitação LGPD foi registrada com sucesso.",
+      });
     },
-    onSuccess: () => queryClient.invalidateQueries(['profile']),
   });
-  
-  return { ...query, updateProfile };
 }
 ```
 
-### Modal de Perfil Aprimorado
+### Modal de Nova Solicitação
 
 ```tsx
-export function UserProfileModal({ open, onOpenChange }: Props) {
-  const { user } = useAuth();
-  const { data: profile, updateProfile } = useProfile();
-  const [displayName, setDisplayName] = useState('');
-  const [isEditingName, setIsEditingName] = useState(false);
-  
-  // Seção de avatar com upload
-  // Seção de nome editável inline
-  // Seção de alteração de senha integrada
-  
-  return (
-    <Dialog>
-      <DialogContent className="sm:max-w-lg">
-        {/* Avatar com botão de upload */}
-        {/* Nome editável */}
-        {/* Informações do sistema (read-only) */}
-        {/* Formulário de alteração de senha */}
-      </DialogContent>
-    </Dialog>
-  );
-}
+// Dentro de EmpresaLGPDView.tsx
+const [novaSolicitacaoOpen, setNovaSolicitacaoOpen] = useState(false);
+const [novaForm, setNovaForm] = useState({
+  tripulante_id: '',
+  tipo: 'acesso' as const,
+  descricao: '',
+});
+
+// Buscar tripulantes para o select
+const { data: tripulantes } = useTripulantes();
+
+// No JSX da aba Solicitações
+<CardHeader>
+  <div className="flex items-center justify-between">
+    <div>
+      <CardTitle>Solicitações de Titulares</CardTitle>
+      <CardDescription>...</CardDescription>
+    </div>
+    <Button onClick={() => setNovaSolicitacaoOpen(true)}>
+      <Plus className="h-4 w-4 mr-2" />
+      Nova Solicitação
+    </Button>
+  </div>
+</CardHeader>
+```
+
+### Ação no Dropdown de Tripulantes
+
+```tsx
+// Em Tripulantes.tsx, adicionar no DropdownMenuContent
+<DropdownMenuItem onClick={() => handleOpenLGPDSolicitacao(tripulante)}>
+  <Shield className="h-4 w-4 mr-2" />
+  Solicitação LGPD
+</DropdownMenuItem>
 ```
 
 ---
 
-## Fluxo Visual: Modal de Perfil
+## Fluxo Visual: Modal de Nova Solicitação
 
 ```text
 +-------------------------------------------+
-|              MEU PERFIL                   |
+|         NOVA SOLICITAÇÃO LGPD             |
 +-------------------------------------------+
 |                                           |
-|     [====]  👤  [====]                    |
-|          Trocar foto                      |
+|  Tripulante                               |
+|  ┌─────────────────────────────────────┐  |
+|  │ ▼ Selecione um tripulante...       │  |
+|  └─────────────────────────────────────┘  |
 |                                           |
-|  Nome de Exibição                         |
-|  ┌─────────────────────────────┐  [✏️]   |
-|  │ João Silva                  │          |
-|  └─────────────────────────────┘          |
+|  Tipo de Solicitação                      |
+|  ┌─────────────────────────────────────┐  |
+|  │ ○ Acesso aos dados                 │  |
+|  │ ○ Retificação de dados             │  |
+|  │ ○ Exclusão de dados                │  |
+|  │ ○ Portabilidade                    │  |
+|  │ ○ Oposição ao tratamento           │  |
+|  └─────────────────────────────────────┘  |
 |                                           |
-|  Email (não editável)                     |
-|  joao.silva@empresa.com                   |
+|  Descrição (opcional)                     |
+|  ┌─────────────────────────────────────┐  |
+|  │ Descreva o pedido do tripulante... │  |
+|  │                                     │  |
+|  └─────────────────────────────────────┘  |
 |                                           |
-|  Papel: [Admin Empresa]                   |
-|  Empresa: Navegação ABC                   |
+|  ⚠️ Prazo legal: 15 dias para resposta    |
 |                                           |
-+-------------------------------------------+
-|  🔒 SEGURANÇA                             |
-+-------------------------------------------+
-|                                           |
-|  [ Alterar Senha ]                        |
-|                                           |
+|  [Cancelar]              [Registrar]      |
 +-------------------------------------------+
 ```
 
 ---
 
-## Página de Usuários Corrigida
+## Fluxo Visual: Aba Solicitações Atualizada
 
 ```text
-+------ SIDEBAR ------+------- CONTEÚDO (com padding) -------+
-|                     |                                       |
-|  VISÃO GERAL        |  Usuários do Sistema                  |
-|    Dashboard        |  Gerencie os usuários...    [+ Novo]  |
-|    ...              |                                       |
-|                     |  ┌─────────────────────────────────┐  |
-|  ADMINISTRAÇÃO      |  │ Lista de Usuários               │  |
-|    Usuários ←       |  │                                 │  |
-|    LGPD             |  │  Email    Tipo    Empresa Ações │  |
-|    Configurações    |  │  ──────  ──────  ─────── ────── │  |
-|                     |  │  user@.. Admin   NavCo    -     │  |
-|                     |  └─────────────────────────────────┘  |
-+---------------------+---------------------------------------+
++-------------------------------------------------------------------+
+| Solicitações de Titulares                    [+ Nova Solicitação] |
+| Gerencie solicitações de acesso, retificação, exclusão...         |
++-------------------------------------------------------------------+
+
++-------------------------------------------------------------------+
+| Titular       | Tipo        | Status    | Data     | Prazo | Ações|
++-------------------------------------------------------------------+
+| João Silva    | Acesso      | Pendente  | 27/01    | 3d    | [👁️] |
+| Maria Santos  | Exclusão    | Em Análise| 25/01    | 1d    | [👁️] |
++-------------------------------------------------------------------+
 ```
 
-**Nota sobre Ações**: Como você é o único usuário e não pode editar a si mesmo (regra de segurança), a coluna de ações aparece vazia. Isso é o comportamento correto. Quando criar outros usuários, os botões aparecerão.
+---
+
+## Tipos de Solicitação LGPD
+
+| Tipo | Descrição | Art. LGPD |
+|------|-----------|-----------|
+| **Acesso** | Tripulante quer saber quais dados temos sobre ele | Art. 18, II |
+| **Retificação** | Tripulante quer corrigir dados incorretos | Art. 18, III |
+| **Exclusão** | Tripulante quer que seus dados sejam apagados | Art. 18, VI |
+| **Portabilidade** | Tripulante quer receber seus dados em formato estruturado | Art. 18, V |
+| **Oposição** | Tripulante se opõe a algum tratamento específico | Art. 18, IV |
 
 ---
 
@@ -246,9 +193,8 @@ export function UserProfileModal({ open, onOpenChange }: Props) {
 
 | Mudança | Descrição |
 |---------|-----------|
-| Padding na página Usuarios | Corrige layout colado |
-| Tabela profiles | Armazena nome e avatar |
-| Hook useProfile | Gerencia dados do perfil |
-| Modal de perfil aprimorado | Permite editar nome, avatar, senha |
-| Trigger para novos usuários | Cria perfil automaticamente |
+| Hook `useCreateSolicitacao` | Permite criar novas solicitações |
+| Botão "Nova Solicitação" | Na aba Solicitações da página LGPD |
+| Modal de cadastro | Com select de tripulante, tipo e descrição |
+| Item no dropdown de tripulantes | Atalho para registrar solicitação diretamente |
 
