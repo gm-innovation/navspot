@@ -2,7 +2,7 @@ import { useState, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Ship, Users, Wifi, Plus, Settings, Trash2, Clock, Code } from "lucide-react";
+import { Ship, Users, Wifi, Plus, Settings, Trash2, Clock, Code, Loader2 } from "lucide-react";
 import { 
   useEmbarcacoes, 
   useDeleteEmbarcacao,
@@ -49,6 +49,7 @@ export default function Embarcacoes() {
   const [currentScript, setCurrentScript] = useState("");
   const [currentHotspotName, setCurrentHotspotName] = useState("");
   const [currentHotspotId, setCurrentHotspotId] = useState("");
+  const [generatingFor, setGeneratingFor] = useState<string | null>(null);
 
   const generateScript = useGenerateHotspotScript();
 
@@ -99,6 +100,7 @@ export default function Embarcacoes() {
     const hotspot = getHotspotForEmbarcacao(embarcacao.id);
     if (!hotspot) return;
     
+    setGeneratingFor(embarcacao.id);
     setCurrentHotspotId(hotspot.id);
     setCurrentHotspotName(embarcacao.nome);
     
@@ -106,6 +108,10 @@ export default function Embarcacoes() {
       onSuccess: (data) => {
         setCurrentScript(data.script || "# Script não gerado");
         setScriptModalOpen(true);
+        setGeneratingFor(null);
+      },
+      onError: () => {
+        setGeneratingFor(null);
       },
     });
   };
@@ -324,10 +330,14 @@ export default function Embarcacoes() {
                       variant="outline" 
                       size="sm"
                       onClick={() => handleGenerateScript(embarcacao)}
-                      disabled={!hotspot || generateScript.isPending}
+                      disabled={!hotspot || generatingFor === embarcacao.id}
                       title={hotspot ? "Gerar Script MikroTik" : "Configure a rede primeiro"}
                     >
-                      <Code className="h-4 w-4" />
+                      {generatingFor === embarcacao.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Code className="h-4 w-4" />
+                      )}
                     </Button>
                     <Button 
                       variant="outline" 
