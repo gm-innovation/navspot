@@ -227,7 +227,7 @@ function generateMikroTikScript(
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
-# Version: 2.0 - Enhanced Robustness
+# Version: 3.0 - Fixed RouterOS Syntax + Security
 # ============================================
 
 # AVISO: Este script configura o hotspot do zero.
@@ -252,7 +252,10 @@ function generateMikroTikScript(
     }
   }
 }
-:log info "NAVSPOT: Usando interface \$targetIf"
+:log info ("NAVSPOT: Usando interface " . \$targetIf)
+
+# Save interface to global variable for use throughout script
+:global navspotInterface \$targetIf
 
 # ============================================
 # IP Address Configuration
@@ -291,12 +294,13 @@ add name="dhcp-${hotspotSlug}" interface=\$targetIf address-pool=hs-pool-${hotsp
 set allow-remote-requests=yes
 
 # ============================================
-# Hotspot Profiles (Rate Limits)
+# Hotspot Profile (with Security Settings)
 # ============================================
 /ip hotspot profile
 :do { remove [find name="hsprof-${hotspotSlug}"] } on-error={}
 add name=hsprof-${hotspotSlug} hotspot-address=${gateway} dns-name=${hotspotSlug}.navspot.local \\
-    html-directory=hotspot rate-limit=""
+    html-directory=hotspot login-by=http-chap,http-pap \\
+    http-cookie-lifetime=1d keepalive-timeout=5m rate-limit=""
 
 `
 
@@ -438,11 +442,11 @@ add protocol=icmp action=accept comment="navspot-${hotspotSlug}-icmp"
     // Add firewall filter rules for blocked domains
     script += `
 # ============================================
-# Firewall Rules (Block)
+# Firewall Rules (Block Domains)
 # ============================================
 /ip firewall filter
-# Remove existing NAVSPOT firewall rules
-:foreach f in=[find comment~"navspot-${hotspotSlug}"] do={ remove \$f }
+# Remove existing NAVSPOT block rules
+:foreach f in=[find comment~"navspot-${hotspotSlug}-block"] do={ remove \$f }
 
 `
     l7Index = 0
@@ -452,25 +456,73 @@ add protocol=icmp action=accept comment="navspot-${hotspotSlug}-icmp"
     }
   }
 
-  // Token stored in separate file for security
+  // Security firewall rules
   script += `
 # ============================================
+# Firewall Rules (Security)
+# ============================================
+/ip firewall filter
+# Remove existing NAVSPOT security rules
+:foreach f in=[find comment~"navspot-security"] do={ remove \$f }
+
+# Accept established/related connections
+add chain=input action=accept connection-state=established,related \\
+    comment="navspot-security-established"
+
+# Allow local network to access DNS on router
+add chain=input action=accept src-address=${networkCidr} \\
+    dst-port=53 protocol=udp comment="navspot-security-dns"
+add chain=input action=accept src-address=${networkCidr} \\
+    dst-port=53 protocol=tcp comment="navspot-security-dns-tcp"
+
+# Allow WinBox from local network only
+add chain=input action=accept src-address=${networkCidr} \\
+    dst-port=8291 protocol=tcp comment="navspot-security-winbox"
+
+# Allow SSH from local network only
+add chain=input action=accept src-address=${networkCidr} \\
+    dst-port=22 protocol=tcp comment="navspot-security-ssh"
+
+# Allow ping from local network
+add chain=input action=accept src-address=${networkCidr} \\
+    protocol=icmp comment="navspot-security-ping"
+
+# Allow DHCP discover (broadcast)
+add chain=input action=accept src-address=0.0.0.0 dst-address=255.255.255.255 \\
+    dst-port=67 protocol=udp comment="navspot-security-dhcp-discover"
+
+# Allow hotspot service (HTTP redirect)
+add chain=input action=accept src-address=${networkCidr} \\
+    dst-port=80,443 protocol=tcp comment="navspot-security-hotspot-http"
+
+# Drop all other input from hotspot interface
+add chain=input action=drop in-interface=\$navspotInterface \\
+    comment="navspot-security-drop-other"
+
+# Client Isolation - prevent clients from reaching each other directly
+add chain=forward action=drop src-address=${networkCidr} dst-address=${networkCidr} \\
+    comment="navspot-security-client-isolation"
+
+`
+
+  // Token stored in separate file for security (with increased delay)
+  script += `# ============================================
 # Sync Token (Stored Securely)
 # ============================================
 /file
 :do { remove [find name="navspot-token.txt"] } on-error={}
-:delay 500ms
+:delay 1s
 # Create empty file and set contents
 /file print file="navspot-token" where name=""
-:delay 500ms
+:delay 1s
 /file set "navspot-token.txt" contents="${hotspot.sync_token}"
 :log info "NAVSPOT: Token salvo em arquivo"
 
 `
 
-  // Enhanced sync script with pipe-delimited action processing
+  // Enhanced sync script with proper JSON parsing for pipe-delimited actions
   script += `# ============================================
-# NAVSPOT Sync Script (Enhanced v2)
+# NAVSPOT Sync Script (v3 - Fixed JSON Parsing)
 # ============================================
 /system script
 :do { remove [find name="navspot-sync"] } on-error={}
@@ -512,13 +564,41 @@ add name="navspot-sync" owner=admin policy=read,write,test,policy source={
     :local response (\$result->"data")
     :log info "NAVSPOT: Sync completed successfully"
     
-    # Save response for action processing
-    /file print file="navspot-response" where name=""
-    :delay 200ms
-    /file set "navspot-response.txt" contents=\$response
+    # Extract pending_actions_pipe from JSON response
+    # Format in response: "pending_actions_pipe":"id|type|p1\\nid2|type2|p2"
+    :local marker "pending_actions_pipe\\":\\""
+    :local pipeStart [:find \$response \$marker]
     
-    # Run action processor
-    /system script run navspot-action-processor
+    :if (\$pipeStart > 0) do={
+      :local contentStart (\$pipeStart + [:len \$marker])
+      :local contentEnd [:find \$response "\\"" \$contentStart]
+      
+      :if (\$contentEnd > \$contentStart) do={
+        :local pipeContent [:pick \$response \$contentStart \$contentEnd]
+        
+        # Convert \\n to actual newlines for processing
+        :local cleanContent ""
+        :local i 0
+        :while (\$i < [:len \$pipeContent]) do={
+          :local char [:pick \$pipeContent \$i (\$i+1)]
+          :if (\$char = "\\\\" && ([:pick \$pipeContent (\$i+1) (\$i+2)] = "n")) do={
+            :set cleanContent (\$cleanContent . "\\n")
+            :set i (\$i + 2)
+          } else={
+            :set cleanContent (\$cleanContent . \$char)
+            :set i (\$i + 1)
+          }
+        }
+        
+        :if ([:len \$cleanContent] > 2) do={
+          /file print file="navspot-actions" where name=""
+          :delay 1s
+          /file set "navspot-actions.txt" contents=\$cleanContent
+          :log info ("NAVSPOT: " . [:len \$cleanContent] . " bytes of actions to process")
+          /system script run navspot-action-processor
+        }
+      }
+    }
     
   } on-error={
     :log warning "NAVSPOT: Sync failed - will retry on next interval"
@@ -526,7 +606,7 @@ add name="navspot-sync" owner=admin policy=read,write,test,policy source={
 }
 
 # ============================================
-# Action Processor Script (Functional v2)
+# Action Processor Script (v3 - Manual Parsing)
 # ============================================
 :do { remove [find name="navspot-action-processor"] } on-error={}
 add name="navspot-action-processor" owner=admin policy=read,write,test,policy source={
@@ -544,112 +624,136 @@ add name="navspot-action-processor" owner=admin policy=read,write,test,policy so
       :set executed ""
     }
     
-    # Parse pipe-delimited format: action_id|action_type|param1|param2|...
-    :local lines [:toarray \$content separator="\\n"]
-    
-    :foreach line in=\$lines do={
+    # Process line by line (manual parsing - no :toarray with separator)
+    :local remaining \$content
+    :while ([:len \$remaining] > 0) do={
+      # Find end of line
+      :local lineEnd [:find \$remaining "\\n"]
+      :local line ""
+      :if (\$lineEnd > 0) do={
+        :set line [:pick \$remaining 0 \$lineEnd]
+        :set remaining [:pick \$remaining (\$lineEnd+1) [:len \$remaining]]
+      } else={
+        :set line \$remaining
+        :set remaining ""
+      }
+      
       :if ([:len \$line] > 5) do={
-        :local parts [:toarray \$line separator="|"]
-        :local actionId [:pick \$parts 0]
-        :local actionType [:pick \$parts 1]
-        
-        :log info ("NAVSPOT: Processing action " . \$actionId . " type " . \$actionType)
-        
-        :if (\$actionType = "kick_session") do={
-          :local user [:pick \$parts 2]
-          :local mac [:pick \$parts 3]
-          :do {
-            :if (\$mac != "") do={
-              /ip hotspot active remove [find user=\$user mac-address=\$mac]
+        # Manual parsing: extract fields separated by |
+        # Format: actionId|actionType|param1|param2|param3
+        :local pos1 [:find \$line "|"]
+        :if (\$pos1 > 0) do={
+          :local actionId [:pick \$line 0 \$pos1]
+          :local rest [:pick \$line (\$pos1+1) [:len \$line]]
+          
+          :local pos2 [:find \$rest "|"]
+          :local actionType ""
+          :local rest2 ""
+          :if (\$pos2 > 0) do={
+            :set actionType [:pick \$rest 0 \$pos2]
+            :set rest2 [:pick \$rest (\$pos2+1) [:len \$rest]]
+          } else={
+            :set actionType \$rest
+            :set rest2 ""
+          }
+          
+          :local pos3 [:find \$rest2 "|"]
+          :local param1 ""
+          :local param2 ""
+          :local param3 ""
+          :if (\$pos3 > 0) do={
+            :set param1 [:pick \$rest2 0 \$pos3]
+            :local rest3 [:pick \$rest2 (\$pos3+1) [:len \$rest2]]
+            :local pos4 [:find \$rest3 "|"]
+            :if (\$pos4 > 0) do={
+              :set param2 [:pick \$rest3 0 \$pos4]
+              :set param3 [:pick \$rest3 (\$pos4+1) [:len \$rest3]]
             } else={
-              /ip hotspot active remove [find user=\$user]
+              :set param2 \$rest3
             }
-            :log info ("NAVSPOT: Kicked session for " . \$user)
-            :set executed (\$executed . "\\"" . \$actionId . "\\",")
-          } on-error={
-            :log warning ("NAVSPOT: Failed to kick " . \$user)
+          } else={
+            :set param1 \$rest2
           }
-        }
-        
-        :if (\$actionType = "kick_device") do={
-          :local user [:pick \$parts 2]
-          :local mac [:pick \$parts 3]
-          :do {
-            /ip hotspot active remove [find mac-address=\$mac]
-            :log info ("NAVSPOT: Kicked device " . \$mac)
-            :set executed (\$executed . "\\"" . \$actionId . "\\",")
-          } on-error={}
-        }
-        
-        :if (\$actionType = "disable_user") do={
-          :local user [:pick \$parts 2]
-          :do {
-            /ip hotspot user set [find name=\$user] disabled=yes
-            :log info ("NAVSPOT: Disabled user " . \$user)
-            :set executed (\$executed . "\\"" . \$actionId . "\\",")
-          } on-error={}
-        }
-        
-        :if (\$actionType = "enable_user") do={
-          :local user [:pick \$parts 2]
-          :do {
-            /ip hotspot user set [find name=\$user] disabled=no
-            :log info ("NAVSPOT: Enabled user " . \$user)
-            :set executed (\$executed . "\\"" . \$actionId . "\\",")
-          } on-error={}
-        }
-        
-        :if (\$actionType = "update_password") do={
-          :local user [:pick \$parts 2]
-          :local newPass [:pick \$parts 3]
-          :do {
-            /ip hotspot user set [find name=\$user] password=\$newPass
-            :log info ("NAVSPOT: Updated password for " . \$user)
-            :set executed (\$executed . "\\"" . \$actionId . "\\",")
-          } on-error={}
-        }
-        
-        :if (\$actionType = "add_user") do={
-          :local user [:pick \$parts 2]
-          :local pass [:pick \$parts 3]
-          :local profile [:pick \$parts 4]
-          :do {
-            /ip hotspot user add name=\$user password=\$pass profile=\$profile server=hs-${hotspotSlug}
-            :log info ("NAVSPOT: Added user " . \$user)
-            :set executed (\$executed . "\\"" . \$actionId . "\\",")
-          } on-error={
-            :log warning ("NAVSPOT: User " . \$user . " might already exist")
+          
+          :log info ("NAVSPOT: Action " . \$actionId . " type " . \$actionType)
+          
+          # Execute action based on type
+          :if (\$actionType = "kick_session" || \$actionType = "kick_device") do={
+            :do {
+              :if ([:len \$param2] > 0) do={
+                /ip hotspot active remove [find mac-address=\$param2]
+              } else={
+                /ip hotspot active remove [find user=\$param1]
+              }
+              :log info ("NAVSPOT: Kicked " . \$param1)
+              :set executed (\$executed . "\\"" . \$actionId . "\\",")
+            } on-error={}
           }
-        }
-        
-        :if (\$actionType = "remove_user") do={
-          :local user [:pick \$parts 2]
-          :do {
-            /ip hotspot user remove [find name=\$user]
-            :log info ("NAVSPOT: Removed user " . \$user)
-            :set executed (\$executed . "\\"" . \$actionId . "\\",")
-          } on-error={}
-        }
-        
-        :if (\$actionType = "update_profile") do={
-          :local user [:pick \$parts 2]
-          :local profile [:pick \$parts 3]
-          :do {
-            /ip hotspot user set [find name=\$user] profile=\$profile
-            :log info ("NAVSPOT: Updated profile for " . \$user . " to " . \$profile)
-            :set executed (\$executed . "\\"" . \$actionId . "\\",")
-          } on-error={}
+          
+          :if (\$actionType = "disable_user") do={
+            :do {
+              /ip hotspot user set [find name=\$param1] disabled=yes
+              :log info ("NAVSPOT: Disabled user " . \$param1)
+              :set executed (\$executed . "\\"" . \$actionId . "\\",")
+            } on-error={}
+          }
+          
+          :if (\$actionType = "enable_user") do={
+            :do {
+              /ip hotspot user set [find name=\$param1] disabled=no
+              :log info ("NAVSPOT: Enabled user " . \$param1)
+              :set executed (\$executed . "\\"" . \$actionId . "\\",")
+            } on-error={}
+          }
+          
+          :if (\$actionType = "update_password") do={
+            :do {
+              /ip hotspot user set [find name=\$param1] password=\$param2
+              :log info ("NAVSPOT: Updated password for " . \$param1)
+              :set executed (\$executed . "\\"" . \$actionId . "\\",")
+            } on-error={}
+          }
+          
+          :if (\$actionType = "add_user" || \$actionType = "create_user") do={
+            :do {
+              :local profile \$param3
+              :if ([:len \$profile] = 0) do={ :set profile "default-navspot" }
+              /ip hotspot user add name=\$param1 password=\$param2 profile=\$profile server=hs-${hotspotSlug}
+              :log info ("NAVSPOT: Added user " . \$param1)
+              :set executed (\$executed . "\\"" . \$actionId . "\\",")
+            } on-error={
+              :log warning ("NAVSPOT: User " . \$param1 . " might already exist")
+            }
+          }
+          
+          :if (\$actionType = "remove_user") do={
+            :do {
+              /ip hotspot user remove [find name=\$param1]
+              :log info ("NAVSPOT: Removed user " . \$param1)
+              :set executed (\$executed . "\\"" . \$actionId . "\\",")
+            } on-error={}
+          }
+          
+          :if (\$actionType = "update_profile" || \$actionType = "update_user_profile") do={
+            :do {
+              /ip hotspot user set [find name=\$param1] profile=\$param2
+              :log info ("NAVSPOT: Updated profile for " . \$param1 . " to " . \$param2)
+              :set executed (\$executed . "\\"" . \$actionId . "\\",")
+            } on-error={}
+          }
         }
       }
     }
     
     # Save executed actions for next sync
-    /file print file="navspot-executed" where name=""
-    :delay 200ms
-    /file set "navspot-executed.txt" contents=\$executed
+    :if ([:len \$executed] > 0) do={
+      /file print file="navspot-executed" where name=""
+      :delay 1s
+      /file set "navspot-executed.txt" contents=\$executed
+    }
     
     # Clean up action file
-    /file remove \$actionFile
+    :do { /file remove \$actionFile } on-error={}
     
   } on-error={
     :log debug "NAVSPOT: No pending actions to process"
@@ -715,7 +819,7 @@ add name="navspot-health-scheduler" interval=1h on-event="/system script run nav
 :log info "============================================"
 :log info "NAVSPOT: Configuracao completa para ${hotspot.nome}"
 :log info "NAVSPOT: ${tripulantes.length} usuarios, ${perfis.length} perfis"
-:log info "NAVSPOT: Interface: \$targetIf, Gateway: ${gateway}"
+:log info ("NAVSPOT: Interface: " . \$navspotInterface . ", Gateway: ${gateway}")
 :log info "NAVSPOT: Sync a cada ${hotspot.sync_interval_minutes} minutos"
 :log info "============================================"
 `
