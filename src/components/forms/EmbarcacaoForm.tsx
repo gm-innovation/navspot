@@ -46,16 +46,7 @@ interface EmbarcacaoFormProps {
   isLoading?: boolean;
 }
 
-const tiposEmbarcacao = [
-  "navio",
-  "lancha",
-  "iate",
-  "barco",
-  "petroleiro",
-  "cargueiro",
-  "ferry",
-  "rebocador",
-];
+import { TIPOS_EMBARCACAO } from "@/constants/embarcacoes";
 
 const INTERFACE_WIFI_OPTIONS = [
   { value: "wlan1", label: "wlan1" },
@@ -229,9 +220,9 @@ export function EmbarcacaoForm({
                     <SelectValue placeholder="Selecione o tipo" />
                   </SelectTrigger>
                   <SelectContent>
-                    {tiposEmbarcacao.map((tipo) => (
-                      <SelectItem key={tipo} value={tipo}>
-                        {tipo.charAt(0).toUpperCase() + tipo.slice(1)}
+                    {TIPOS_EMBARCACAO.map((tipo) => (
+                      <SelectItem key={tipo.value} value={tipo.value}>
+                        {tipo.label}
                       </SelectItem>
                     ))}
                   </SelectContent>

@@ -1,3 +1,4 @@
+import { getTipoEmbarcacaoLabel } from "@/constants/embarcacoes";
 import { MetricCard } from "@/components/MetricCard";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -134,7 +135,7 @@ export function GerenteEmbarcacaoDashboard() {
                   </div>
                   <div>
                     <h3 className="font-semibold text-lg">{embarcacao.nome}</h3>
-                    <p className="text-muted-foreground capitalize">{embarcacao.tipo}</p>
+                    <p className="text-muted-foreground">{getTipoEmbarcacaoLabel(embarcacao.tipo)}</p>
                   </div>
                 </div>
                 
