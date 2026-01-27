@@ -108,7 +108,6 @@ export default function RegrasAcesso() {
     tripulante_id: "",
     mac_address: "",
     hotspot_id: "",
-    acao: "permitir" as "permitir" | "bloquear",
     prioridade: 100,
     horario_inicio: "",
     horario_fim: "",
@@ -125,7 +124,6 @@ export default function RegrasAcesso() {
         tripulante_id: editingRegra.tripulante_id || "",
         mac_address: editingRegra.mac_address || "",
         hotspot_id: editingRegra.hotspot_id || "",
-        acao: editingRegra.acao as "permitir" | "bloquear",
         prioridade: editingRegra.prioridade,
         horario_inicio: editingRegra.horario_inicio || "",
         horario_fim: editingRegra.horario_fim || "",
@@ -141,7 +139,6 @@ export default function RegrasAcesso() {
         tripulante_id: "",
         mac_address: "",
         hotspot_id: "",
-        acao: "permitir",
         prioridade: 100,
         horario_inicio: "",
         horario_fim: "",
@@ -225,7 +222,6 @@ export default function RegrasAcesso() {
         tripulante_id: formData.tripulante_id || null,
         mac_address: formData.mac_address.trim() || null,
         hotspot_id: formData.hotspot_id || null,
-        acao: formData.acao,
         prioridade: formData.prioridade,
         horario_inicio: formData.horario_inicio || null,
         horario_fim: formData.horario_fim || null,
@@ -258,7 +254,6 @@ export default function RegrasAcesso() {
       tripulante_id: formData.tripulante_id || null,
       mac_address: formData.mac_address.trim() || null,
       hotspot_id: formData.hotspot_id || null,
-      acao: formData.acao,
       prioridade: basePrioridade + index,
       horario_inicio: formData.horario_inicio || null,
       horario_fim: formData.horario_fim || null,
@@ -388,7 +383,6 @@ export default function RegrasAcesso() {
                 <TableRow>
                   <TableHead className="w-[50px]">Ordem</TableHead>
                   <TableHead>Lista</TableHead>
-                  <TableHead>Ação</TableHead>
                   <TableHead>Aplica-se a</TableHead>
                   <TableHead>Horário</TableHead>
                   <TableHead>Status</TableHead>
@@ -437,17 +431,6 @@ export default function RegrasAcesso() {
                           {regra.lista?.tipo}
                         </Badge>
                       </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge 
-                        variant="secondary"
-                        className={regra.acao === 'permitir' 
-                          ? "bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400" 
-                          : "bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400"
-                        }
-                      >
-                        {regra.acao === 'permitir' ? 'Permitir' : 'Bloquear'}
-                      </Badge>
                     </TableCell>
                     <TableCell>
                       <span className="text-sm">{getAplicacaoLabel(regra)}</span>
@@ -578,26 +561,7 @@ export default function RegrasAcesso() {
                 </div>
               </div>
 
-              {/* Ação */}
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="acao" className="text-right">
-                  Ação
-                </Label>
-                <Select
-                  value={formData.acao}
-                  onValueChange={(value: "permitir" | "bloquear") => 
-                    setFormData(prev => ({ ...prev, acao: value }))
-                  }
-                >
-                  <SelectTrigger className="col-span-3">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="z-50 bg-background border shadow-lg">
-                    <SelectItem value="permitir">Permitir acesso</SelectItem>
-                    <SelectItem value="bloquear">Bloquear acesso</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+              {/* Nota: A ação (permitir/bloquear) é determinada pelo tipo da lista */}
 
               {/* Prioridade */}
               <div className="grid grid-cols-4 items-center gap-4">

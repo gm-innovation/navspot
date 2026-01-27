@@ -226,12 +226,12 @@ export function DispositivoDetailsModal({
                           <Badge 
                             variant="secondary"
                             className={
-                              regra.acao === 'permitir' 
+                              regra.lista?.tipo === 'whitelist' 
                                 ? "bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400" 
                                 : "bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400"
                             }
                           >
-                            {regra.acao === 'permitir' ? 'Permitir' : 'Bloquear'}
+                            {regra.lista?.tipo === 'whitelist' ? 'Whitelist' : 'Blacklist'}
                           </Badge>
                           <span className="font-medium text-sm">
                             {regra.lista?.nome || "Lista desconhecida"}

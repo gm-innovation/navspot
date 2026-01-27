@@ -602,7 +602,8 @@ Deno.serve(async (req) => {
         firewallRules = regras.map(regra => {
           const lista = regra.listas_acesso as { dominios: string[]; aplicativos: string[]; tipo: string } | null
           return {
-            action: regra.acao,
+            // Use lista.tipo instead of regra.acao - blacklist means block, whitelist means allow
+            action: lista?.tipo === 'blacklist' ? 'block' : 'allow',
             domains: (lista?.dominios || []) as string[],
             apps: (lista?.aplicativos || []) as string[]
           }
