@@ -114,6 +114,36 @@ export function useCreateRegraAcesso() {
   });
 }
 
+export function useCreateMultipleRegras() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (regras: RegraAcessoInsert[]) => {
+      const { data, error } = await supabase
+        .from('regras_acesso')
+        .insert(regras)
+        .select();
+
+      if (error) throw error;
+      return data as RegraAcesso[];
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['regras_acesso'] });
+      toast({
+        title: 'Regras criadas',
+        description: `${data.length} regra(s) de acesso foram cadastradas.`,
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Erro ao criar regras',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+}
+
 export function useUpdateRegraAcesso() {
   const queryClient = useQueryClient();
 
