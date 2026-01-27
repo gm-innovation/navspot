@@ -25,6 +25,7 @@ import CompletarCadastro from "./pages/CompletarCadastro";
 import PoliticaPrivacidade from "./pages/PoliticaPrivacidade";
 import TermosUso from "./pages/TermosUso";
 import GestaoLGPD from "./pages/GestaoLGPD";
+import AcoesPendentes from "./pages/AcoesPendentes";
 import NotFound from "./pages/NotFound";
 import { AppLayout } from "./components/AppLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
@@ -175,6 +176,15 @@ const App = () => (
                   <SidebarProvider>
                     <AppLayout>
                       <GestaoLGPD />
+                    </AppLayout>
+                  </SidebarProvider>
+                </ProtectedRoute>
+              } />
+              <Route path="/acoes-pendentes" element={
+                <ProtectedRoute allowedRoles={['super_admin', 'empresa_admin']}>
+                  <SidebarProvider>
+                    <AppLayout>
+                      <AcoesPendentes />
                     </AppLayout>
                   </SidebarProvider>
                 </ProtectedRoute>

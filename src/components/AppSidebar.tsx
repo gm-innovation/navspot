@@ -1,4 +1,4 @@
-import { Home, Ship, Users, Bell, Settings, Gauge, List, ShieldCheck, UserCog, Smartphone, Building2, FileBarChart, Activity, HeartPulse, Shield } from "lucide-react";
+import { Home, Ship, Users, Bell, Settings, Gauge, List, ShieldCheck, UserCog, Smartphone, Building2, FileBarChart, Activity, HeartPulse, Shield, ListChecks } from "lucide-react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   Sidebar,
@@ -62,6 +62,7 @@ const navigationGroups: NavigationGroup[] = [
     label: "Administração",
     items: [
       { title: "Usuários", url: "/usuarios", icon: UserCog, roles: ['super_admin', 'empresa_admin'] },
+      { title: "Ações MikroTik", url: "/acoes-pendentes", icon: ListChecks, roles: ['super_admin', 'empresa_admin'] },
       { title: "LGPD", url: "/lgpd", icon: Shield, roles: ['super_admin', 'empresa_admin'] },
       { title: "Configurações", url: "/configuracoes", icon: Settings, roles: ['super_admin', 'empresa_admin', 'gerente_embarcacao'] },
     ]

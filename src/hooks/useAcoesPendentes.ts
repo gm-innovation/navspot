@@ -9,6 +9,12 @@ export interface AcaoPendenteWithDetails extends AcaoPendente {
   hotspot_nome?: string;
 }
 
+export interface AcoesPendentesStats {
+  pendentes: number;
+  executadas: number;
+  erros: number;
+}
+
 export function useAcoesPendentes(hotspotId?: string) {
   return useQuery({
     queryKey: ['acoes_pendentes', hotspotId],
@@ -37,6 +43,62 @@ export function useAcoesPendentes(hotspotId?: string) {
   });
 }
 
+export function useAcoesPendentesStats() {
+  return useQuery({
+    queryKey: ['acoes_pendentes_stats'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('acoes_pendentes')
+        .select('status');
+
+      if (error) throw error;
+
+      const stats: AcoesPendentesStats = {
+        pendentes: data?.filter(a => a.status === 'pendente').length || 0,
+        executadas: data?.filter(a => a.status === 'executado').length || 0,
+        erros: data?.filter(a => a.status === 'erro').length || 0,
+      };
+
+      return stats;
+    },
+  });
+}
+
+export function useRetryAcaoPendente() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase
+        .from('acoes_pendentes')
+        .update({ 
+          status: 'pendente', 
+          tentativas: 0, 
+          erro_mensagem: null,
+          executed_at: null
+        })
+        .eq('id', id);
+
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes_stats'] });
+      toast({
+        title: 'Ação reativada',
+        description: 'A ação foi colocada novamente na fila de pendentes.',
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Erro ao reativar ação',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+}
+
 export function useDeleteAcaoPendente() {
   const queryClient = useQueryClient();
 
@@ -51,6 +113,7 @@ export function useDeleteAcaoPendente() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes_stats'] });
       toast({
         title: 'Ação removida',
         description: 'A ação pendente foi removida da fila.',

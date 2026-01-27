@@ -80,6 +80,30 @@ serve(async (req) => {
       );
     }
 
+    // Check for alert grouping - avoid duplicate notifications for similar alerts
+    const shouldGroup = (settings as any).agrupar_enabled !== false; // Default to true
+    if (shouldGroup && payload.hotspot_id) {
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      
+      const { data: recentSimilar } = await supabase
+        .from('alertas')
+        .select('id')
+        .eq('tipo', payload.tipo)
+        .eq('hotspot_id', payload.hotspot_id)
+        .eq('resolvido', false)
+        .neq('id', payload.alerta_id)
+        .gte('created_at', twoHoursAgo)
+        .limit(1);
+
+      if (recentSimilar && recentSimilar.length > 0) {
+        console.log('Similar unresolved alert exists, grouping notification');
+        return new Response(
+          JSON.stringify({ success: true, message: 'Grouped with existing similar alert' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
     const results = {
       webhook: { sent: false, error: null as string | null },
       email: { sent: false, error: null as string | null },
