@@ -235,6 +235,7 @@ export type Database = {
           id: string
           mac_address: string
           nome: string | null
+          perfil_id: string | null
           tipo: string
           tripulante_id: string | null
           ultimo_uso: string | null
@@ -250,6 +251,7 @@ export type Database = {
           id?: string
           mac_address: string
           nome?: string | null
+          perfil_id?: string | null
           tipo?: string
           tripulante_id?: string | null
           ultimo_uso?: string | null
@@ -265,6 +267,7 @@ export type Database = {
           id?: string
           mac_address?: string
           nome?: string | null
+          perfil_id?: string | null
           tipo?: string
           tripulante_id?: string | null
           ultimo_uso?: string | null
@@ -275,6 +278,13 @@ export type Database = {
             columns: ["embarcacao_id"]
             isOneToOne: false
             referencedRelation: "embarcacoes"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "dispositivos_registrados_perfil_id_fkey"
+            columns: ["perfil_id"]
+            isOneToOne: false
+            referencedRelation: "perfis_velocidade"
             referencedColumns: ["id"]
           },
           {

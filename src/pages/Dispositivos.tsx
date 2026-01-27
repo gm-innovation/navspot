@@ -29,6 +29,8 @@ import {
   Navigation,
   Router,
   Tv,
+  Gauge,
+  Loader2,
 } from "lucide-react";
 import {
   Select,
@@ -68,9 +70,16 @@ import {
   getDispositivosByCategoria,
 } from "@/hooks/useDispositivosRegistrados";
 import { useEmbarcacoes } from "@/hooks/useEmbarcacoes";
+import { usePerfisVelocidade } from "@/hooks/usePerfisVelocidade";
+import { useListasAcesso } from "@/hooks/useListasAcesso";
+import { useCreateMultipleRegras } from "@/hooks/useRegrasAcesso";
+import { useAuth } from "@/contexts/AuthContext";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { DispositivoDetailsModal } from "@/components/modals/DispositivoDetailsModal";
+import { ListaMultiSelect } from "@/components/forms/ListaMultiSelect";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Separator } from "@/components/ui/separator";
 
 type FilterStatus = "all" | "autorizado" | "bloqueado";
 type FilterType = "all" | "tripulante" | "embarcacao";
@@ -119,21 +128,38 @@ export default function Dispositivos() {
   const [selectedDevice, setSelectedDevice] = useState<DispositivoWithTripulante | null>(null);
   const [blockReason, setBlockReason] = useState("");
 
-  // New device form
+  // New device form - expanded with profile and rules
   const [newDevice, setNewDevice] = useState({
     mac_address: "",
     nome: "",
     tipo: "outro",
     embarcacao_id: "",
     autorizado: true,
+    perfil_id: "",
+    criar_regras: false,
+    lista_ids: [] as string[],
   });
 
   // Queries and mutations
   const { data: dispositivos, isLoading, refetch } = useDispositivosRegistrados();
   const { data: embarcacoes } = useEmbarcacoes();
+  const { data: perfis } = usePerfisVelocidade();
+  const { data: listas } = useListasAcesso();
+  const { user } = useAuth();
   const createDispositivo = useCreateDispositivo();
+  const createMultipleRegras = useCreateMultipleRegras();
   const blockDispositivo = useBlockDispositivo();
   const unblockDispositivo = useUnblockDispositivo();
+  
+  // Filter perfis for equipment types
+  const perfilsEquipamento = perfis?.filter(p => 
+    p.tipo_usuario === 'equipamento' || 
+    p.tipo_usuario === 'camera_streaming' || 
+    p.tipo_usuario === 'equipamento_navegacao'
+  ) || [];
+  
+  // All perfis available for selection
+  const allPerfis = perfis || [];
 
   // Filter devices
   const filteredDevices = dispositivos?.filter((device) => {
@@ -175,21 +201,46 @@ export default function Dispositivos() {
     embarcacoes: dispositivos?.filter((d) => d.embarcacao_id && !d.tripulante_id).length || 0,
   };
 
-  const handleCreateDevice = () => {
+  const handleCreateDevice = async () => {
     if (!newDevice.mac_address || !newDevice.embarcacao_id) return;
 
+    const formattedMac = newDevice.mac_address.toUpperCase().replace(/[^A-F0-9]/g, "").match(/.{1,2}/g)?.join(":") || newDevice.mac_address;
+    
     createDispositivo.mutate(
       {
-        mac_address: newDevice.mac_address.toUpperCase().replace(/[^A-F0-9]/g, "").match(/.{1,2}/g)?.join(":") || newDevice.mac_address,
+        mac_address: formattedMac,
         nome: newDevice.nome || `Equipamento ${newDevice.tipo}`,
         tipo: newDevice.tipo,
         embarcacao_id: newDevice.embarcacao_id,
         autorizado: newDevice.autorizado,
+        perfil_id: newDevice.perfil_id || null,
       },
       {
-        onSuccess: () => {
+        onSuccess: async () => {
+          // Create access rules if requested
+          if (newDevice.criar_regras && newDevice.lista_ids.length > 0 && user?.empresa_id) {
+            const regras = newDevice.lista_ids.map((lista_id, index) => ({
+              empresa_id: user.empresa_id!,
+              lista_id,
+              mac_address: formattedMac,
+              prioridade: 100 + index,
+              ativo: true,
+            }));
+            
+            await createMultipleRegras.mutateAsync(regras);
+          }
+          
           setShowNewDevice(false);
-          setNewDevice({ mac_address: "", nome: "", tipo: "outro", embarcacao_id: "", autorizado: true });
+          setNewDevice({ 
+            mac_address: "", 
+            nome: "", 
+            tipo: "outro", 
+            embarcacao_id: "", 
+            autorizado: true,
+            perfil_id: "",
+            criar_regras: false,
+            lista_ids: [],
+          });
         },
       }
     );
@@ -475,82 +526,165 @@ export default function Dispositivos() {
 
       {/* New Device Modal */}
       <Dialog open={showNewDevice} onOpenChange={setShowNewDevice}>
-        <DialogContent>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Novo Equipamento de Embarcação</DialogTitle>
             <DialogDescription>
               Cadastre dispositivos de rede como radar, GPS, câmeras, etc.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="mac">MAC Address *</Label>
-              <Input
-                id="mac"
-                placeholder="AA:BB:CC:DD:EE:FF"
-                value={newDevice.mac_address}
-                onChange={(e) => setNewDevice((prev) => ({ ...prev, mac_address: e.target.value }))}
-              />
-            </div>
-            <div>
-              <Label htmlFor="nome">Nome do Equipamento</Label>
-              <Input
-                id="nome"
-                placeholder="Ex: Radar Principal"
-                value={newDevice.nome}
-                onChange={(e) => setNewDevice((prev) => ({ ...prev, nome: e.target.value }))}
-              />
-            </div>
-            <div>
-              <Label htmlFor="tipo">Tipo</Label>
-              <Select
-                value={newDevice.tipo}
-                onValueChange={(v) => setNewDevice((prev) => ({ ...prev, tipo: v }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione o tipo" />
-                </SelectTrigger>
-                <SelectContent className="bg-background">
-                  {/* Equipamentos de Embarcação */}
-                  <SelectItem value="_group_embarcacao" disabled className="font-semibold text-xs text-muted-foreground">
-                    — Equipamentos de Embarcação —
-                  </SelectItem>
-                  {getDispositivosByCategoria('embarcacao').map((t) => (
-                    <SelectItem key={t.value} value={t.value}>
-                      {t.label}
+          <div className="space-y-6">
+            {/* Identification Section */}
+            <div className="space-y-4">
+              <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-2">
+                <Ship className="h-4 w-4" />
+                Identificação
+              </h3>
+              <div>
+                <Label htmlFor="mac">MAC Address *</Label>
+                <Input
+                  id="mac"
+                  placeholder="AA:BB:CC:DD:EE:FF"
+                  value={newDevice.mac_address}
+                  onChange={(e) => setNewDevice((prev) => ({ ...prev, mac_address: e.target.value }))}
+                />
+              </div>
+              <div>
+                <Label htmlFor="nome">Nome do Equipamento</Label>
+                <Input
+                  id="nome"
+                  placeholder="Ex: Radar Principal"
+                  value={newDevice.nome}
+                  onChange={(e) => setNewDevice((prev) => ({ ...prev, nome: e.target.value }))}
+                />
+              </div>
+              <div>
+                <Label htmlFor="tipo">Tipo</Label>
+                <Select
+                  value={newDevice.tipo}
+                  onValueChange={(v) => setNewDevice((prev) => ({ ...prev, tipo: v }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione o tipo" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-background">
+                    {/* Equipamentos de Embarcação */}
+                    <SelectItem value="_group_embarcacao" disabled className="font-semibold text-xs text-muted-foreground">
+                      — Equipamentos de Embarcação —
                     </SelectItem>
-                  ))}
-                  {/* Outros */}
-                  <SelectItem value="_group_outro" disabled className="font-semibold text-xs text-muted-foreground mt-2">
-                    — Outros —
-                  </SelectItem>
-                  {getDispositivosByCategoria('outro').map((t) => (
-                    <SelectItem key={t.value} value={t.value}>
-                      {t.label}
+                    {getDispositivosByCategoria('embarcacao').map((t) => (
+                      <SelectItem key={t.value} value={t.value}>
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                    {/* Outros */}
+                    <SelectItem value="_group_outro" disabled className="font-semibold text-xs text-muted-foreground mt-2">
+                      — Outros —
                     </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                    {getDispositivosByCategoria('outro').map((t) => (
+                      <SelectItem key={t.value} value={t.value}>
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label htmlFor="embarcacao">Embarcação *</Label>
+                <Select
+                  value={newDevice.embarcacao_id}
+                  onValueChange={(v) => setNewDevice((prev) => ({ ...prev, embarcacao_id: v }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione a embarcação" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {embarcacoes?.map((e) => (
+                      <SelectItem key={e.id} value={e.id}>
+                        {e.nome}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <div>
-              <Label htmlFor="embarcacao">Embarcação *</Label>
-              <Select
-                value={newDevice.embarcacao_id}
-                onValueChange={(v) => setNewDevice((prev) => ({ ...prev, embarcacao_id: v }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione a embarcação" />
-                </SelectTrigger>
-                <SelectContent>
-                  {embarcacoes?.map((e) => (
-                    <SelectItem key={e.id} value={e.id}>
-                      {e.nome}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+
+            <Separator />
+
+            {/* Access Configuration Section */}
+            <div className="space-y-4">
+              <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-2">
+                <Gauge className="h-4 w-4" />
+                Configuração de Acesso
+              </h3>
+              <div>
+                <Label htmlFor="perfil">Perfil de Velocidade</Label>
+                <Select
+                  value={newDevice.perfil_id || "_none_"}
+                  onValueChange={(v) => setNewDevice((prev) => ({ ...prev, perfil_id: v === "_none_" ? "" : v }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione um perfil (opcional)" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-background">
+                    <SelectItem value="_none_">Sem perfil específico</SelectItem>
+                    {allPerfis.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.nome}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {newDevice.perfil_id && (() => {
+                  const selectedPerfil = allPerfis.find(p => p.id === newDevice.perfil_id);
+                  if (!selectedPerfil) return null;
+                  return (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      ↳ {selectedPerfil.velocidade_download}/{selectedPerfil.velocidade_upload}
+                      {selectedPerfil.limite_dados_mb && ` • Quota: ${selectedPerfil.limite_dados_mb}MB`}
+                    </p>
+                  );
+                })()}
+              </div>
             </div>
-            <div className="flex items-center justify-between pt-2">
+
+            <Separator />
+
+            {/* Access Rules Section */}
+            <div className="space-y-4">
+              <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4" />
+                Regras de Acesso (opcional)
+              </h3>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="criar_regras"
+                  checked={newDevice.criar_regras}
+                  onCheckedChange={(checked) => setNewDevice((prev) => ({ 
+                    ...prev, 
+                    criar_regras: !!checked,
+                    lista_ids: checked ? prev.lista_ids : []
+                  }))}
+                />
+                <Label htmlFor="criar_regras" className="text-sm cursor-pointer">
+                  Criar regras de acesso para este equipamento
+                </Label>
+              </div>
+              
+              {newDevice.criar_regras && listas && (
+                <ListaMultiSelect
+                  listas={listas.map(l => ({ id: l.id, nome: l.nome, tipo: l.tipo, descricao: l.descricao }))}
+                  selectedIds={newDevice.lista_ids}
+                  onSelectionChange={(ids) => setNewDevice((prev) => ({ ...prev, lista_ids: ids }))}
+                  placeholder="Selecione as listas de acesso"
+                />
+              )}
+            </div>
+
+            <Separator />
+
+            {/* Authorization */}
+            <div className="flex items-center justify-between">
               <div className="space-y-0.5">
                 <Label htmlFor="autorizado">Autorizado a conectar</Label>
                 <p className="text-xs text-muted-foreground">

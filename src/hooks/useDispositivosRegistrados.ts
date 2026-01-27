@@ -18,6 +18,13 @@ export interface DispositivoWithTripulante extends DispositivoRegistrado {
     id: string;
     nome: string;
   } | null;
+  perfil?: {
+    id: string;
+    nome: string;
+    velocidade_download: string;
+    velocidade_upload: string;
+    limite_dados_mb: number | null;
+  } | null;
 }
 
 // Categoria de tipos de dispositivo
@@ -57,7 +64,8 @@ export function useDispositivosRegistrados() {
         .select(`
           *,
           tripulante:tripulantes(id, nome, cargo),
-          embarcacao:embarcacoes(id, nome)
+          embarcacao:embarcacoes(id, nome),
+          perfil:perfis_velocidade(id, nome, velocidade_download, velocidade_upload, limite_dados_mb)
         `)
         .order('created_at', { ascending: false });
 
