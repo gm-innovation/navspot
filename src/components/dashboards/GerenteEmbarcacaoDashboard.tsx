@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { getTipoEmbarcacaoLabel } from "@/constants/embarcacoes";
 import { MetricCard } from "@/components/MetricCard";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -15,7 +16,6 @@ import {
   UserPlus,
   Wifi,
   Download,
-  Clock
 } from "lucide-react";
 import { useEmbarcacao } from "@/hooks/useEmbarcacoes";
 import { useHotspots } from "@/hooks/useHotspots";
@@ -28,10 +28,12 @@ import {
   useTopDuracaoEmbarcacao,
   useMetricasEmbarcacao 
 } from "@/hooks/useEmbarcacaoDashboard";
+import { useGerenteEmbarcacoes } from "@/hooks/useGerenteEmbarcacoes";
 import { EmbarcacaoOnlineUsers } from "./EmbarcacaoOnlineUsers";
 import { EmbarcacaoConsumptionChart } from "./EmbarcacaoConsumptionChart";
 import { EmbarcacaoTopConsumers } from "./EmbarcacaoTopConsumers";
 import { EmbarcacaoTopDuration } from "./EmbarcacaoTopDuration";
+import { EmbarcacaoDashboardFilters } from "./EmbarcacaoDashboardFilters";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
@@ -47,21 +49,38 @@ export function GerenteEmbarcacaoDashboard() {
   // Enable realtime updates
   useDashboardRealtime();
 
-  const { user } = useAuth();
-  const { data: embarcacao, isLoading: embarcacaoLoading } = useEmbarcacao(user?.embarcacao_id);
+  const { user, hasRole } = useAuth();
+  
+  // Filter states
+  const [selectedEmbarcacaoId, setSelectedEmbarcacaoId] = useState<string | undefined>();
+  const [periodoDias, setPeriodoDias] = useState(7);
+  const [searchTerm, setSearchTerm] = useState("");
+
+  // Get available embarcacoes for the user
+  const { data: embarcacoesDisponiveis, isLoading: embarcacoesLoading } = useGerenteEmbarcacoes();
+
+  // Auto-select first embarcacao when data loads
+  useEffect(() => {
+    if (!selectedEmbarcacaoId && embarcacoesDisponiveis && embarcacoesDisponiveis.length > 0) {
+      setSelectedEmbarcacaoId(embarcacoesDisponiveis[0].id);
+    }
+  }, [embarcacoesDisponiveis, selectedEmbarcacaoId]);
+
+  // Use selected embarcacao for all queries
+  const { data: embarcacao, isLoading: embarcacaoLoading } = useEmbarcacao(selectedEmbarcacaoId);
   const { data: hotspots, isLoading: hotspotsLoading } = useHotspots();
   const { data: tripulantes, isLoading: tripulantesLoading } = useTripulantes();
 
-  // New hooks for dashboard data
-  const { data: sessoesAtivas, isLoading: sessoesLoading } = useSessoesAtivasEmbarcacao(user?.embarcacao_id);
-  const { data: topConsumidores, isLoading: topConsumidoresLoading } = useTopConsumidoresEmbarcacao(user?.embarcacao_id);
-  const { data: consumoHistorico, isLoading: consumoHistoricoLoading } = useConsumoHistoricoEmbarcacao(user?.embarcacao_id);
-  const { data: topDuracao, isLoading: topDuracaoLoading } = useTopDuracaoEmbarcacao(user?.embarcacao_id);
-  const { data: metricas, isLoading: metricasLoading } = useMetricasEmbarcacao(user?.embarcacao_id);
+  // Dashboard data hooks with dynamic period
+  const { data: sessoesAtivas, isLoading: sessoesLoading } = useSessoesAtivasEmbarcacao(selectedEmbarcacaoId);
+  const { data: topConsumidores, isLoading: topConsumidoresLoading } = useTopConsumidoresEmbarcacao(selectedEmbarcacaoId, periodoDias);
+  const { data: consumoHistorico, isLoading: consumoHistoricoLoading } = useConsumoHistoricoEmbarcacao(selectedEmbarcacaoId, periodoDias);
+  const { data: topDuracao, isLoading: topDuracaoLoading } = useTopDuracaoEmbarcacao(selectedEmbarcacaoId, periodoDias);
+  const { data: metricas, isLoading: metricasLoading } = useMetricasEmbarcacao(selectedEmbarcacaoId);
 
-  // Filter data for this embarcacao
-  const myHotspots = hotspots?.filter(h => h.embarcacao_id === user?.embarcacao_id) || [];
-  const myTripulantes = tripulantes?.filter(t => t.embarcacao_id === user?.embarcacao_id) || [];
+  // Filter data for selected embarcacao
+  const myHotspots = hotspots?.filter(h => h.embarcacao_id === selectedEmbarcacaoId) || [];
+  const myTripulantes = tripulantes?.filter(t => t.embarcacao_id === selectedEmbarcacaoId) || [];
 
   const tripulantesAtivos = myTripulantes.filter(t => t.status === 'ativo').length;
   const hotspotOnline = myHotspots.find(h => h.status === 'online');
@@ -77,15 +96,23 @@ export function GerenteEmbarcacaoDashboard() {
 
   const isLoading = embarcacaoLoading || hotspotsLoading || tripulantesLoading;
 
+  // Determine title based on role
+  const isSuperAdmin = hasRole(['super_admin']);
+  const isEmpresaAdmin = hasRole(['empresa_admin']);
+  const dashboardTitle = isSuperAdmin || isEmpresaAdmin 
+    ? "Dashboard da Embarcação" 
+    : "Minha Embarcação";
+  const dashboardSubtitle = isSuperAdmin || isEmpresaAdmin
+    ? "Monitoramento em tempo real"
+    : `Bem-vindo, ${user?.email?.split('@')[0]} - Gerencie sua embarcação`;
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Minha Embarcação</h1>
-          <p className="text-muted-foreground">
-            Bem-vindo, {user?.email?.split('@')[0]} - Gerencie sua embarcação
-          </p>
+          <h1 className="text-3xl font-bold tracking-tight">{dashboardTitle}</h1>
+          <p className="text-muted-foreground">{dashboardSubtitle}</p>
         </div>
         <Button asChild>
           <Link to="/tripulantes">
@@ -94,6 +121,18 @@ export function GerenteEmbarcacaoDashboard() {
           </Link>
         </Button>
       </div>
+
+      {/* Filtros */}
+      <EmbarcacaoDashboardFilters
+        embarcacoes={embarcacoesDisponiveis || []}
+        selectedEmbarcacaoId={selectedEmbarcacaoId}
+        onEmbarcacaoChange={setSelectedEmbarcacaoId}
+        periodo={periodoDias}
+        onPeriodoChange={setPeriodoDias}
+        searchTerm={searchTerm}
+        onSearchChange={setSearchTerm}
+        isLoading={embarcacoesLoading}
+      />
 
       {/* Métricas principais */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -136,18 +175,21 @@ export function GerenteEmbarcacaoDashboard() {
       {/* Lista de Usuários Online */}
       <EmbarcacaoOnlineUsers 
         sessoes={sessoesAtivas} 
-        isLoading={sessoesLoading} 
+        isLoading={sessoesLoading}
+        searchTerm={searchTerm}
       />
 
       {/* Gráficos de Consumo */}
       <div className="grid gap-4 md:grid-cols-2">
         <EmbarcacaoConsumptionChart 
           data={consumoHistorico} 
-          isLoading={consumoHistoricoLoading} 
+          isLoading={consumoHistoricoLoading}
+          periodoDias={periodoDias}
         />
         <EmbarcacaoTopConsumers 
           data={topConsumidores} 
-          isLoading={topConsumidoresLoading} 
+          isLoading={topConsumidoresLoading}
+          periodoDias={periodoDias}
         />
       </div>
 
@@ -155,7 +197,8 @@ export function GerenteEmbarcacaoDashboard() {
       <div className="grid gap-4 md:grid-cols-2">
         <EmbarcacaoTopDuration 
           data={topDuracao} 
-          isLoading={topDuracaoLoading} 
+          isLoading={topDuracaoLoading}
+          periodoDias={periodoDias}
         />
 
         {/* Informações da Embarcação */}
@@ -213,7 +256,7 @@ export function GerenteEmbarcacaoDashboard() {
             ) : (
               <div className="text-center py-8 text-muted-foreground">
                 <Ship className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                <p>Embarcação não encontrada</p>
+                <p>Selecione uma embarcação</p>
               </div>
             )}
           </CardContent>
@@ -231,7 +274,7 @@ export function GerenteEmbarcacaoDashboard() {
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground mb-4">
-              Adicione novos tripulantes à sua embarcação
+              Adicione novos tripulantes à embarcação selecionada
             </p>
             <Button className="w-full" asChild>
               <Link to="/tripulantes">

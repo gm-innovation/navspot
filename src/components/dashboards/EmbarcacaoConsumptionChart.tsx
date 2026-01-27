@@ -15,6 +15,7 @@ import { ptBR } from "date-fns/locale";
 interface Props {
   data: ConsumoHistorico[] | undefined;
   isLoading: boolean;
+  periodoDias?: number;
 }
 
 function formatBytes(bytes: number): string {
@@ -36,7 +37,7 @@ const chartConfig: ChartConfig = {
   },
 };
 
-export function EmbarcacaoConsumptionChart({ data, isLoading }: Props) {
+export function EmbarcacaoConsumptionChart({ data, isLoading, periodoDias = 7 }: Props) {
   const chartData = data?.map(d => ({
     ...d,
     dataFormatada: format(parseISO(d.data), "dd/MM", { locale: ptBR }),
@@ -51,7 +52,7 @@ export function EmbarcacaoConsumptionChart({ data, isLoading }: Props) {
         <CardTitle className="flex items-center justify-between text-base">
           <div className="flex items-center gap-2">
             <Activity className="h-5 w-5" />
-            Consumo - Últimos 7 Dias
+            Consumo - Últimos {periodoDias} Dias
           </div>
           <div className="flex items-center gap-3 text-sm font-normal">
             <div className="flex items-center gap-1">

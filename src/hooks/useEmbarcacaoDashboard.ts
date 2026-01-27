@@ -88,9 +88,9 @@ export function useSessoesAtivasEmbarcacao(embarcacaoId?: string) {
   });
 }
 
-export function useTopConsumidoresEmbarcacao(embarcacaoId?: string, limit = 5) {
+export function useTopConsumidoresEmbarcacao(embarcacaoId?: string, periodoDias: number = 7, limit = 5) {
   return useQuery({
-    queryKey: ['top-consumidores-embarcacao', embarcacaoId, limit],
+    queryKey: ['top-consumidores-embarcacao', embarcacaoId, periodoDias, limit],
     queryFn: async (): Promise<TopConsumidor[]> => {
       if (!embarcacaoId) return [];
 
@@ -111,9 +111,9 @@ export function useTopConsumidoresEmbarcacao(embarcacaoId?: string, limit = 5) {
   });
 }
 
-export function useConsumoHistoricoEmbarcacao(embarcacaoId?: string) {
+export function useConsumoHistoricoEmbarcacao(embarcacaoId?: string, periodoDias: number = 7) {
   return useQuery({
-    queryKey: ['consumo-historico-embarcacao', embarcacaoId],
+    queryKey: ['consumo-historico-embarcacao', embarcacaoId, periodoDias],
     queryFn: async (): Promise<ConsumoHistorico[]> => {
       if (!embarcacaoId) return [];
 
@@ -128,15 +128,15 @@ export function useConsumoHistoricoEmbarcacao(embarcacaoId?: string) {
 
       const hotspotIds = hotspots.map(h => h.id);
 
-      // Get sessions from last 7 days
-      const sevenDaysAgo = new Date();
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+      // Get sessions from specified period
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - periodoDias);
 
       const { data: sessoes, error: sessoesError } = await supabase
         .from('sessoes_wifi')
         .select('inicio, bytes_in, bytes_out')
         .in('hotspot_id', hotspotIds)
-        .gte('inicio', sevenDaysAgo.toISOString());
+        .gte('inicio', startDate.toISOString());
 
       if (sessoesError) throw sessoesError;
 
@@ -163,7 +163,7 @@ export function useConsumoHistoricoEmbarcacao(embarcacaoId?: string) {
 
       // Fill in missing days with zeros
       const diasCompletos: ConsumoHistorico[] = [];
-      for (let i = 6; i >= 0; i--) {
+      for (let i = periodoDias - 1; i >= 0; i--) {
         const d = new Date();
         d.setDate(d.getDate() - i);
         const dataStr = d.toISOString().split('T')[0];
@@ -178,9 +178,9 @@ export function useConsumoHistoricoEmbarcacao(embarcacaoId?: string) {
   });
 }
 
-export function useTopDuracaoEmbarcacao(embarcacaoId?: string, limit = 5) {
+export function useTopDuracaoEmbarcacao(embarcacaoId?: string, periodoDias: number = 7, limit = 5) {
   return useQuery({
-    queryKey: ['top-duracao-embarcacao', embarcacaoId, limit],
+    queryKey: ['top-duracao-embarcacao', embarcacaoId, periodoDias, limit],
     queryFn: async (): Promise<{ id: string; nome: string; cargo: string | null; duracao_segundos: number }[]> => {
       if (!embarcacaoId) return [];
 

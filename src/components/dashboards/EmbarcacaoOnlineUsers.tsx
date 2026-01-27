@@ -3,13 +3,13 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Wifi, User, Clock, Download, Upload } from "lucide-react";
 import { SessaoAtiva } from "@/hooks/useEmbarcacaoDashboard";
-import { formatDistanceToNow, differenceInSeconds } from "date-fns";
-import { ptBR } from "date-fns/locale";
-import { useEffect, useState } from "react";
+import { differenceInSeconds } from "date-fns";
+import { useEffect, useState, useMemo } from "react";
 
 interface Props {
   sessoes: SessaoAtiva[] | undefined;
   isLoading: boolean;
+  searchTerm?: string;
 }
 
 function formatBytes(bytes: number): string {
@@ -103,8 +103,21 @@ function SessionRow({ sessao }: { sessao: SessaoAtiva }) {
   );
 }
 
-export function EmbarcacaoOnlineUsers({ sessoes, isLoading }: Props) {
+export function EmbarcacaoOnlineUsers({ sessoes, isLoading, searchTerm = "" }: Props) {
+  // Filter sessions by search term
+  const filteredSessoes = useMemo(() => {
+    if (!sessoes || !searchTerm.trim()) return sessoes;
+    
+    const term = searchTerm.toLowerCase();
+    return sessoes.filter(s =>
+      s.tripulante_nome.toLowerCase().includes(term) ||
+      s.tripulante_cargo?.toLowerCase().includes(term) ||
+      s.dispositivo_nome?.toLowerCase().includes(term)
+    );
+  }, [sessoes, searchTerm]);
+
   const onlineCount = sessoes?.length || 0;
+  const filteredCount = filteredSessoes?.length || 0;
 
   return (
     <Card>
@@ -115,7 +128,9 @@ export function EmbarcacaoOnlineUsers({ sessoes, isLoading }: Props) {
             Usuários Online
           </CardTitle>
           <Badge variant={onlineCount > 0 ? "default" : "secondary"} className="font-mono">
-            {onlineCount} conectado{onlineCount !== 1 ? 's' : ''}
+            {searchTerm && filteredCount !== onlineCount 
+              ? `${filteredCount} de ${onlineCount}` 
+              : `${onlineCount} conectado${onlineCount !== 1 ? 's' : ''}`}
           </Badge>
         </div>
       </CardHeader>
@@ -126,11 +141,16 @@ export function EmbarcacaoOnlineUsers({ sessoes, isLoading }: Props) {
               <Skeleton key={i} className="h-16 w-full" />
             ))}
           </div>
-        ) : onlineCount > 0 ? (
+        ) : filteredCount > 0 ? (
           <div className="space-y-2">
-            {sessoes?.map((sessao) => (
+            {filteredSessoes?.map((sessao) => (
               <SessionRow key={sessao.id} sessao={sessao} />
             ))}
+          </div>
+        ) : onlineCount > 0 && searchTerm ? (
+          <div className="text-center py-8 text-muted-foreground">
+            <User className="h-8 w-8 mx-auto mb-2 opacity-50" />
+            <p>Nenhum resultado para "{searchTerm}"</p>
           </div>
         ) : (
           <div className="text-center py-8 text-muted-foreground">

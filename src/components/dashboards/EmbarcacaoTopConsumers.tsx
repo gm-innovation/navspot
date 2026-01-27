@@ -13,6 +13,7 @@ import { Bar, BarChart, XAxis, YAxis, Cell } from "recharts";
 interface Props {
   data: TopConsumidor[] | undefined;
   isLoading: boolean;
+  periodoDias?: number;
 }
 
 function formatBytes(bytes: number): string {
@@ -38,7 +39,7 @@ const colors = [
   "hsl(var(--chart-5))",
 ];
 
-export function EmbarcacaoTopConsumers({ data, isLoading }: Props) {
+export function EmbarcacaoTopConsumers({ data, isLoading, periodoDias = 7 }: Props) {
   const chartData = data?.map((d, idx) => ({
     nome: d.nome.split(' ')[0], // First name only for chart
     nomeCompleto: d.nome,
@@ -53,7 +54,7 @@ export function EmbarcacaoTopConsumers({ data, isLoading }: Props) {
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-base">
           <TrendingUp className="h-5 w-5" />
-          Top Consumidores de Dados
+          Top Consumidores ({periodoDias} dias)
         </CardTitle>
       </CardHeader>
       <CardContent>

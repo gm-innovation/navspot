@@ -19,6 +19,7 @@ interface TopDuracao {
 interface Props {
   data: TopDuracao[] | undefined;
   isLoading: boolean;
+  periodoDias?: number;
 }
 
 function formatDuration(seconds: number): string {
@@ -55,7 +56,7 @@ const colors = [
   "hsl(var(--chart-2))",
 ];
 
-export function EmbarcacaoTopDuration({ data, isLoading }: Props) {
+export function EmbarcacaoTopDuration({ data, isLoading, periodoDias = 7 }: Props) {
   const chartData = data?.map((d, idx) => ({
     nome: d.nome.split(' ')[0], // First name only for chart
     nomeCompleto: d.nome,
@@ -70,7 +71,7 @@ export function EmbarcacaoTopDuration({ data, isLoading }: Props) {
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-base">
           <Clock className="h-5 w-5" />
-          Maior Tempo de Uso
+          Maior Tempo de Uso ({periodoDias} dias)
         </CardTitle>
       </CardHeader>
       <CardContent>
