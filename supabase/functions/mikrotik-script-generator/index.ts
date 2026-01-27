@@ -227,7 +227,7 @@ function generateMikroTikScript(
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
-# Version: 3.0 - Fixed RouterOS Syntax + Security
+# Version: 3.1 - Minor Fixes + Parameter Validation
 # ============================================
 
 # AVISO: Este script configura o hotspot do zero.
@@ -487,13 +487,12 @@ add chain=input action=accept src-address=${networkCidr} \\
 add chain=input action=accept src-address=${networkCidr} \\
     protocol=icmp comment="navspot-security-ping"
 
-# Allow DHCP discover (broadcast)
-add chain=input action=accept src-address=0.0.0.0 dst-address=255.255.255.255 \\
-    dst-port=67 protocol=udp comment="navspot-security-dhcp-discover"
+# Allow DHCP (discover, renew, release)
+add chain=input action=accept dst-port=67-68 protocol=udp comment="navspot-security-dhcp"
 
-# Allow hotspot service (HTTP redirect)
+# Allow hotspot service (HTTP redirect + alternative port)
 add chain=input action=accept src-address=${networkCidr} \\
-    dst-port=80,443 protocol=tcp comment="navspot-security-hotspot-http"
+    dst-port=80,443,8080 protocol=tcp comment="navspot-security-hotspot-http"
 
 # Drop all other input from hotspot interface
 add chain=input action=drop in-interface=\$navspotInterface \\
@@ -511,11 +510,15 @@ add chain=forward action=drop src-address=${networkCidr} dst-address=${networkCi
 # ============================================
 /file
 :do { remove [find name="navspot-token.txt"] } on-error={}
-:delay 1s
-# Create empty file and set contents
-/file print file="navspot-token" where name=""
-:delay 1s
-/file set "navspot-token.txt" contents="${hotspot.sync_token}"
+:delay 500ms
+# Create file with contents (try direct method first, fallback for newer firmwares)
+:do {
+  /file add name="navspot-token.txt" contents="${hotspot.sync_token}"
+} on-error={
+  /file print file="navspot-token" where name=""
+  :delay 1s
+  /file set "navspot-token.txt" contents="${hotspot.sync_token}"
+}
 :log info "NAVSPOT: Token salvo em arquivo"
 
 `
@@ -675,71 +678,104 @@ add name="navspot-action-processor" owner=admin policy=read,write,test,policy so
             :set param1 \$rest2
           }
           
-          :log info ("NAVSPOT: Action " . \$actionId . " type " . \$actionType)
-          
-          # Execute action based on type
-          :if (\$actionType = "kick_session" || \$actionType = "kick_device") do={
-            :do {
-              :if ([:len \$param2] > 0) do={
-                /ip hotspot active remove [find mac-address=\$param2]
+          # Validate action type before processing
+          :if ([:len \$actionType] = 0) do={
+            :log warning ("NAVSPOT: Action " . \$actionId . " has empty type, skipping")
+          } else={
+            :log info ("NAVSPOT: Action " . \$actionId . " type " . \$actionType)
+            
+            # Execute action based on type (with parameter validation)
+            :if (\$actionType = "kick_session" || \$actionType = "kick_device") do={
+              :if ([:len \$param1] > 0 || [:len \$param2] > 0) do={
+                :do {
+                  :if ([:len \$param2] > 0) do={
+                    /ip hotspot active remove [find mac-address=\$param2]
+                  } else={
+                    /ip hotspot active remove [find user=\$param1]
+                  }
+                  :log info ("NAVSPOT: Kicked " . \$param1)
+                  :set executed (\$executed . "\\"" . \$actionId . "\\",")
+                } on-error={}
               } else={
-                /ip hotspot active remove [find user=\$param1]
+                :log warning ("NAVSPOT: kick action missing params")
               }
-              :log info ("NAVSPOT: Kicked " . \$param1)
-              :set executed (\$executed . "\\"" . \$actionId . "\\",")
-            } on-error={}
-          }
-          
-          :if (\$actionType = "disable_user") do={
-            :do {
-              /ip hotspot user set [find name=\$param1] disabled=yes
-              :log info ("NAVSPOT: Disabled user " . \$param1)
-              :set executed (\$executed . "\\"" . \$actionId . "\\",")
-            } on-error={}
-          }
-          
-          :if (\$actionType = "enable_user") do={
-            :do {
-              /ip hotspot user set [find name=\$param1] disabled=no
-              :log info ("NAVSPOT: Enabled user " . \$param1)
-              :set executed (\$executed . "\\"" . \$actionId . "\\",")
-            } on-error={}
-          }
-          
-          :if (\$actionType = "update_password") do={
-            :do {
-              /ip hotspot user set [find name=\$param1] password=\$param2
-              :log info ("NAVSPOT: Updated password for " . \$param1)
-              :set executed (\$executed . "\\"" . \$actionId . "\\",")
-            } on-error={}
-          }
-          
-          :if (\$actionType = "add_user" || \$actionType = "create_user") do={
-            :do {
-              :local profile \$param3
-              :if ([:len \$profile] = 0) do={ :set profile "default-navspot" }
-              /ip hotspot user add name=\$param1 password=\$param2 profile=\$profile server=hs-${hotspotSlug}
-              :log info ("NAVSPOT: Added user " . \$param1)
-              :set executed (\$executed . "\\"" . \$actionId . "\\",")
-            } on-error={
-              :log warning ("NAVSPOT: User " . \$param1 . " might already exist")
             }
-          }
-          
-          :if (\$actionType = "remove_user") do={
-            :do {
-              /ip hotspot user remove [find name=\$param1]
-              :log info ("NAVSPOT: Removed user " . \$param1)
-              :set executed (\$executed . "\\"" . \$actionId . "\\",")
-            } on-error={}
-          }
-          
-          :if (\$actionType = "update_profile" || \$actionType = "update_user_profile") do={
-            :do {
-              /ip hotspot user set [find name=\$param1] profile=\$param2
-              :log info ("NAVSPOT: Updated profile for " . \$param1 . " to " . \$param2)
-              :set executed (\$executed . "\\"" . \$actionId . "\\",")
-            } on-error={}
+            
+            :if (\$actionType = "disable_user") do={
+              :if ([:len \$param1] > 0) do={
+                :do {
+                  /ip hotspot user set [find name=\$param1] disabled=yes
+                  :log info ("NAVSPOT: Disabled user " . \$param1)
+                  :set executed (\$executed . "\\"" . \$actionId . "\\",")
+                } on-error={}
+              } else={
+                :log warning ("NAVSPOT: disable_user missing username")
+              }
+            }
+            
+            :if (\$actionType = "enable_user") do={
+              :if ([:len \$param1] > 0) do={
+                :do {
+                  /ip hotspot user set [find name=\$param1] disabled=no
+                  :log info ("NAVSPOT: Enabled user " . \$param1)
+                  :set executed (\$executed . "\\"" . \$actionId . "\\",")
+                } on-error={}
+              } else={
+                :log warning ("NAVSPOT: enable_user missing username")
+              }
+            }
+            
+            :if (\$actionType = "update_password") do={
+              :if ([:len \$param1] > 0 && [:len \$param2] > 0) do={
+                :do {
+                  /ip hotspot user set [find name=\$param1] password=\$param2
+                  :log info ("NAVSPOT: Updated password for " . \$param1)
+                  :set executed (\$executed . "\\"" . \$actionId . "\\",")
+                } on-error={}
+              } else={
+                :log warning ("NAVSPOT: update_password missing params")
+              }
+            }
+            
+            :if (\$actionType = "add_user" || \$actionType = "create_user") do={
+              :if ([:len \$param1] > 0 && [:len \$param2] > 0) do={
+                :do {
+                  :local profile \$param3
+                  :if ([:len \$profile] = 0) do={ :set profile "default-navspot" }
+                  /ip hotspot user add name=\$param1 password=\$param2 profile=\$profile server=hs-${hotspotSlug}
+                  :log info ("NAVSPOT: Added user " . \$param1)
+                  :set executed (\$executed . "\\"" . \$actionId . "\\",")
+                } on-error={
+                  :log warning ("NAVSPOT: User " . \$param1 . " might already exist")
+                }
+              } else={
+                :log warning ("NAVSPOT: add_user missing username or password")
+              }
+            }
+            
+            :if (\$actionType = "remove_user") do={
+              :if ([:len \$param1] > 0) do={
+                :do {
+                  /ip hotspot user remove [find name=\$param1]
+                  :log info ("NAVSPOT: Removed user " . \$param1)
+                  :set executed (\$executed . "\\"" . \$actionId . "\\",")
+                } on-error={}
+              } else={
+                :log warning ("NAVSPOT: remove_user missing username")
+              }
+            }
+            
+            :if (\$actionType = "update_profile" || \$actionType = "update_user_profile") do={
+              :if ([:len \$param1] > 0 && [:len \$param2] > 0) do={
+                :do {
+                  /ip hotspot user set [find name=\$param1] profile=\$param2
+                  :log info ("NAVSPOT: Updated profile for " . \$param1 . " to " . \$param2)
+                  :set executed (\$executed . "\\"" . \$actionId . "\\",")
+                } on-error={}
+              } else={
+                :log warning ("NAVSPOT: update_profile missing params")
+              }
+            }
           }
         }
       }
