@@ -1,24 +1,16 @@
 
-# Plano: Adicionar Configuração de Perfil, Quota e Regras de Acesso para Equipamentos de Embarcação
+# Plano: Adicionar Configuração Manual de Velocidade, Quota e Regras para Equipamentos
 
-## Contexto
+## Problema Identificado
 
-O modal atual de "Novo Equipamento de Embarcação" permite apenas cadastrar MAC, nome, tipo e embarcação. Os equipamentos de embarcação (câmeras, radar, GPS, etc.) precisam das mesmas configurações que tripulantes:
+Os dispositivos/equipamentos de embarcação atualmente só podem vincular a um perfil de velocidade. Eles precisam ter a opção de **configuração manual**, assim como os tripulantes têm - permitindo definir:
+- Velocidade de download/upload
+- Quota de dados (limite em MB)
+- Regras de acesso (whitelists/blacklists)
 
-- **Perfil de Velocidade** - define limites de download/upload
-- **Pacote de Dados** - limite de consumo (quota)
-- **Regras de Acesso** - whitelists/blacklists aplicadas
+## Solução
 
-## Análise do Schema Atual
-
-A tabela `dispositivos_registrados` não possui campo `perfil_id`. As opções são:
-
-| Opção | Prós | Contras |
-|-------|------|---------|
-| Adicionar `perfil_id` na tabela | Simples, reutiliza infraestrutura existente | Requer migration |
-| Criar regras de acesso via `mac_address` | Já funciona para regras | Perfil ainda precisa de referência |
-
-**Solução escolhida**: Adicionar coluna `perfil_id` à tabela `dispositivos_registrados` para vincular equipamentos a perfis de velocidade.
+Adicionar campo `config_personalizada` (JSONB) na tabela `dispositivos_registrados` e expandir o formulário para incluir campos manuais quando o usuário escolhe "Configuração Personalizada".
 
 ---
 
@@ -27,12 +19,13 @@ A tabela `dispositivos_registrados` não possui campo `perfil_id`. As opções s
 ### Nova Migration
 
 ```sql
--- Adicionar perfil_id à tabela dispositivos_registrados
+-- Adicionar config_personalizada para configuração manual de dispositivos
 ALTER TABLE dispositivos_registrados 
-ADD COLUMN perfil_id uuid REFERENCES perfis_velocidade(id) ON DELETE SET NULL;
+ADD COLUMN config_personalizada jsonb DEFAULT NULL;
 
 -- Comentário para documentação
-COMMENT ON COLUMN dispositivos_registrados.perfil_id IS 'Perfil de velocidade aplicado ao dispositivo';
+COMMENT ON COLUMN dispositivos_registrados.config_personalizada IS 
+  'Configuração personalizada: velocidade_download, velocidade_upload, limite_dados_mb, modo_acesso';
 ```
 
 ---
@@ -41,139 +34,168 @@ COMMENT ON COLUMN dispositivos_registrados.perfil_id IS 'Perfil de velocidade ap
 
 | Arquivo | Mudança |
 |---------|---------|
-| `src/pages/Dispositivos.tsx` | Expandir formulário com seleção de perfil e regras |
-| `src/hooks/useDispositivosRegistrados.ts` | Incluir perfil no select/insert |
-| `src/components/modals/DispositivoDetailsModal.tsx` | Exibir perfil vinculado |
+| `src/pages/Dispositivos.tsx` | Adicionar modo perfil/personalizado com campos manuais |
+| `src/hooks/useDispositivosRegistrados.ts` | Atualizar interface para incluir `config_personalizada` |
+| `src/components/modals/DispositivoDetailsModal.tsx` | Exibir configuração manual quando aplicável |
 
 ---
 
-## Nova UI do Modal de Equipamento
+## Interface de Configuração Personalizada
 
+```typescript
+interface ConfigPersonalizadaDispositivo {
+  velocidade_download: string;  // Ex: "5M", "10M"
+  velocidade_upload: string;    // Ex: "2M", "5M"
+  limite_dados_mb: number | null;  // Quota em MB (null = ilimitado)
+  modo_acesso: "permitir_tudo" | "bloquear_tudo";  // Whitelist-only ou permissivo
+}
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Novo Equipamento de Embarcação                       [X]  │
-│  Cadastre dispositivos de rede como radar, GPS, etc.       │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ═══ Identificação ═══                                      │
-│                                                             │
-│  MAC Address *        [AA:BB:CC:DD:EE:FF           ]       │
-│  Nome                 [Radar Principal              ]       │
-│  Tipo                 [Radar                      ▼]       │
-│  Embarcação *         [Sonda NS-01                ▼]       │
-│                                                             │
-│  ═══ Configuração de Acesso ═══                            │
-│                                                             │
-│  ○ Usar Perfil Pré-configurado                             │
-│  ○ Configuração Personalizada                              │
-│                                                             │
-│  Perfil               [Câmera/Streaming           ▼]       │
-│                       ↳ 50M/50M • Upload prioritário        │
-│                                                             │
-│  ═══ Regras de Acesso (opcional) ═══                       │
-│                                                             │
-│  ☐ Criar regras de acesso para este equipamento            │
-│                                                             │
-│  [Selecione listas...]                                     │
-│  ┌───────────────────────────────────────┐                 │
-│  │ ✓ Navegação Essencial  [whitelist]   │                 │
-│  │ ✓ APIs Externas        [whitelist]   │                 │
-│  └───────────────────────────────────────┘                 │
-│                                                             │
-│  ─────────────────────────────────────────────────         │
-│  [Autorizado] ●────○                                       │
-│  O dispositivo poderá se conectar à rede                   │
-│                                                             │
-├─────────────────────────────────────────────────────────────┤
-│                        [Cancelar]  [Cadastrar]             │
-└─────────────────────────────────────────────────────────────┘
+
+---
+
+## Nova UI do Modal (Expandido)
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│  Novo Equipamento de Embarcação                        [X]  │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ═══ Identificação ═══                                       │
+│  MAC Address *        [AA:BB:CC:DD:EE:FF           ]        │
+│  Nome                 [Radar Principal              ]        │
+│  Tipo                 [Radar                      ▼]        │
+│  Embarcação *         [Sonda NS-01                ▼]        │
+│                                                              │
+│  ═══ Configuração de Acesso ═══                             │
+│                                                              │
+│  ○ Usar Perfil Pré-configurado                              │
+│  ● Configuração Personalizada                               │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │  Download          [10 Mbps                    ▼]  │    │
+│  │  Upload            [5 Mbps                     ▼]  │    │
+│  │  Quota de Dados    [500] MB   ☐ Ilimitado           │    │
+│  │  Modo de Acesso    [Permitir tudo              ▼]  │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                                                              │
+│  ═══ Regras de Acesso (opcional) ═══                        │
+│  ☑ Criar regras de acesso para este equipamento             │
+│  ┌───────────────────────────────────────┐                  │
+│  │ ✓ APIs Externas        [whitelist]   │                  │
+│  │ ✓ Navegação Essencial  [whitelist]   │                  │
+│  └───────────────────────────────────────┘                  │
+│                                                              │
+│  ─────────────────────────────────────────────────          │
+│  [Autorizado] ●────○                                        │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│                        [Cancelar]  [Cadastrar]              │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Detalhes Técnicos
 
-### 1. Atualizar Hook de Dispositivos
+### 1. Estado do Formulário (Dispositivos.tsx)
 
 ```typescript
-// useDispositivosRegistrados.ts - Atualizar interface
-export interface DispositivoWithTripulante extends DispositivoRegistrado {
-  tripulante?: { ... } | null;
-  embarcacao?: { ... } | null;
-  perfil?: {  // NOVO
-    id: string;
-    nome: string;
-    velocidade_download: string;
-    velocidade_upload: string;
-    limite_dados_mb: number | null;
-  } | null;
-}
-
-// Atualizar query para incluir perfil
-.select(`
-  *,
-  tripulante:tripulantes(id, nome, cargo),
-  embarcacao:embarcacoes(id, nome),
-  perfil:perfis_velocidade(id, nome, velocidade_download, velocidade_upload, limite_dados_mb)
-`)
-```
-
-### 2. Expandir Formulário (Dispositivos.tsx)
-
-```typescript
-// Estado expandido
 const [newDevice, setNewDevice] = useState({
   mac_address: "",
   nome: "",
   tipo: "outro",
   embarcacao_id: "",
   autorizado: true,
-  // NOVOS CAMPOS
+  // Modo de configuração
   modo_config: "perfil" as "perfil" | "personalizado",
   perfil_id: "",
+  // Campos personalizados
   velocidade_download: "5M",
   velocidade_upload: "2M",
+  limite_dados_mb: null as number | null,
+  quota_ilimitada: true,
+  modo_acesso: "permitir_tudo",
+  // Regras
   criar_regras: false,
   lista_ids: [] as string[],
 });
 ```
 
-### 3. Criar Regras Automaticamente
-
-Quando `criar_regras` está ativo e há listas selecionadas, após criar o dispositivo:
+### 2. Lógica de Submissão
 
 ```typescript
-// Após criar dispositivo com sucesso
-if (newDevice.criar_regras && newDevice.lista_ids.length > 0) {
-  const regras = newDevice.lista_ids.map((lista_id, index) => ({
-    empresa_id: empresaId,
-    lista_id,
-    mac_address: formattedMac,
-    prioridade: 100 + index,
-    ativo: true,
-  }));
+const handleCreateDevice = async () => {
+  const formattedMac = formatMacAddress(newDevice.mac_address);
   
-  await supabase.from('regras_acesso').insert(regras);
-}
+  // Construir config_personalizada se modo = personalizado
+  const configPersonalizada = newDevice.modo_config === "personalizado" 
+    ? {
+        velocidade_download: newDevice.velocidade_download,
+        velocidade_upload: newDevice.velocidade_upload,
+        limite_dados_mb: newDevice.quota_ilimitada ? null : newDevice.limite_dados_mb,
+        modo_acesso: newDevice.modo_acesso,
+      } 
+    : null;
+
+  createDispositivo.mutate({
+    mac_address: formattedMac,
+    nome: newDevice.nome || `Equipamento ${newDevice.tipo}`,
+    tipo: newDevice.tipo,
+    embarcacao_id: newDevice.embarcacao_id,
+    autorizado: newDevice.autorizado,
+    // Se perfil, usa perfil_id; se personalizado, usa config_personalizada
+    perfil_id: newDevice.modo_config === "perfil" ? newDevice.perfil_id || null : null,
+    config_personalizada: configPersonalizada,
+  }, {
+    onSuccess: async () => {
+      // Criar regras de acesso se solicitado
+      if (newDevice.criar_regras && newDevice.lista_ids.length > 0) {
+        const regras = newDevice.lista_ids.map((lista_id, index) => ({
+          empresa_id: user.empresa_id!,
+          lista_id,
+          mac_address: formattedMac,
+          prioridade: 100 + index,
+          ativo: true,
+        }));
+        await createMultipleRegras.mutateAsync(regras);
+      }
+      // Reset form...
+    }
+  });
+};
 ```
 
-### 4. Modal de Detalhes - Exibir Perfil
+### 3. Modal de Detalhes - Exibir Config
 
-No `DispositivoDetailsModal.tsx`, adicionar seção mostrando o perfil vinculado:
+No `DispositivoDetailsModal.tsx`:
 
 ```tsx
-{dispositivo.perfil && (
+{/* Exibir Perfil ou Config Personalizada */}
+{dispositivo.perfil ? (
   <div className="space-y-1">
     <p className="text-sm text-muted-foreground">Perfil de Velocidade</p>
-    <div className="flex items-center gap-2">
+    <Badge variant="outline">{dispositivo.perfil.nome}</Badge>
+    <span className="text-sm">
+      {dispositivo.perfil.velocidade_download}/{dispositivo.perfil.velocidade_upload}
+    </span>
+  </div>
+) : dispositivo.config_personalizada ? (
+  <div className="space-y-1">
+    <p className="text-sm text-muted-foreground">Configuração Personalizada</p>
+    <div className="text-sm space-y-1">
+      <p>↓ {dispositivo.config_personalizada.velocidade_download} / ↑ {dispositivo.config_personalizada.velocidade_upload}</p>
+      {dispositivo.config_personalizada.limite_dados_mb && (
+        <p>Quota: {dispositivo.config_personalizada.limite_dados_mb} MB</p>
+      )}
       <Badge variant="outline">
-        {dispositivo.perfil.nome}
+        {dispositivo.config_personalizada.modo_acesso === 'permitir_tudo' 
+          ? 'Acesso Total' 
+          : 'Whitelist Only'}
       </Badge>
-      <span className="text-sm text-muted-foreground">
-        {dispositivo.perfil.velocidade_download}/{dispositivo.perfil.velocidade_upload}
-      </span>
     </div>
   </div>
+) : (
+  <p className="text-sm text-muted-foreground">Sem configuração específica</p>
 )}
 ```
 
@@ -184,14 +206,15 @@ No `DispositivoDetailsModal.tsx`, adicionar seção mostrando o perfil vinculado
 ```text
 1. Admin abre modal "Novo Equipamento"
 2. Preenche MAC, nome, tipo, embarcação
-3. Seleciona perfil "Câmera/Streaming" (50M/50M, upload prioritário)
-4. Marca "Criar regras de acesso"
-5. Seleciona listas: "APIs Externas", "Navegação Essencial"
-6. Clica "Cadastrar"
-7. Sistema:
-   a. Cria dispositivo com perfil_id
+3. Escolhe "Configuração Personalizada" (radio button)
+4. Define: 10M download, 5M upload, 500MB quota, "Permitir tudo"
+5. Marca "Criar regras de acesso"
+6. Seleciona listas: "APIs Externas", "Navegação Essencial"
+7. Clica "Cadastrar"
+8. Sistema:
+   a. Cria dispositivo com config_personalizada (JSON)
    b. Cria 2 regras de acesso (uma por lista) com mac_address
-8. Toast: "Dispositivo cadastrado com 2 regras de acesso"
+9. Toast: "Dispositivo cadastrado com configuração personalizada"
 ```
 
 ---
@@ -200,17 +223,17 @@ No `DispositivoDetailsModal.tsx`, adicionar seção mostrando o perfil vinculado
 
 | Componente | Mudança |
 |------------|---------|
-| **Banco de dados** | Nova coluna `perfil_id` em `dispositivos_registrados` |
-| **Formulário** | Seções de perfil + regras de acesso |
-| **Hook** | Select inclui dados do perfil vinculado |
-| **Modal detalhes** | Exibe perfil e permite edição |
-| **Criação** | Opcionalmente cria regras junto com dispositivo |
+| **Banco de dados** | Nova coluna `config_personalizada` (JSONB) |
+| **Formulário** | Radio buttons Perfil/Personalizado + campos manuais |
+| **Hook** | Interface atualizada para incluir config |
+| **Modal detalhes** | Exibe config ou perfil conforme o caso |
+| **Criação** | Salva perfil_id OU config_personalizada (mutuamente exclusivos) |
 
 ---
 
 ## Benefícios
 
-- Equipamentos têm mesmos controles que tripulantes
-- Câmeras de segurança podem ter upload prioritário
-- GPS/ECDIS podem ter acesso restrito apenas a APIs necessárias
-- Configuração centralizada em um único modal
+- **Flexibilidade**: Equipamentos podem ter configuração específica sem criar um perfil
+- **Consistência**: Mesmo padrão usado para tripulantes
+- **Simplicidade**: Admin configura tudo em um único lugar
+- **Controle**: Quota, velocidade e regras de acesso por equipamento
