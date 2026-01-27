@@ -64,6 +64,7 @@ import { useTableRealtime } from "@/hooks/useRealtimeSubscription";
 import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { EmptyState, ErrorState } from "@/components/ui/empty-state";
 import { useAuth } from "@/contexts/AuthContext";
+import { RegrasDoPerfil } from "@/components/perfis/RegrasDoPerfil";
 
 export default function PerfisVelocidade() {
   // Enable realtime updates
@@ -587,6 +588,20 @@ export default function PerfisVelocidade() {
                     </span>
                   </div>
                 </div>
+                
+                {/* Regras de Acesso Aplicadas */}
+                {editingPerfil && (
+                  <div className="mt-4 p-4 bg-muted/50 rounded-lg">
+                    <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
+                      <Shield className="h-4 w-4" />
+                      Regras de Acesso Aplicadas
+                    </h4>
+                    <RegrasDoPerfil 
+                      perfilId={editingPerfil.id} 
+                      herdarRegrasEmpresa={formData.herdar_regras_empresa}
+                    />
+                  </div>
+                )}
               </div>
             </div>
             <DialogFooter>

@@ -205,6 +205,28 @@ export function useDeleteRegraAcesso() {
   });
 }
 
+export function useRegrasByPerfil(perfilId: string | undefined) {
+  return useQuery({
+    queryKey: ['regras_acesso', 'by_perfil', perfilId],
+    queryFn: async () => {
+      if (!perfilId) return [];
+      
+      const { data, error } = await supabase
+        .from('regras_acesso')
+        .select(`
+          *,
+          lista:listas_acesso(id, nome, tipo)
+        `)
+        .eq('perfil_id', perfilId)
+        .order('prioridade');
+
+      if (error) throw error;
+      return data as (RegraAcesso & { lista: { id: string; nome: string; tipo: string } | null })[];
+    },
+    enabled: !!perfilId,
+  });
+}
+
 export function useUpdateRegrasPrioridade() {
   const queryClient = useQueryClient();
 
