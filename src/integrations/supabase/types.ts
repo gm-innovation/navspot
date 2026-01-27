@@ -230,6 +230,7 @@ export type Database = {
           bloqueado_por: string | null
           bloqueio_motivo: string | null
           bytes_consumidos: number
+          config_personalizada: Json | null
           created_at: string
           embarcacao_id: string | null
           id: string
@@ -246,6 +247,7 @@ export type Database = {
           bloqueado_por?: string | null
           bloqueio_motivo?: string | null
           bytes_consumidos?: number
+          config_personalizada?: Json | null
           created_at?: string
           embarcacao_id?: string | null
           id?: string
@@ -262,6 +264,7 @@ export type Database = {
           bloqueado_por?: string | null
           bloqueio_motivo?: string | null
           bytes_consumidos?: number
+          config_personalizada?: Json | null
           created_at?: string
           embarcacao_id?: string | null
           id?: string

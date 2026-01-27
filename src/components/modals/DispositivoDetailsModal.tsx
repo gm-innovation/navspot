@@ -178,7 +178,8 @@ export function DispositivoDetailsModal({
                   </p>
                 </div>
               )}
-              {dispositivo.perfil && (
+              {/* Display Profile OR Custom Config */}
+              {dispositivo.perfil ? (
                 <div className="col-span-2 space-y-1">
                   <p className="text-sm text-muted-foreground">Perfil de Velocidade</p>
                   <div className="flex items-center gap-2">
@@ -193,7 +194,27 @@ export function DispositivoDetailsModal({
                     </span>
                   </div>
                 </div>
-              )}
+              ) : (dispositivo as any).config_personalizada ? (
+                <div className="col-span-2 space-y-2">
+                  <p className="text-sm text-muted-foreground">Configuração Personalizada</p>
+                  <div className="p-3 rounded-lg border bg-muted/30 space-y-2">
+                    <div className="flex items-center gap-4 text-sm">
+                      <span>↓ {(dispositivo as any).config_personalizada.velocidade_download}</span>
+                      <span>↑ {(dispositivo as any).config_personalizada.velocidade_upload}</span>
+                    </div>
+                    {(dispositivo as any).config_personalizada.limite_dados_mb && (
+                      <p className="text-sm text-muted-foreground">
+                        Quota: {(dispositivo as any).config_personalizada.limite_dados_mb} MB
+                      </p>
+                    )}
+                    <Badge variant="outline">
+                      {(dispositivo as any).config_personalizada.modo_acesso === 'permitir_tudo' 
+                        ? 'Acesso Total' 
+                        : 'Whitelist Only'}
+                    </Badge>
+                  </div>
+                </div>
+              ) : null}
               {dispositivo.bloqueio_motivo && (
                 <div className="col-span-2 space-y-1">
                   <p className="text-sm text-muted-foreground">Motivo do Bloqueio</p>
