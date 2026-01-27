@@ -1,169 +1,192 @@
 
-# Plano: Melhorar Modal de Regras de Acesso com Seleção Múltipla de Listas
+# Plano: Remover Campo "Ação" Redundante das Regras de Acesso
 
-## Problema Atual
+## Problema Identificado
 
-O modal de "Nova Regra de Acesso" permite selecionar apenas uma lista por vez, mas o usuário pode querer aplicar várias listas (ex: "Email + WhatsApp") ao mesmo tripulante/perfil. Atualmente, seria necessário criar várias regras manualmente.
+O campo `acao` (Permitir/Bloquear) nas regras de acesso é **redundante e confuso** porque:
 
-## Análise do Schema
+| Lista Tipo | acao Atual | Comportamento Real |
+|------------|------------|-------------------|
+| whitelist | permitir | Domínios que o usuário PODE acessar |
+| blacklist | permitir | Domínios que devem ser BLOQUEADOS |
 
-A tabela `regras_acesso` tem:
-- `lista_id: string` (FK para uma única lista)
-- Cada regra = 1 lista + 1 alvo (perfil/tripulante/MAC)
+Como visto no banco, todas as 5 regras têm `acao=permitir`, inclusive as listas de `blacklist`. O campo não serve para nada e causa confusão na geração do script MikroTik.
 
-**Conclusão**: O schema atual é 1:1 (uma lista por regra), mas a UX pode permitir criar múltiplas regras de uma vez.
+## Solução
 
-## Solução Proposta
+O tipo da lista (`whitelist`/`blacklist`) já define o comportamento:
+- **Whitelist**: Domínios permitidos (não precisa de ação especial no MikroTik)
+- **Blacklist**: Domínios bloqueados (adicionar `action=reject` no walled-garden + Layer7+Firewall)
 
-Modificar o modal para permitir **seleção múltipla de listas**, onde cada lista selecionada cria uma regra separada com os mesmos parâmetros (alvo, horário, dias).
+Remover o campo `acao` do formulário e usar `lista.tipo` na lógica.
 
-### Mudanças na UI
-
-| Antes | Depois |
-|-------|--------|
-| Select único para lista | Checkboxes com listas agrupadas por tipo |
-| Uma lista por submit | Múltiplas listas, cria N regras |
-| Confuso sobre conflitos | Badges visuais (whitelist/blacklist) |
-
-### Nova UI do Seletor de Listas
-
-```
-┌─────────────────────────────────────────────────┐
-│  Listas de Acesso *                             │
-│  ┌─────────────────────────────────────────┐    │
-│  │  Selecione uma ou mais listas           │    │
-│  └─────────────────────────────────────────┘    │
-│                                                 │
-│  ▼ Whitelists (permitir acesso)                 │
-│    ☑ Comunicação - Email                        │
-│    ☑ Comunicação - WhatsApp                     │
-│    ☐ Trabalho - Google Workspace                │
-│                                                 │
-│  ▼ Blacklists (bloquear acesso)                 │
-│    ☐ Redes Sociais                              │
-│    ☐ Streaming de Vídeo                         │
-│                                                 │
-│  Selecionadas: 2 listas (2 regras serão criadas)│
-└─────────────────────────────────────────────────┘
-```
-
-### Validação de Conflitos
-
-Quando o usuário seleciona listas de tipos diferentes (whitelist + blacklist), exibir um alerta informativo:
-
-```
-⚠️ Atenção: Você selecionou listas de tipos diferentes.
-   - Whitelists: permitem APENAS os domínios listados
-   - Blacklists: bloqueiam os domínios listados
-
-   A prioridade definirá qual regra é aplicada primeiro.
-```
+---
 
 ## Arquivos a Modificar
 
 | Arquivo | Mudança |
 |---------|---------|
-| `src/pages/RegrasAcesso.tsx` | Novo componente de seleção múltipla, lógica de submit batch |
-| `src/hooks/useRegrasAcesso.ts` | Novo hook `useCreateMultipleRegras` para inserção em lote |
+| `src/pages/RegrasAcesso.tsx` | Remover campo "Ação" do formulário e da tabela |
+| `src/components/modals/DispositivoDetailsModal.tsx` | Remover exibição de `acao` |
+| `src/hooks/useEmbarcacoesWithHotspot.ts` | Remover `acao` da criação automática de regras |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Usar `lista.tipo` ao invés de `regra.acao` |
+| `supabase/functions/mikrotik-sync/index.ts` | Usar `lista.tipo` ao invés de `regra.acao` |
 
-## Detalhes Técnicos
+---
 
-### 1. Novo Estado do Formulário
+## Detalhes das Mudanças
 
-```typescript
-const [formData, setFormData] = useState({
-  lista_ids: [] as string[],  // Array em vez de string única
-  // ... resto igual
-});
+### 1. Formulário (RegrasAcesso.tsx)
+
+**Remover linhas 581-600** (campo "Ação"):
+```tsx
+// REMOVER este bloco inteiro
+<div className="grid grid-cols-4 items-center gap-4">
+  <Label htmlFor="acao" className="text-right">
+    Ação
+  </Label>
+  <Select
+    value={formData.acao}
+    onValueChange={(value: "permitir" | "bloquear") => 
+      setFormData(prev => ({ ...prev, acao: value }))
+    }
+  >
+    ...
+  </Select>
+</div>
 ```
 
-### 2. Componente de Seleção Múltipla
+**Remover do state** (linhas 104-117):
+- Remover `acao: "permitir" as "permitir" | "bloquear"` do formData
 
-Novo componente `ListaMultiSelect` com:
-- Agrupamento por tipo (whitelist/blacklist)
-- Checkboxes para cada lista
-- Badge com contagem de selecionadas
-- Popover com scroll para muitas listas
+**Remover da tabela** (linhas 441-451):
+- Remover coluna "Ação" que exibe o badge permitir/bloquear
 
-### 3. Submit em Lote
+### 2. Coluna da Tabela
 
+Substituir a coluna "Ação" por exibir o tipo da lista diretamente (já existe na coluna "Lista"):
+```tsx
+// Remover TableHead e TableCell da coluna "Ação"
+```
+
+### 3. Script Generator (mikrotik-script-generator/index.ts)
+
+**Antes (linhas 383-394)**:
 ```typescript
-const handleSubmit = async (e: React.FormEvent) => {
-  e.preventDefault();
-  
-  if (formData.lista_ids.length === 0) {
-    toast({ title: "Erro", description: "Selecione ao menos uma lista." });
-    return;
+for (const regra of regrasGlobais) {
+  if (regra.listas_acesso) {
+    const dominios = regra.listas_acesso.dominios || []
+    for (const dominio of dominios) {
+      if (regra.acao === 'permitir') {  // ❌ ERRADO
+        allowedDomains.add(dominio)
+      } else {
+        blockedDomains.add(dominio)
+      }
+    }
   }
-
-  // Criar uma regra para cada lista selecionada
-  const basePrioridade = formData.prioridade;
-  const regras = formData.lista_ids.map((lista_id, index) => ({
-    ...dataToSubmit,
-    lista_id,
-    prioridade: basePrioridade + index, // Incrementar prioridade
-  }));
-
-  await createMultipleRegras.mutateAsync(regras);
-  setFormOpen(false);
-};
-```
-
-### 4. Hook para Inserção em Lote
-
-```typescript
-export function useCreateMultipleRegras() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: async (regras: RegraAcessoInsert[]) => {
-      const { data, error } = await supabase
-        .from('regras_acesso')
-        .insert(regras)
-        .select();
-
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['regras_acesso'] });
-      toast({
-        title: 'Regras criadas',
-        description: `${data.length} regra(s) de acesso foram cadastradas.`,
-      });
-    },
-  });
 }
 ```
 
-## Fluxo do Usuário
-
-```text
-1. Usuário abre modal "Nova Regra"
-2. Clica em "Selecione listas"
-3. Popover abre com listas agrupadas
-4. Marca "Email" e "WhatsApp" (ambas whitelist)
-5. Vê badge "2 listas selecionadas"
-6. Preenche resto do formulário
-7. Clica "Cadastrar"
-8. Sistema cria 2 regras com prioridades 100 e 101
-9. Toast: "2 regras de acesso foram cadastradas"
+**Depois**:
+```typescript
+for (const regra of regrasGlobais) {
+  if (regra.listas_acesso) {
+    const dominios = regra.listas_acesso.dominios || []
+    for (const dominio of dominios) {
+      if (regra.listas_acesso.tipo === 'blacklist') {  // ✅ CORRETO
+        blockedDomains.add(dominio)
+      }
+      // Whitelists não precisam de ação especial no walled-garden
+      // O hotspot permite acesso após login por padrão
+    }
+  }
+}
 ```
 
-## Comportamento na Edição
+**Remover a seção de allowed domains no walled-garden**:
+```typescript
+// REMOVER: Whitelists não devem estar no walled-garden
+// for (const domain of allowedDomains) {
+//   script += `add dst-host="${domain}" action=allow comment="..."\n`
+// }
+```
 
-Quando editando uma regra existente:
-- Manter o comportamento atual (edita apenas aquela regra)
-- Não permitir alterar para múltiplas listas
-- Exibir seletor simples (modo edição)
+### 4. MikroTik Sync (mikrotik-sync/index.ts)
 
-## Resumo Visual das Mudanças
+**Antes**:
+```typescript
+return {
+  action: regra.acao,
+  domains: (lista?.dominios || []) as string[],
+  apps: (lista?.aplicativos || []) as string[]
+}
+```
 
-| Elemento | Antes | Depois |
-|----------|-------|--------|
-| Seletor de lista | Select dropdown único | Multi-select com checkboxes |
-| Agrupamento | Nenhum | Por tipo (whitelist/blacklist) |
-| Validação | Lista obrigatória | Ao menos 1 lista |
-| Submit | 1 regra | N regras (uma por lista) |
-| Feedback | "Regra criada" | "N regras criadas" |
-| Modo edição | - | Mantém seletor simples |
+**Depois**:
+```typescript
+return {
+  action: lista?.tipo === 'blacklist' ? 'block' : 'allow',
+  domains: (lista?.dominios || []) as string[],
+  apps: (lista?.aplicativos || []) as string[]
+}
+```
+
+### 5. Hook de Embarcações (useEmbarcacoesWithHotspot.ts)
+
+Remover `acao: 'permitir'` da criação automática de regras (linhas 63 e 184):
+```typescript
+// Remover ou manter como legacy - o campo ainda existe no banco
+// Mas não será mais usado na lógica
+acao: 'permitir', // Manter para compatibilidade, mas ignorar
+```
+
+---
+
+## Banco de Dados
+
+**Opção 1 - Manter coluna (recomendado):**
+- Manter a coluna `acao` no banco com default `'permitir'`
+- Ignorar na lógica - usar sempre `lista.tipo`
+- Sem migration necessária
+
+**Opção 2 - Remover coluna (futuro):**
+- Criar migration para remover coluna `acao`
+- Só fazer depois que tudo estiver funcionando
+
+---
+
+## Resumo Visual
+
+| Local | Antes | Depois |
+|-------|-------|--------|
+| Formulário | Campo "Ação" com dropdown | Removido |
+| Tabela | Coluna "Ação" com badge | Removida |
+| Script Generator | Usa `regra.acao` | Usa `lista.tipo` |
+| MikroTik Sync | Usa `regra.acao` | Usa `lista.tipo` |
+| Banco de dados | Mantém coluna `acao` | Mantém (mas ignora) |
+
+---
+
+## Fluxo Corrigido
+
+```text
+Lista "Redes Sociais" (tipo=blacklist)
+  ↓
+Script Generator verifica lista.tipo === 'blacklist'
+  ↓
+Adiciona ao walled-garden: action=reject
+  ↓
+Adiciona ao Layer7+Firewall: drop
+  ↓
+Resultado: Facebook bloqueado ✅
+```
+
+```text
+Lista "Email" (tipo=whitelist)
+  ↓
+Script Generator verifica lista.tipo === 'whitelist'
+  ↓
+NÃO adiciona ao walled-garden (acesso após login é permitido por padrão)
+  ↓
+Resultado: Gmail acessível após login ✅
+```
