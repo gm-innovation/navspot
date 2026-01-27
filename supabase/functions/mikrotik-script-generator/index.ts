@@ -347,19 +347,18 @@ add name=hs-${hotspotSlug} interface=\$targetIf address-pool=hs-pool-${hotspotSl
 
 `
 
-  // Add users
+  // Users section - Users are now managed via API actions, not embedded in script
   script += `# ============================================
 # Users (Tripulantes)
 # ============================================
+# Users are managed via API actions (create_user, remove_user, etc.)
+# When you add tripulantes in the admin panel, they are synced automatically.
+# Run /system script run navspot-sync to process pending actions.
 /ip hotspot user
-# Remove existing users for this server
-:foreach u in=[find server="hs-${hotspotSlug}"] do={ remove \$u }
-`
+# Note: Users are NOT pre-populated in this script.
+# They will be created on first sync after adding via admin panel.
 
-  for (const tripulante of tripulantes) {
-    const profileName = tripulante.perfis_velocidade?.nome?.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'default-navspot'
-    script += `add name="${tripulante.login_wifi}" password="${tripulante.senha_wifi}" profile="${profileName}" server=hs-${hotspotSlug}\n`
-  }
+`
 
   // Walled Garden based on access rules
   // IMPORTANT: Walled Garden controls access BEFORE login
@@ -752,9 +751,17 @@ add name="navspot-action-processor" owner=admin policy=read,write,test,policy so
               :if ([:len \$param1] > 0 && [:len \$param2] > 0) do={
                 :do {
                   :local profile \$param3
-                  :if ([:len \$profile] = 0) do={ :set profile "default-navspot" }
+                  :if ([:len \$profile] = 0) do={ 
+                    # Use first available profile or MikroTik default
+                    :local firstProfile [/ip hotspot user profile find where name!="default" limit=1]
+                    :if ([:len \$firstProfile] > 0) do={
+                      :set profile [/ip hotspot user profile get \$firstProfile name]
+                    } else={
+                      :set profile "default"
+                    }
+                  }
                   /ip hotspot user add name=\$param1 password=\$param2 profile=\$profile server=hs-${hotspotSlug}
-                  :log info ("NAVSPOT: Added user " . \$param1)
+                  :log info ("NAVSPOT: Added user " . \$param1 . " with profile " . \$profile)
                   :set executed (\$executed . "\\"" . \$actionId . "\\",")
                 } on-error={
                   :log warning ("NAVSPOT: User " . \$param1 . " might already exist")

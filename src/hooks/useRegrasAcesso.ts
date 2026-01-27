@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables, TablesInsert, TablesUpdate } from '@/integrations/supabase/types';
 import { toast } from '@/hooks/use-toast';
+import { createMikrotikActionForEmpresa } from '@/hooks/useMikrotikSync';
 
 export type RegraAcesso = Tables<'regras_acesso'>;
 export type RegraAcessoInsert = TablesInsert<'regras_acesso'>;
@@ -95,13 +96,26 @@ export function useCreateRegraAcesso() {
         .single();
 
       if (error) throw error;
+
+      // Trigger firewall update
+      try {
+        await createMikrotikActionForEmpresa({
+          empresaId: data.empresa_id,
+          tipo: 'update_firewall_rules',
+          payload: { regra_id: data.id, action: 'add' },
+        });
+      } catch (actionError) {
+        console.error('[useRegrasAcesso] Failed to create MikroTik action:', actionError);
+      }
+
       return data as RegraAcesso;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['regras_acesso'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
       toast({
         title: 'Regra criada',
-        description: 'A regra de acesso foi cadastrada com sucesso.',
+        description: 'A regra de acesso foi cadastrada e será sincronizada.',
       });
     },
     onError: (error) => {
@@ -125,10 +139,25 @@ export function useCreateMultipleRegras() {
         .select();
 
       if (error) throw error;
+
+      // Trigger firewall update for the empresa
+      if (data && data.length > 0) {
+        try {
+          await createMikrotikActionForEmpresa({
+            empresaId: data[0].empresa_id,
+            tipo: 'update_firewall_rules',
+            payload: { regra_ids: data.map(r => r.id), action: 'add_multiple' },
+          });
+        } catch (actionError) {
+          console.error('[useRegrasAcesso] Failed to create MikroTik action:', actionError);
+        }
+      }
+
       return data as RegraAcesso[];
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['regras_acesso'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
       toast({
         title: 'Regras criadas',
         description: `${data.length} regra(s) de acesso foram cadastradas.`,
@@ -157,10 +186,23 @@ export function useUpdateRegraAcesso() {
         .single();
 
       if (error) throw error;
+
+      // Trigger firewall update
+      try {
+        await createMikrotikActionForEmpresa({
+          empresaId: data.empresa_id,
+          tipo: 'update_firewall_rules',
+          payload: { regra_id: data.id, action: 'update' },
+        });
+      } catch (actionError) {
+        console.error('[useRegrasAcesso] Failed to create MikroTik action:', actionError);
+      }
+
       return data as RegraAcesso;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['regras_acesso'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
       toast({
         title: 'Regra atualizada',
         description: 'A regra de acesso foi atualizada.',
@@ -181,15 +223,38 @@ export function useDeleteRegraAcesso() {
 
   return useMutation({
     mutationFn: async (id: string) => {
+      // Fetch regra data before deleting
+      const { data: regra, error: fetchError } = await supabase
+        .from('regras_acesso')
+        .select('empresa_id')
+        .eq('id', id)
+        .single();
+
+      if (fetchError) throw fetchError;
+
       const { error } = await supabase
         .from('regras_acesso')
         .delete()
         .eq('id', id);
 
       if (error) throw error;
+
+      // Trigger firewall update
+      if (regra) {
+        try {
+          await createMikrotikActionForEmpresa({
+            empresaId: regra.empresa_id,
+            tipo: 'update_firewall_rules',
+            payload: { regra_id: id, action: 'remove' },
+          });
+        } catch (actionError) {
+          console.error('[useRegrasAcesso] Failed to create MikroTik action:', actionError);
+        }
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['regras_acesso'] });
+      queryClient.invalidateQueries({ queryKey: ['acoes_pendentes'] });
       toast({
         title: 'Regra excluída',
         description: 'A regra de acesso foi removida do sistema.',
