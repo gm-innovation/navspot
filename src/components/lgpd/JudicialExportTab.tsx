@@ -57,7 +57,8 @@ export function JudicialExportTab({ empresas }: JudicialExportTabProps) {
         .lte("inicio", periodoFim)
         .order("inicio", { ascending: true });
 
-      if (selectedTripulanteId) {
+      // Filtrar por tripulante específico (ignorar "all")
+      if (selectedTripulanteId && selectedTripulanteId !== "all") {
         query = query.eq("tripulante_id", selectedTripulanteId);
       }
 
@@ -204,7 +205,7 @@ export function JudicialExportTab({ empresas }: JudicialExportTabProps) {
                 <SelectValue placeholder="Todos os tripulantes..." />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">Todos os tripulantes</SelectItem>
+                <SelectItem value="all">Todos os tripulantes</SelectItem>
                 {tripulantesDisponiveis.map((tripulante) => (
                   <SelectItem key={tripulante.id} value={tripulante.id}>
                     {tripulante.nome}
