@@ -466,10 +466,10 @@ add protocol=icmp action=accept comment="navspot-${hotspotSlug}-icmp"
     }
   }
 
-  // Security firewall rules
+  // Security firewall rules - Optimized with in-interface for robustness
   script += `
 # ============================================
-# Firewall Rules (Security)
+# Firewall Rules (Security) - Optimized
 # ============================================
 /ip firewall filter
 # Remove existing NAVSPOT security rules
@@ -479,29 +479,29 @@ add protocol=icmp action=accept comment="navspot-${hotspotSlug}-icmp"
 add chain=input action=accept connection-state=established,related \\
     comment="navspot-security-established"
 
-# Allow local network to access DNS on router
-add chain=input action=accept src-address=${networkCidr} \\
+# Allow DNS (UDP/TCP) from hotspot interface - works before login
+add chain=input action=accept in-interface=\$navspotInterface \\
     dst-port=53 protocol=udp comment="navspot-security-dns"
-add chain=input action=accept src-address=${networkCidr} \\
+add chain=input action=accept in-interface=\$navspotInterface \\
     dst-port=53 protocol=tcp comment="navspot-security-dns-tcp"
 
-# Allow WinBox from local network only
+# Allow WinBox from local network only (security - keep src-address)
 add chain=input action=accept src-address=${networkCidr} \\
     dst-port=8291 protocol=tcp comment="navspot-security-winbox"
 
-# Allow SSH from local network only
+# Allow SSH from local network only (security - keep src-address)
 add chain=input action=accept src-address=${networkCidr} \\
     dst-port=22 protocol=tcp comment="navspot-security-ssh"
 
-# Allow ping from local network
-add chain=input action=accept src-address=${networkCidr} \\
+# Allow ICMP from hotspot interface
+add chain=input action=accept in-interface=\$navspotInterface \\
     protocol=icmp comment="navspot-security-ping"
 
 # Allow DHCP (discover, renew, release)
 add chain=input action=accept dst-port=67-68 protocol=udp comment="navspot-security-dhcp"
 
-# Allow hotspot service (HTTP redirect + alternative port)
-add chain=input action=accept src-address=${networkCidr} \\
+# CRITICAL: Allow hotspot HTTP redirect (portal capture)
+add chain=input action=accept in-interface=\$navspotInterface \\
     dst-port=80,443,8080 protocol=tcp comment="navspot-security-hotspot-http"
 
 # Drop all other input from hotspot interface
