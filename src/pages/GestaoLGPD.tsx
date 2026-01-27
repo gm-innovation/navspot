@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,12 +9,15 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { Shield, Settings, FileText, History, AlertTriangle, CheckCircle, Clock, XCircle, Users, Loader2, Eye, Trash2, Download } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { 
+  Shield, Settings, FileText, History, AlertTriangle, CheckCircle, Clock, XCircle, 
+  Users, Loader2, Eye, Trash2, Download, Building2, Info, ExternalLink 
+} from "lucide-react";
 import { format, formatDistanceToNow, isPast } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { useLGPDConfigWithEmpresa, useUpdateLGPDSettings } from "@/hooks/useLGPDConfig";
 import { 
-  useLGPDConfig, 
-  useUpdateLGPDConfig, 
   useSolicitacoesLGPD, 
   useAtenderSolicitacao,
   useAuditLogs,
@@ -24,23 +28,20 @@ import { useAuth } from "@/contexts/AuthContext";
 
 export default function GestaoLGPD() {
   const { user } = useAuth();
-  const { data: config, isLoading: loadingConfig } = useLGPDConfig();
+  const { data: lgpdData, isLoading: loadingConfig } = useLGPDConfigWithEmpresa();
   const { data: solicitacoes, isLoading: loadingSolicitacoes } = useSolicitacoesLGPD();
   const { data: auditLogs, isLoading: loadingLogs } = useAuditLogs({ limit: 50 });
   const { data: stats } = useConsentimentosStats();
   
-  const updateConfig = useUpdateLGPDConfig();
+  const updateSettings = useUpdateLGPDSettings();
   const atenderSolicitacao = useAtenderSolicitacao();
   const anonimizarTripulante = useAnonimizarTripulante();
 
   const [configForm, setConfigForm] = useState({
-    razao_social: config?.razao_social || "",
-    cnpj: config?.cnpj || "",
-    dpo_nome: config?.dpo_nome || "",
-    dpo_email: config?.dpo_email || "",
-    dpo_telefone: config?.dpo_telefone || "",
-    endereco_sede: config?.endereco_sede || "",
-    retencao_logs_meses: config?.retencao_logs_meses || 12,
+    dpo_nome: "",
+    dpo_email: "",
+    dpo_telefone: "",
+    retencao_logs_meses: 12,
   });
 
   const [selectedSolicitacao, setSelectedSolicitacao] = useState<any>(null);
@@ -48,22 +49,19 @@ export default function GestaoLGPD() {
   const [isRespondendo, setIsRespondendo] = useState(false);
 
   // Atualizar form quando config carregar
-  useState(() => {
-    if (config) {
+  useEffect(() => {
+    if (lgpdData?.config) {
       setConfigForm({
-        razao_social: config.razao_social || "",
-        cnpj: config.cnpj || "",
-        dpo_nome: config.dpo_nome || "",
-        dpo_email: config.dpo_email || "",
-        dpo_telefone: config.dpo_telefone || "",
-        endereco_sede: config.endereco_sede || "",
-        retencao_logs_meses: config.retencao_logs_meses || 12,
+        dpo_nome: lgpdData.config.dpo_nome || "",
+        dpo_email: lgpdData.config.dpo_email || "",
+        dpo_telefone: lgpdData.config.dpo_telefone || "",
+        retencao_logs_meses: lgpdData.config.retencao_logs_meses || 12,
       });
     }
-  });
+  }, [lgpdData?.config]);
 
   const handleSaveConfig = () => {
-    updateConfig.mutate(configForm);
+    updateSettings.mutate(configForm);
   };
 
   const handleAtenderSolicitacao = async (status: 'concluida' | 'recusada') => {
@@ -92,13 +90,13 @@ export default function GestaoLGPD() {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'pendente':
-        return <Badge variant="outline" className="bg-yellow-100 text-yellow-800"><Clock className="h-3 w-3 mr-1" />Pendente</Badge>;
+        return <Badge variant="outline" className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400"><Clock className="h-3 w-3 mr-1" />Pendente</Badge>;
       case 'em_analise':
-        return <Badge variant="outline" className="bg-blue-100 text-blue-800"><Eye className="h-3 w-3 mr-1" />Em Análise</Badge>;
+        return <Badge variant="outline" className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400"><Eye className="h-3 w-3 mr-1" />Em Análise</Badge>;
       case 'concluida':
-        return <Badge variant="outline" className="bg-green-100 text-green-800"><CheckCircle className="h-3 w-3 mr-1" />Concluída</Badge>;
+        return <Badge variant="outline" className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"><CheckCircle className="h-3 w-3 mr-1" />Concluída</Badge>;
       case 'recusada':
-        return <Badge variant="outline" className="bg-red-100 text-red-800"><XCircle className="h-3 w-3 mr-1" />Recusada</Badge>;
+        return <Badge variant="outline" className="bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"><XCircle className="h-3 w-3 mr-1" />Recusada</Badge>;
       default:
         return <Badge variant="outline">{status}</Badge>;
     }
@@ -120,6 +118,7 @@ export default function GestaoLGPD() {
   };
 
   const solicitacoesPendentes = solicitacoes?.filter(s => s.status === 'pendente') || [];
+  const isGerente = user?.role === 'gerente_embarcacao';
 
   return (
     <div className="p-6 space-y-6">
@@ -131,10 +130,24 @@ export default function GestaoLGPD() {
             Gestão LGPD
           </h1>
           <p className="text-muted-foreground">
-            Gerencie conformidade com a Lei Geral de Proteção de Dados
+            Configure a conformidade com a Lei Geral de Proteção de Dados
           </p>
         </div>
       </div>
+
+      {/* Card Explicativo */}
+      <Alert className="border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/50">
+        <Info className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+        <AlertDescription className="text-blue-800 dark:text-blue-200">
+          <strong>Sobre esta seção:</strong> O NAVSPOT atua como <strong>OPERADOR</strong> de dados (Art. 5º, VII da LGPD), 
+          processando informações em nome da sua empresa. Sua empresa é a <strong>CONTROLADORA</strong> (Art. 5º, VI) e deve:
+          <ul className="list-disc ml-6 mt-2">
+            <li>Indicar um Encarregado de Dados (DPO)</li>
+            <li>Responder às solicitações dos titulares (tripulantes)</li>
+            <li>Definir políticas de retenção compatíveis com o Marco Civil</li>
+          </ul>
+        </AlertDescription>
+      </Alert>
 
       {/* Stats Cards */}
       <div className="grid gap-4 md:grid-cols-4">
@@ -170,7 +183,7 @@ export default function GestaoLGPD() {
             <CardTitle className="text-sm font-medium">Retenção de Logs</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{config?.retencao_logs_meses || 12} meses</div>
+            <div className="text-2xl font-bold">{lgpdData?.config?.retencao_logs_meses || 12} meses</div>
             <p className="text-xs text-muted-foreground">Mínimo legal: 6 meses</p>
           </CardContent>
         </Card>
@@ -180,8 +193,8 @@ export default function GestaoLGPD() {
             <CardTitle className="text-sm font-medium">Versão da Política</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{config?.politica_privacidade_versao || "v1.0"}</div>
-            <p className="text-xs text-muted-foreground">Termos: {config?.termos_uso_versao || "v1.0"}</p>
+            <div className="text-2xl font-bold">{lgpdData?.config?.politica_privacidade_versao || "v1.0"}</div>
+            <p className="text-xs text-muted-foreground">Termos: {lgpdData?.config?.termos_uso_versao || "v1.0"}</p>
           </CardContent>
         </Card>
       </div>
@@ -207,103 +220,148 @@ export default function GestaoLGPD() {
         </TabsList>
 
         {/* Aba Configuração */}
-        <TabsContent value="config">
-          <Card>
+        <TabsContent value="config" className="space-y-6">
+          {/* Card Controlador (Read-only) */}
+          <Card className="border-primary/20 bg-primary/5">
             <CardHeader>
-              <CardTitle>Configurações LGPD da Empresa</CardTitle>
+              <CardTitle className="flex items-center gap-2">
+                <Building2 className="h-5 w-5" />
+                Dados do Controlador
+              </CardTitle>
               <CardDescription>
-                Configure as informações do controlador e do encarregado de dados (DPO)
+                A empresa abaixo é a CONTROLADORA dos dados pessoais dos tripulantes conforme Art. 5º, VI da LGPD
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="grid gap-4 md:grid-cols-2">
+            <CardContent>
+              {loadingConfig ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <Label className="text-muted-foreground text-xs uppercase">Razão Social</Label>
+                      <p className="font-medium">{lgpdData?.empresa?.nome || "Não informado"}</p>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground text-xs uppercase">CNPJ</Label>
+                      <p className="font-medium">{lgpdData?.empresa?.cnpj || "Não informado"}</p>
+                    </div>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <Label className="text-muted-foreground text-xs uppercase">Email</Label>
+                      <p className="font-medium">{lgpdData?.empresa?.email || "Não informado"}</p>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground text-xs uppercase">Telefone</Label>
+                      <p className="font-medium">{lgpdData?.empresa?.telefone || "Não informado"}</p>
+                    </div>
+                  </div>
+                  <div>
+                    <Label className="text-muted-foreground text-xs uppercase">Endereço</Label>
+                    <p className="font-medium">{lgpdData?.empresa?.endereco || "Não informado"}</p>
+                  </div>
+                  {!isGerente && (
+                    <Button variant="outline" size="sm" asChild>
+                      <Link to="/empresas" className="flex items-center gap-2">
+                        <ExternalLink className="h-4 w-4" />
+                        Editar dados da empresa
+                      </Link>
+                    </Button>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Card DPO (Editável) */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Users className="h-5 w-5" />
+                Encarregado de Dados (DPO)
+              </CardTitle>
+              <CardDescription>
+                Conforme Art. 41 da LGPD, indique o Encarregado de Dados da sua empresa
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-3">
                 <div className="space-y-2">
-                  <Label>Razão Social</Label>
+                  <Label>Nome do DPO</Label>
                   <Input
-                    value={configForm.razao_social}
-                    onChange={(e) => setConfigForm(prev => ({ ...prev, razao_social: e.target.value }))}
-                    placeholder="Nome da empresa"
+                    value={configForm.dpo_nome}
+                    onChange={(e) => setConfigForm(prev => ({ ...prev, dpo_nome: e.target.value }))}
+                    placeholder="Nome completo"
+                    disabled={isGerente}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>CNPJ</Label>
+                  <Label>Email do DPO</Label>
                   <Input
-                    value={configForm.cnpj}
-                    onChange={(e) => setConfigForm(prev => ({ ...prev, cnpj: e.target.value }))}
-                    placeholder="00.000.000/0000-00"
+                    type="email"
+                    value={configForm.dpo_email}
+                    onChange={(e) => setConfigForm(prev => ({ ...prev, dpo_email: e.target.value }))}
+                    placeholder="dpo@empresa.com"
+                    disabled={isGerente}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Telefone do DPO</Label>
+                  <Input
+                    value={configForm.dpo_telefone}
+                    onChange={(e) => setConfigForm(prev => ({ ...prev, dpo_telefone: e.target.value }))}
+                    placeholder="(00) 00000-0000"
+                    disabled={isGerente}
                   />
                 </div>
               </div>
+            </CardContent>
+          </Card>
 
-              <div className="space-y-2">
-                <Label>Endereço da Sede</Label>
+          {/* Card Políticas de Retenção */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <History className="h-5 w-5" />
+                Políticas de Retenção
+              </CardTitle>
+              <CardDescription>
+                Conforme Marco Civil da Internet (Art. 13), logs de conexão devem ser mantidos por no mínimo 6 meses
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2 max-w-xs">
+                <Label>Período de Retenção de Logs (meses)</Label>
                 <Input
-                  value={configForm.endereco_sede}
-                  onChange={(e) => setConfigForm(prev => ({ ...prev, endereco_sede: e.target.value }))}
-                  placeholder="Endereço completo"
+                  type="number"
+                  min={6}
+                  max={60}
+                  value={configForm.retencao_logs_meses}
+                  onChange={(e) => setConfigForm(prev => ({ ...prev, retencao_logs_meses: parseInt(e.target.value) || 12 }))}
+                  disabled={isGerente}
                 />
+                <p className="text-xs text-muted-foreground">
+                  <AlertTriangle className="h-3 w-3 inline mr-1" />
+                  Mínimo de 6 meses conforme Marco Civil da Internet (Art. 13)
+                </p>
               </div>
+            </CardContent>
+          </Card>
 
-              <div className="border-t pt-4">
-                <h4 className="font-medium mb-4 flex items-center gap-2">
-                  <Users className="h-4 w-4" />
-                  Encarregado de Dados (DPO) - Art. 41 LGPD
-                </h4>
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div className="space-y-2">
-                    <Label>Nome do DPO</Label>
-                    <Input
-                      value={configForm.dpo_nome}
-                      onChange={(e) => setConfigForm(prev => ({ ...prev, dpo_nome: e.target.value }))}
-                      placeholder="Nome completo"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Email do DPO</Label>
-                    <Input
-                      type="email"
-                      value={configForm.dpo_email}
-                      onChange={(e) => setConfigForm(prev => ({ ...prev, dpo_email: e.target.value }))}
-                      placeholder="dpo@empresa.com"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Telefone do DPO</Label>
-                    <Input
-                      value={configForm.dpo_telefone}
-                      onChange={(e) => setConfigForm(prev => ({ ...prev, dpo_telefone: e.target.value }))}
-                      placeholder="(00) 00000-0000"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="border-t pt-4">
-                <h4 className="font-medium mb-4">Políticas de Retenção (Marco Civil)</h4>
-                <div className="space-y-2">
-                  <Label>Período de Retenção de Logs (meses)</Label>
-                  <Input
-                    type="number"
-                    min={6}
-                    max={60}
-                    value={configForm.retencao_logs_meses}
-                    onChange={(e) => setConfigForm(prev => ({ ...prev, retencao_logs_meses: parseInt(e.target.value) || 12 }))}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Mínimo de 6 meses conforme Marco Civil da Internet (Art. 13)
-                  </p>
-                </div>
-              </div>
-
-              <Button onClick={handleSaveConfig} disabled={updateConfig.isPending}>
-                {updateConfig.isPending ? (
+          {!isGerente && (
+            <div className="flex justify-end">
+              <Button onClick={handleSaveConfig} disabled={updateSettings.isPending}>
+                {updateSettings.isPending ? (
                   <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Salvando...</>
                 ) : (
                   "Salvar Configurações"
                 )}
               </Button>
-            </CardContent>
-          </Card>
+            </div>
+          )}
         </TabsContent>
 
         {/* Aba Solicitações */}
@@ -361,7 +419,7 @@ export default function GestaoLGPD() {
                           )}
                         </TableCell>
                         <TableCell>
-                          {sol.status === 'pendente' && (
+                          {sol.status === 'pendente' && !isGerente && (
                             <Button
                               size="sm"
                               variant="outline"
@@ -429,9 +487,13 @@ export default function GestaoLGPD() {
                         <TableCell>
                           <Badge variant="outline">{log.acao}</Badge>
                         </TableCell>
-                        <TableCell>{log.tabela}</TableCell>
                         <TableCell>
-                          <code className="text-xs">{log.ip_address || "N/A"}</code>
+                          <span className="text-sm font-mono">{log.tabela}</span>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-sm font-mono text-muted-foreground">
+                            {log.ip_address || "—"}
+                          </span>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -443,7 +505,7 @@ export default function GestaoLGPD() {
         </TabsContent>
       </Tabs>
 
-      {/* Modal de Resposta */}
+      {/* Dialog Atender Solicitação */}
       <Dialog open={!!selectedSolicitacao} onOpenChange={() => setSelectedSolicitacao(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -451,73 +513,91 @@ export default function GestaoLGPD() {
               {selectedSolicitacao?.status === 'pendente' ? 'Atender Solicitação' : 'Detalhes da Solicitação'}
             </DialogTitle>
             <DialogDescription>
-              Solicitação de {selectedSolicitacao?.tipo} - {selectedSolicitacao?.tripulante?.nome}
+              Solicitação de {selectedSolicitacao?.tipo} do titular {selectedSolicitacao?.tripulante?.nome}
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <Label className="text-muted-foreground">Tipo</Label>
+                <p>{getTipoBadge(selectedSolicitacao?.tipo)}</p>
+              </div>
+              <div>
+                <Label className="text-muted-foreground">Status</Label>
+                <p>{getStatusBadge(selectedSolicitacao?.status)}</p>
+              </div>
+            </div>
+
             {selectedSolicitacao?.descricao && (
               <div>
-                <Label>Descrição do Titular</Label>
-                <p className="text-sm text-muted-foreground bg-muted p-2 rounded mt-1">
-                  {selectedSolicitacao.descricao}
-                </p>
+                <Label className="text-muted-foreground">Descrição do Titular</Label>
+                <p className="text-sm mt-1 p-3 bg-muted rounded-md">{selectedSolicitacao.descricao}</p>
               </div>
             )}
 
-            {selectedSolicitacao?.status === 'pendente' ? (
-              <>
-                <div className="space-y-2">
-                  <Label>Resposta</Label>
-                  <Textarea
-                    value={resposta}
-                    onChange={(e) => setResposta(e.target.value)}
-                    placeholder="Digite a resposta ao titular..."
-                    rows={4}
-                  />
-                </div>
+            {selectedSolicitacao?.tipo === 'exclusao' && selectedSolicitacao?.status === 'pendente' && (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>Atenção:</strong> Aprovar esta solicitação irá anonimizar permanentemente os dados pessoais 
+                  do titular. Os logs de conexão serão mantidos por 6 meses conforme Marco Civil da Internet.
+                </AlertDescription>
+              </Alert>
+            )}
 
-                {selectedSolicitacao?.tipo === 'exclusao' && (
-                  <div className="bg-destructive/10 p-3 rounded-lg">
-                    <p className="text-sm text-destructive flex items-center gap-2">
-                      <AlertTriangle className="h-4 w-4" />
-                      Aprovar esta solicitação irá anonimizar permanentemente os dados pessoais do tripulante.
-                    </p>
-                  </div>
-                )}
-              </>
-            ) : (
+            {selectedSolicitacao?.status === 'pendente' && !isGerente ? (
+              <div className="space-y-2">
+                <Label>Resposta ao Titular</Label>
+                <Textarea
+                  value={resposta}
+                  onChange={(e) => setResposta(e.target.value)}
+                  placeholder="Descreva as ações tomadas ou o motivo da recusa..."
+                  rows={4}
+                />
+              </div>
+            ) : selectedSolicitacao?.resposta && (
               <div>
-                <Label>Resposta</Label>
-                <p className="text-sm bg-muted p-2 rounded mt-1">
-                  {selectedSolicitacao?.resposta || "Sem resposta"}
-                </p>
+                <Label className="text-muted-foreground">Resposta</Label>
+                <p className="text-sm mt-1 p-3 bg-muted rounded-md">{selectedSolicitacao.resposta}</p>
+                {selectedSolicitacao.atendido_em && (
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Respondido em {format(new Date(selectedSolicitacao.atendido_em), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
+                  </p>
+                )}
               </div>
             )}
           </div>
 
-          {selectedSolicitacao?.status === 'pendente' && (
-            <DialogFooter className="gap-2">
-              <Button
-                variant="outline"
-                onClick={() => handleAtenderSolicitacao('recusada')}
-                disabled={isRespondendo || !resposta.trim()}
-              >
-                <XCircle className="h-4 w-4 mr-2" />
-                Recusar
+          <DialogFooter>
+            {selectedSolicitacao?.status === 'pendente' && !isGerente ? (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => handleAtenderSolicitacao('recusada')}
+                  disabled={isRespondendo || !resposta.trim()}
+                >
+                  <XCircle className="h-4 w-4 mr-2" />
+                  Recusar
+                </Button>
+                <Button
+                  onClick={() => handleAtenderSolicitacao('concluida')}
+                  disabled={isRespondendo || !resposta.trim()}
+                >
+                  {isRespondendo ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <CheckCircle className="h-4 w-4 mr-2" />
+                  )}
+                  Aprovar
+                </Button>
+              </>
+            ) : (
+              <Button variant="outline" onClick={() => setSelectedSolicitacao(null)}>
+                Fechar
               </Button>
-              <Button
-                onClick={() => handleAtenderSolicitacao('concluida')}
-                disabled={isRespondendo || !resposta.trim()}
-              >
-                {isRespondendo ? (
-                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Processando...</>
-                ) : (
-                  <><CheckCircle className="h-4 w-4 mr-2" />Aprovar</>
-                )}
-              </Button>
-            </DialogFooter>
-          )}
+            )}
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

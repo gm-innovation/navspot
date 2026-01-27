@@ -477,46 +477,37 @@ export type Database = {
       }
       lgpd_config: {
         Row: {
-          cnpj: string | null
           created_at: string | null
           dpo_email: string | null
           dpo_nome: string | null
           dpo_telefone: string | null
           empresa_id: string
-          endereco_sede: string | null
           id: string
           politica_privacidade_versao: string | null
-          razao_social: string | null
           retencao_logs_meses: number | null
           termos_uso_versao: string | null
           updated_at: string | null
         }
         Insert: {
-          cnpj?: string | null
           created_at?: string | null
           dpo_email?: string | null
           dpo_nome?: string | null
           dpo_telefone?: string | null
           empresa_id: string
-          endereco_sede?: string | null
           id?: string
           politica_privacidade_versao?: string | null
-          razao_social?: string | null
           retencao_logs_meses?: number | null
           termos_uso_versao?: string | null
           updated_at?: string | null
         }
         Update: {
-          cnpj?: string | null
           created_at?: string | null
           dpo_email?: string | null
           dpo_nome?: string | null
           dpo_telefone?: string | null
           empresa_id?: string
-          endereco_sede?: string | null
           id?: string
           politica_privacidade_versao?: string | null
-          razao_social?: string | null
           retencao_logs_meses?: number | null
           termos_uso_versao?: string | null
           updated_at?: string | null
