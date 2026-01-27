@@ -625,12 +625,50 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Generate pipe-delimited format for RouterOS parsing
+    // Format: action_id|action_type|param1|param2|...
+    const pipeDelimitedActions = formattedActions.map(action => {
+      const parts = [action.id, action.type]
+      const p = action.payload
+      
+      switch (action.type) {
+        case 'kick_session':
+          parts.push(String(p.user || ''), String(p.mac || ''))
+          break
+        case 'kick_device':
+          parts.push(String(p.user || ''), String(p.mac || ''))
+          break
+        case 'disable_user':
+        case 'enable_user':
+        case 'remove_user':
+          parts.push(String(p.user || ''))
+          break
+        case 'update_password':
+          parts.push(String(p.user || ''), String(p.password || ''))
+          break
+        case 'add_user':
+        case 'create_user':
+          parts.push(String(p.user || ''), String(p.password || ''), String(p.profile || 'default-navspot'))
+          break
+        case 'update_profile':
+        case 'update_user_profile':
+          parts.push(String(p.user || ''), String(p.profile || ''))
+          break
+        default:
+          // For unknown types, add all payload values as params
+          Object.values(p).forEach(v => parts.push(String(v)))
+      }
+      
+      return parts.join('|')
+    }).join('\n')
+
     console.log(`[mikrotik-sync] Returning ${formattedActions.length} pending actions, ${firewallRules.length} firewall rules, ${blockedDevices.length} blocked devices`)
 
     return new Response(
       JSON.stringify({
         success: true,
         pending_actions: formattedActions,
+        pending_actions_pipe: pipeDelimitedActions,  // RouterOS-compatible format
         firewall_rules: firewallRules,
         device_violations: deviceViolations,
         blocked_devices: blockedDevices,
