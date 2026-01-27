@@ -178,6 +178,22 @@ export function DispositivoDetailsModal({
                   </p>
                 </div>
               )}
+              {dispositivo.perfil && (
+                <div className="col-span-2 space-y-1">
+                  <p className="text-sm text-muted-foreground">Perfil de Velocidade</p>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">
+                      {dispositivo.perfil.nome}
+                    </Badge>
+                    <span className="text-sm text-muted-foreground">
+                      {dispositivo.perfil.velocidade_download}/{dispositivo.perfil.velocidade_upload}
+                      {dispositivo.perfil.limite_dados_mb && (
+                        <> • Quota: {dispositivo.perfil.limite_dados_mb}MB</>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              )}
               {dispositivo.bloqueio_motivo && (
                 <div className="col-span-2 space-y-1">
                   <p className="text-sm text-muted-foreground">Motivo do Bloqueio</p>
