@@ -2,13 +2,14 @@ import { useState, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Ship, Users, Wifi, Plus, Settings, Trash2, Clock } from "lucide-react";
+import { Ship, Users, Wifi, Plus, Settings, Trash2, Clock, Code } from "lucide-react";
 import { 
   useEmbarcacoes, 
   useDeleteEmbarcacao,
   EmbarcacaoWithStats 
 } from "@/hooks/useEmbarcacoes";
-import { useHotspots } from "@/hooks/useHotspots";
+import { useHotspots, useGenerateHotspotScript } from "@/hooks/useHotspots";
+import { ScriptModal } from "@/components/modals/ScriptModal";
 import { useRegrasAcesso } from "@/hooks/useRegrasAcesso";
 import { useCreateEmbarcacaoWithHotspot, useUpdateEmbarcacaoWithHotspot } from "@/hooks/useEmbarcacoesWithHotspot";
 import { useTableRealtime } from "@/hooks/useRealtimeSubscription";
@@ -44,6 +45,12 @@ export default function Embarcacoes() {
   const [editingEmbarcacao, setEditingEmbarcacao] = useState<EmbarcacaoWithStats | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [embarcacaoToDelete, setEmbarcacaoToDelete] = useState<EmbarcacaoWithStats | null>(null);
+  const [scriptModalOpen, setScriptModalOpen] = useState(false);
+  const [currentScript, setCurrentScript] = useState("");
+  const [currentHotspotName, setCurrentHotspotName] = useState("");
+  const [currentHotspotId, setCurrentHotspotId] = useState("");
+
+  const generateScript = useGenerateHotspotScript();
 
   // Get hotspot for a specific embarcacao
   const getHotspotForEmbarcacao = (embarcacaoId: string) => {
@@ -85,6 +92,31 @@ export default function Embarcacoes() {
       deleteEmbarcacao.mutate(embarcacaoToDelete.id);
       setDeleteDialogOpen(false);
       setEmbarcacaoToDelete(null);
+    }
+  };
+
+  const handleGenerateScript = (embarcacao: EmbarcacaoWithStats) => {
+    const hotspot = getHotspotForEmbarcacao(embarcacao.id);
+    if (!hotspot) return;
+    
+    setCurrentHotspotId(hotspot.id);
+    setCurrentHotspotName(embarcacao.nome);
+    
+    generateScript.mutate(hotspot.id, {
+      onSuccess: (data) => {
+        setCurrentScript(data.script || "# Script não gerado");
+        setScriptModalOpen(true);
+      },
+    });
+  };
+
+  const handleRegenerateScript = () => {
+    if (currentHotspotId) {
+      generateScript.mutate(currentHotspotId, {
+        onSuccess: (data) => {
+          setCurrentScript(data.script || "# Script não gerado");
+        },
+      });
     }
   };
 
@@ -291,6 +323,15 @@ export default function Embarcacoes() {
                     <Button 
                       variant="outline" 
                       size="sm"
+                      onClick={() => handleGenerateScript(embarcacao)}
+                      disabled={!hotspot || generateScript.isPending}
+                      title={hotspot ? "Gerar Script MikroTik" : "Configure a rede primeiro"}
+                    >
+                      <Code className="h-4 w-4" />
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
                       onClick={() => handleDelete(embarcacao)}
                     >
                       <Trash2 className="h-4 w-4 text-destructive" />
@@ -340,6 +381,16 @@ export default function Embarcacoes() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Script Modal */}
+      <ScriptModal
+        open={scriptModalOpen}
+        onOpenChange={setScriptModalOpen}
+        script={currentScript}
+        hotspotName={currentHotspotName}
+        onRegenerate={handleRegenerateScript}
+        isRegenerating={generateScript.isPending}
+      />
     </div>
   );
 }
