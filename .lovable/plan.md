@@ -1,149 +1,169 @@
 
+# Plano: Melhorar Modal de Regras de Acesso com Seleção Múltipla de Listas
 
-# Plano: Ajustes Menores no Script MikroTik (v3.1)
+## Problema Atual
 
-## Melhorias Identificadas
+O modal de "Nova Regra de Acesso" permite selecionar apenas uma lista por vez, mas o usuário pode querer aplicar várias listas (ex: "Email + WhatsApp") ao mesmo tripulante/perfil. Atualmente, seria necessário criar várias regras manualmente.
 
-| # | Problema | Impacto | Prioridade |
-|---|----------|---------|------------|
-| 1 | DHCP Discover muito específico | Pode falhar em alguns cenários | Baixo |
-| 2 | Criação de arquivo usa método antigo | Incompatível com firmwares antigos | Baixo |
-| 3 | Parsing não valida parâmetros vazios | Pode causar erros silenciosos | Baixo |
-| 4 | Falta SSH na porta alternativa | Menor flexibilidade | Opcional |
+## Análise do Schema
 
----
+A tabela `regras_acesso` tem:
+- `lista_id: string` (FK para uma única lista)
+- Cada regra = 1 lista + 1 alvo (perfil/tripulante/MAC)
 
-## Arquivo a Modificar
+**Conclusão**: O schema atual é 1:1 (uma lista por regra), mas a UX pode permitir criar múltiplas regras de uma vez.
 
-| Arquivo | Ação |
-|---------|------|
-| `supabase/functions/mikrotik-script-generator/index.ts` | Pequenos ajustes nas linhas identificadas |
+## Solução Proposta
 
----
+Modificar o modal para permitir **seleção múltipla de listas**, onde cada lista selecionada cria uma regra separada com os mesmos parâmetros (alvo, horário, dias).
 
-## Correções Detalhadas
+### Mudanças na UI
 
-### 1. Regra DHCP Simplificada (Linha 491-492)
+| Antes | Depois |
+|-------|--------|
+| Select único para lista | Checkboxes com listas agrupadas por tipo |
+| Uma lista por submit | Múltiplas listas, cria N regras |
+| Confuso sobre conflitos | Badges visuais (whitelist/blacklist) |
 
-**Atual:**
-```routeros
-add chain=input action=accept src-address=0.0.0.0 dst-address=255.255.255.255 \
-    dst-port=67 protocol=udp comment="navspot-security-dhcp-discover"
+### Nova UI do Seletor de Listas
+
+```
+┌─────────────────────────────────────────────────┐
+│  Listas de Acesso *                             │
+│  ┌─────────────────────────────────────────┐    │
+│  │  Selecione uma ou mais listas           │    │
+│  └─────────────────────────────────────────┘    │
+│                                                 │
+│  ▼ Whitelists (permitir acesso)                 │
+│    ☑ Comunicação - Email                        │
+│    ☑ Comunicação - WhatsApp                     │
+│    ☐ Trabalho - Google Workspace                │
+│                                                 │
+│  ▼ Blacklists (bloquear acesso)                 │
+│    ☐ Redes Sociais                              │
+│    ☐ Streaming de Vídeo                         │
+│                                                 │
+│  Selecionadas: 2 listas (2 regras serão criadas)│
+└─────────────────────────────────────────────────┘
 ```
 
-**Corrigido:**
-```routeros
-add chain=input action=accept dst-port=67-68 protocol=udp comment="navspot-security-dhcp"
+### Validação de Conflitos
+
+Quando o usuário seleciona listas de tipos diferentes (whitelist + blacklist), exibir um alerta informativo:
+
+```
+⚠️ Atenção: Você selecionou listas de tipos diferentes.
+   - Whitelists: permitem APENAS os domínios listados
+   - Blacklists: bloqueiam os domínios listados
+
+   A prioridade definirá qual regra é aplicada primeiro.
 ```
 
-**Motivo:** DHCP vem tanto de `0.0.0.0 → 255.255.255.255` (discover) quanto de IPs da rede (renew/release). A regra simplificada cobre ambos cenários.
+## Arquivos a Modificar
 
----
+| Arquivo | Mudança |
+|---------|---------|
+| `src/pages/RegrasAcesso.tsx` | Novo componente de seleção múltipla, lógica de submit batch |
+| `src/hooks/useRegrasAcesso.ts` | Novo hook `useCreateMultipleRegras` para inserção em lote |
 
-### 2. Criação de Arquivo Token - Método Garantido (Linhas 512-518)
+## Detalhes Técnicos
 
-**Atual:**
-```routeros
-/file
-:do { remove [find name="navspot-token.txt"] } on-error={}
-:delay 1s
-/file print file="navspot-token" where name=""
-:delay 1s
-/file set "navspot-token.txt" contents="${hotspot.sync_token}"
+### 1. Novo Estado do Formulário
+
+```typescript
+const [formData, setFormData] = useState({
+  lista_ids: [] as string[],  // Array em vez de string única
+  // ... resto igual
+});
 ```
 
-**Corrigido:**
-```routeros
-/file
-:do { remove [find name="navspot-token.txt"] } on-error={}
-:delay 500ms
-:do {
-  /file add name="navspot-token.txt" contents="${hotspot.sync_token}"
-} on-error={
-  # Fallback para firmwares mais novos
-  /file print file="navspot-token" where name=""
-  :delay 1s
-  /file set "navspot-token.txt" contents="${hotspot.sync_token}"
-}
-```
+### 2. Componente de Seleção Múltipla
 
-**Motivo:** O comando `/file add name=X contents=Y` é o método direto e suportado em mais versões. O método `print file` + `set` é um workaround que pode falhar em firmwares antigos.
+Novo componente `ListaMultiSelect` com:
+- Agrupamento por tipo (whitelist/blacklist)
+- Checkboxes para cada lista
+- Badge com contagem de selecionadas
+- Popover com scroll para muitas listas
 
----
+### 3. Submit em Lote
 
-### 3. Validação de Parâmetros no Action Processor (Linhas 680-743)
-
-Adicionar verificação para evitar executar ações com parâmetros vazios:
-
-```routeros
-# Antes de executar qualquer ação
-:if ([:len $actionType] = 0) do={
-  :log warning ("NAVSPOT: Action " . $actionId . " has empty type, skipping")
-} else={
-  # Executar ações...
-}
-```
-
-E em cada ação que usa parâmetros:
-
-```routeros
-:if ($actionType = "update_password") do={
-  :if ([:len $param1] > 0 && [:len $param2] > 0) do={
-    :do {
-      /ip hotspot user set [find name=$param1] password=$param2
-      :log info ("NAVSPOT: Updated password for " . $param1)
-      :set executed ($executed . "\"" . $actionId . "\",")
-    } on-error={}
-  } else={
-    :log warning ("NAVSPOT: update_password missing params")
+```typescript
+const handleSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+  
+  if (formData.lista_ids.length === 0) {
+    toast({ title: "Erro", description: "Selecione ao menos uma lista." });
+    return;
   }
+
+  // Criar uma regra para cada lista selecionada
+  const basePrioridade = formData.prioridade;
+  const regras = formData.lista_ids.map((lista_id, index) => ({
+    ...dataToSubmit,
+    lista_id,
+    prioridade: basePrioridade + index, // Incrementar prioridade
+  }));
+
+  await createMultipleRegras.mutateAsync(regras);
+  setFormOpen(false);
+};
+```
+
+### 4. Hook para Inserção em Lote
+
+```typescript
+export function useCreateMultipleRegras() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (regras: RegraAcessoInsert[]) => {
+      const { data, error } = await supabase
+        .from('regras_acesso')
+        .insert(regras)
+        .select();
+
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['regras_acesso'] });
+      toast({
+        title: 'Regras criadas',
+        description: `${data.length} regra(s) de acesso foram cadastradas.`,
+      });
+    },
+  });
 }
 ```
 
----
+## Fluxo do Usuário
 
-### 4. Hotspot HTTP com Porta Alternativa (Linha 495-496) - OPCIONAL
-
-**Atual:**
-```routeros
-add chain=input action=accept src-address=${networkCidr} \
-    dst-port=80,443 protocol=tcp comment="navspot-security-hotspot-http"
+```text
+1. Usuário abre modal "Nova Regra"
+2. Clica em "Selecione listas"
+3. Popover abre com listas agrupadas
+4. Marca "Email" e "WhatsApp" (ambas whitelist)
+5. Vê badge "2 listas selecionadas"
+6. Preenche resto do formulário
+7. Clica "Cadastrar"
+8. Sistema cria 2 regras com prioridades 100 e 101
+9. Toast: "2 regras de acesso foram cadastradas"
 ```
 
-**Sugestão (opcional):**
-```routeros
-add chain=input action=accept src-address=${networkCidr} \
-    dst-port=80,443,8080 protocol=tcp comment="navspot-security-hotspot-http"
-```
+## Comportamento na Edição
 
-**Nota:** Só é necessário se o hotspot usar porta alternativa para captive portal. Por padrão, 80/443 são suficientes.
+Quando editando uma regra existente:
+- Manter o comportamento atual (edita apenas aquela regra)
+- Não permitir alterar para múltiplas listas
+- Exibir seletor simples (modo edição)
 
----
+## Resumo Visual das Mudanças
 
-### 5. DNS da WAN - NÃO NECESSÁRIO
-
-A configuração atual já permite DNS na WAN porque:
-1. A regra `connection-state=established,related` já aceita respostas DNS
-2. O RouterOS faz NAT masquerade por padrão para saída
-
-Adicionar regra explícita de DNS na WAN só seria necessário se o router fosse servidor DNS recursivo para clientes externos (não é o caso do hotspot).
-
----
-
-## Resumo das Mudanças
-
-| Mudança | Linhas | Benefício |
-|---------|--------|-----------|
-| DHCP simplificado | 491-492 | Cobre mais cenários |
-| Token via `/file add` | 512-518 | Compatível com mais firmwares |
-| Validação de parâmetros | 680-743 | Evita erros silenciosos |
-| Porta 8080 (opcional) | 495-496 | Flexibilidade extra |
-
----
-
-## Notas Técnicas
-
-1. **Todas as mudanças são backward-compatible** - Não quebram scripts existentes
-2. **Versão do script será incrementada** para 3.1
-3. **Logs adicionados** para facilitar debug de parâmetros inválidos
-
+| Elemento | Antes | Depois |
+|----------|-------|--------|
+| Seletor de lista | Select dropdown único | Multi-select com checkboxes |
+| Agrupamento | Nenhum | Por tipo (whitelist/blacklist) |
+| Validação | Lista obrigatória | Ao menos 1 lista |
+| Submit | 1 regra | N regras (uma por lista) |
+| Feedback | "Regra criada" | "N regras criadas" |
+| Modo edição | - | Mantém seletor simples |
