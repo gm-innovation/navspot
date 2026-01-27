@@ -306,6 +306,52 @@ export function useConsentimentosStats() {
   });
 }
 
+// Hook para criar solicitação LGPD
+export function useCreateSolicitacao() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async ({
+      tripulante_id,
+      tipo,
+      descricao,
+    }: {
+      tripulante_id: string;
+      tipo: 'acesso' | 'retificacao' | 'exclusao' | 'portabilidade' | 'oposicao';
+      descricao?: string;
+    }) => {
+      const { data, error } = await supabase
+        .from("solicitacoes_lgpd")
+        .insert({
+          tripulante_id,
+          tipo,
+          descricao,
+          status: 'pendente',
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["solicitacoes-lgpd"] });
+      toast({
+        title: "Solicitação registrada",
+        description: "A solicitação LGPD foi registrada com sucesso.",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Erro ao registrar solicitação",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
+
 // Hook para anonimizar tripulante (exclusão LGPD)
 export function useAnonimizarTripulante() {
   const queryClient = useQueryClient();
