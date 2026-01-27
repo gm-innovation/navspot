@@ -10,6 +10,7 @@ interface Empresa {
   email: string | null;
   telefone: string | null;
   endereco: string | null;
+  status: string;
 }
 
 interface LGPDConfigData {
@@ -18,16 +19,63 @@ interface LGPDConfigData {
   dpo_nome: string | null;
   dpo_email: string | null;
   dpo_telefone: string | null;
-  politica_privacidade_versao: string;
-  termos_uso_versao: string;
-  retencao_logs_meses: number;
-  created_at: string;
-  updated_at: string;
+  politica_privacidade_versao: string | null;
+  termos_uso_versao: string | null;
+  retencao_logs_meses: number | null;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface LGPDConfigWithEmpresa {
   empresa: Empresa;
   config: LGPDConfigData | null;
+}
+
+export interface EmpresaWithLGPD extends Empresa {
+  lgpd_config: LGPDConfigData | null;
+}
+
+// Helper para calcular status LGPD
+export function getLGPDStatus(empresa: EmpresaWithLGPD) {
+  const config = empresa.lgpd_config;
+  
+  if (!config) return { status: 'nao_configurado', label: 'Não configurado', color: 'red' as const };
+  if (!config.dpo_nome || !config.dpo_email) return { status: 'incompleto', label: 'DPO pendente', color: 'yellow' as const };
+  if (config.retencao_logs_meses && config.retencao_logs_meses < 6) return { status: 'erro', label: 'Retenção inválida', color: 'red' as const };
+  
+  return { status: 'ok', label: 'Configurado', color: 'green' as const };
+}
+
+// Hook para super_admin: buscar TODAS as empresas com config LGPD
+export function useAllEmpresasLGPD() {
+  const { user } = useAuth();
+
+  return useQuery({
+    queryKey: ["all-empresas-lgpd"],
+    queryFn: async (): Promise<EmpresaWithLGPD[]> => {
+      // Buscar todas empresas com suas configs LGPD (join)
+      const { data: empresas, error: empresasError } = await supabase
+        .from("empresas")
+        .select("id, nome, cnpj, email, telefone, endereco, status")
+        .order("nome");
+
+      if (empresasError) throw empresasError;
+
+      // Buscar todas configs LGPD
+      const { data: configs, error: configsError } = await supabase
+        .from("lgpd_config")
+        .select("*");
+
+      if (configsError) throw configsError;
+
+      // Combinar dados
+      return (empresas || []).map(empresa => ({
+        ...empresa,
+        lgpd_config: configs?.find(c => c.empresa_id === empresa.id) || null
+      }));
+    },
+    enabled: user?.role === 'super_admin',
+  });
 }
 
 // Hook para buscar dados completos (empresa + lgpd_config)
@@ -42,7 +90,7 @@ export function useLGPDConfigWithEmpresa() {
       // Buscar dados da empresa (controlador)
       const { data: empresa, error: empresaError } = await supabase
         .from("empresas")
-        .select("id, nome, cnpj, email, telefone, endereco")
+        .select("id, nome, cnpj, email, telefone, endereco, status")
         .eq("id", user.empresa_id)
         .single();
 
