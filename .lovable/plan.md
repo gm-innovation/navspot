@@ -1,53 +1,49 @@
 
 
-# Reestruturação Completa do Script (v3.8)
+# Correção de Sintaxe RouterOS v6 (v3.9)
 
-## Problema Crítico Identificado
+## Problema Identificado
 
-O script v3.7 tem um erro fatal de ordem de execução:
+O script v3.8 contém uma sintaxe incompatível com RouterOS v6:
 
-```text
-ORDEM ATUAL (v3.7 - ERRADA):
-┌─────────────────────────────────────────────────────────────┐
-│ 1. Smart Interface Detection                                │ ← Procura bridge1
-│    :local targetIf ""                                       │
-│    :if ([/interface find name="bridge1"] != "") ...         │ ← bridge1 NÃO existe ainda!
-│    :set targetIf "bridge1"                                  │ ← FALHA: targetIf fica vazio
-│                                                             │
-│ 2. Automatic Bridge Port Assignment                         │
-│    /interface bridge add name=bridge1...                    │ ← Cria bridge1 (tarde demais!)
-│                                                             │
-│ 3. IP Address Configuration                                 │
-│    add address=192.168.88.1/24 interface=$targetIf          │ ← FALHA: interface=""
-│                                                             │
-│ 4. DHCP, Hotspot, NAT...                                    │ ← TODOS FALHAM
-└─────────────────────────────────────────────────────────────┘
+```routeros
+/file print file="navspot-interface" where name=""
 ```
 
-**Resultado:** O script executa sem erros visíveis, mas nada funciona porque `$targetIf` está vazio.
+Esta linha causa um erro de parsing que **aborta o script inteiro antes mesmo de executar a primeira linha**. Por isso nenhum log aparece no console do MikroTik.
+
+### Ocorrências do Erro
+
+| Linha | Arquivo/Contexto | Propósito |
+|-------|------------------|-----------|
+| 363 | navspot-interface.txt | Persistir interface detectada |
+| 689 | navspot-token.txt | Armazenar token de sync |
+| 773 | navspot-actions.txt | Armazenar ações pendentes |
+| 971 | navspot-executed.txt | Armazenar ações executadas |
 
 ---
 
-## Solução: Reordenação Completa (v3.8)
+## Problemas Adicionais Identificados
 
-```text
-ORDEM CORRETA (v3.8):
-┌─────────────────────────────────────────────────────────────┐
-│ 1. INFRAESTRUTURA (criar bridge + portas)                   │
-│    /interface bridge add name=bridge1                       │ ← Cria bridge1 PRIMEIRO
-│    /interface bridge port add bridge=bridge1 ether2-5       │ ← Associa portas
-│    :delay 1s                                                │ ← Aguarda hardware subir
-│                                                             │
-│ 2. DETECÇÃO DE INTERFACE                                    │
-│    :if ([/interface find name="bridge1"] != "") ...         │ ← Agora bridge1 EXISTE!
-│    :set targetIf "bridge1"                                  │ ← SUCESSO: targetIf = "bridge1"
-│                                                             │
-│ 3. REDE (IP, Pool, DHCP)                                    │
-│    add address=192.168.88.1/24 interface=$targetIf          │ ← FUNCIONA!
-│                                                             │
-│ 4. SERVIÇOS (Hotspot, Firewall, NAT)                        │ ← TODOS FUNCIONAM!
-└─────────────────────────────────────────────────────────────┘
+### DNS (Linha 410)
+
+```routeros
+set allow-remote-requests=no
 ```
+
+**Problema:** Com `no`, os clientes do hotspot não conseguem resolver DNS antes do login. O portal cativo não funciona.
+
+**Correção:** Mudar para `allow-remote-requests=yes` para que o MikroTik atue como servidor DNS local.
+
+### Walled Garden (Linha 512)
+
+```routeros
+add dst-host="*.navspot.local" action=allow
+```
+
+**Problema:** RouterOS v6 tem problemas com wildcards `*` no início sem protocolo. Pode não funcionar corretamente.
+
+**Correção:** Usar regex: `dst-host=":^.*navspot\\\\.local$"` ou simplesmente `navspot.local` (sem wildcard).
 
 ---
 
@@ -55,7 +51,43 @@ ORDEM CORRETA (v3.8):
 
 | Arquivo | Alteração |
 |---------|-----------|
-| `supabase/functions/mikrotik-script-generator/index.ts` | Reordenar seções do script RouterOS |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Corrigir sintaxe de criação de arquivos |
+
+---
+
+## Solução Proposta
+
+### Sintaxe Corrigida para Criação de Arquivos
+
+**Antes (v3.8 - INCORRETA):**
+```routeros
+:do {
+  /file add name="navspot-interface.txt" contents=$targetIf
+} on-error={
+  /file print file="navspot-interface" where name=""
+  :delay 1s
+  /file set "navspot-interface.txt" contents=$targetIf
+}
+```
+
+**Depois (v3.9 - CORRETA):**
+```routeros
+:do {
+  /file add name="navspot-interface.txt" contents=$targetIf
+} on-error={
+  :do { /tool fetch url="" mode=https dst-path="navspot-interface.txt" } on-error={}
+  :delay 500ms
+  :do { /file set "navspot-interface.txt" contents=$targetIf } on-error={}
+}
+```
+
+**Alternativa mais simples (recomendada):**
+```routeros
+# Remove se existir e recria
+:do { /file remove "navspot-interface.txt" } on-error={}
+:delay 500ms
+/file add name="navspot-interface.txt" contents=$targetIf
+```
 
 ---
 
@@ -63,263 +95,138 @@ ORDEM CORRETA (v3.8):
 
 ### 1. Versão do Script
 
-**Linha 233 - Atualizar para:**
 ```typescript
-# Version: 3.8 - Infrastructure First (bridge before detection)
+# Version: 3.9 - RouterOS v6/v7 Universal Syntax
 ```
 
-### 2. Nova Ordem das Seções
+### 2. Correção da Criação de Arquivos
 
-A estrutura do script gerado deve seguir esta ordem:
-
-| # | Seção | Descrição |
-|---|-------|-----------|
-| 1 | Header | Variáveis globais, identity |
-| 2 | **Bridge Infrastructure** | Criar bridge1 + associar portas (ANTES da detecção) |
-| 3 | Interface Detection | Agora detecta bridge1 que já existe |
-| 4 | IP Address | Configurar IP na interface detectada |
-| 5 | IP Pool | Pool de endereços DHCP |
-| 6 | DHCP Network | Rede DHCP |
-| 7 | DHCP Server | Servidor DHCP |
-| 8 | DNS | Configurações DNS |
-| 9 | Hotspot Profile | Perfil do hotspot |
-| 10 | IP Binding | Bypass administrativo |
-| 11 | User Profiles | Perfis de velocidade |
-| 12 | Hotspot Server | Servidor hotspot |
-| 13 | Walled Garden | Domínios permitidos/bloqueados |
-| 14 | Firewall | Regras de segurança |
-| 15 | NAT | Masquerade para internet |
-| 16 | Sync Scripts | Scripts de sincronização |
-| 17 | Schedulers | Agendadores |
-| 18 | Final Log | Resumo da configuração |
-
----
-
-## Código RouterOS Reestruturado
-
-### Bloco 1: Header + Identity (sem mudança)
+Substituir o padrão `file print file=... where name=""` por:
 
 ```routeros
-# ============================================
-# NAVSPOT MikroTik Configuration Script
-# Hotspot: ${hotspot.nome}
-# Embarcacao: ${embarcacao.nome}
-# Generated: ${new Date().toISOString()}
-# Version: 3.8 - Infrastructure First (bridge before detection)
-# ============================================
-
-/system identity set name="${hotspot.nome}"
-```
-
-### Bloco 2: NOVA POSIÇÃO - Bridge Infrastructure (ANTES da detecção)
-
-```routeros
-# ============================================
-# Bridge Infrastructure (MUST BE FIRST)
-# ============================================
-# Topologia: ether1 = WAN/Internet, ether2-5 = Hotspot LAN
-# A bridge DEVE existir ANTES da detecção de interface
-
-:log info "NAVSPOT: [1/6] Configurando infraestrutura de rede..."
-
-# Step 1: Create bridge1 if it doesn't exist
-/interface bridge
-:if ([:len [find name="bridge1"]] = 0) do={
-    add name=bridge1 comment="navspot-hotspot-bridge"
-    :log info "NAVSPOT: bridge1 criada"
-} else={
-    :log info "NAVSPOT: bridge1 ja existe"
-}
-
-# Step 2: Enable bridge1
-enable [find name="bridge1"]
-:log info "NAVSPOT: bridge1 ativada"
-
-# Step 3: Wait for bridge to be ready in kernel
-:delay 1s
-
-# Step 4: Remove ether2-5 from any existing bridge (prevent conflicts)
-/interface bridge port
-:foreach port in={"ether2";"ether3";"ether4";"ether5"} do={
-    :do {
-        remove [find interface=$port]
-    } on-error={}
-}
-
-# Step 5: Add ether2-5 to bridge1 (Hotspot LAN)
-:foreach port in={"ether2";"ether3";"ether4";"ether5"} do={
-    :do {
-        add bridge=bridge1 interface=$port comment="navspot-hotspot-port"
-        :log info ("NAVSPOT: " . $port . " adicionada a bridge1")
-    } on-error={
-        :log warning ("NAVSPOT: " . $port . " nao existe neste modelo")
-    }
-}
-
-# Step 6: Add wlan interfaces to bridge1 if they exist
-:foreach wlan in={"wlan1";"wlan2"} do={
-    :if ([/interface find name=$wlan] != "") do={
-        :do {
-            /interface bridge port remove [find interface=$wlan]
-        } on-error={}
-        :do {
-            /interface bridge port add bridge=bridge1 interface=$wlan comment="navspot-hotspot-port"
-            :log info ("NAVSPOT: " . $wlan . " adicionada a bridge1")
-        } on-error={}
-    }
-}
-
-# Step 7: Enable physical interfaces
-/interface ethernet
-:foreach port in={"ether2";"ether3";"ether4";"ether5"} do={
-    :do {
-        enable [find name=$port]
-    } on-error={}
-}
-
-# Step 8: Wait for all ports to be fully initialized
-:delay 1s
-
-:log info "NAVSPOT: Infraestrutura de rede pronta"
-```
-
-### Bloco 3: Interface Detection (AGORA FUNCIONA)
-
-```routeros
-# ============================================
-# Smart Interface Detection
-# ============================================
-# Agora a bridge1 JA EXISTE, a detecção vai encontrá-la
-
-:log info "NAVSPOT: [2/6] Detectando interface de rede..."
-
-:local targetIf ""
-:local interfacePriority {"bridge1";"wlan1";"wlan2";"ether3";"ether4";"ether5"}
-:local configuredIf "${interfaceWifi}"
-
-# Use configured interface if explicitly set
-:if ([:len $configuredIf] > 0) do={
-    :if ([/interface find name=$configuredIf] != "") do={
-        :set targetIf $configuredIf
-        :log info ("NAVSPOT: Usando interface configurada: " . $targetIf)
-    } else={
-        :log warning ("NAVSPOT: Interface '" . $configuredIf . "' nao existe. Detectando automaticamente...")
-    }
-} else={
-    :log info "NAVSPOT: Modo auto-detect ativado"
-}
-
-# Auto-detect if no valid interface found yet
-:if ($targetIf = "") do={
-    :foreach ifName in=$interfacePriority do={
-        :if ($targetIf = "") do={
-            :if ([/interface find name=$ifName] != "") do={
-                :set targetIf $ifName
-                :log info ("NAVSPOT: Interface detectada: " . $targetIf)
-            }
-        }
-    }
-}
-
-# Final validation
-:if ($targetIf = "") do={
-    :log error "NAVSPOT: ERRO CRITICO - Nenhuma interface valida encontrada!"
-    :error "Abortando - nenhuma interface disponivel"
-}
-
-:log info ("NAVSPOT: Interface final: " . $targetIf)
-
-# Save interface for persistence
-:global navspotInterface $targetIf
-/file
-:do { remove [find name="navspot-interface.txt"] } on-error={}
+# Método universal que funciona em v6 e v7
+:do { /file remove "nome-arquivo.txt" } on-error={}
 :delay 500ms
-:do {
-    /file add name="navspot-interface.txt" contents=$targetIf
-} on-error={
-    /file print file="navspot-interface" where name=""
-    :delay 1s
-    /file set "navspot-interface.txt" contents=$targetIf
-}
+/file add name="nome-arquivo.txt" contents=$conteudo
 ```
 
-### Demais Blocos (mantidos na mesma ordem)
+Este método:
+- Remove o arquivo se existir (ignora erro se não existir)
+- Aguarda o filesystem
+- Cria o arquivo novo com o conteúdo
 
-Os blocos 4-18 (IP, DHCP, Hotspot, Firewall, NAT, Sync) permanecem na mesma posição, apenas com a garantia de que `$targetIf` agora contém um valor válido.
+### 3. Correção do DNS
+
+**Linha 410 - Antes:**
+```routeros
+set allow-remote-requests=no
+```
+
+**Depois:**
+```routeros
+set allow-remote-requests=yes servers=8.8.8.8,8.8.4.4
+```
+
+Isso permite que o MikroTik atue como servidor DNS para os clientes do hotspot, essencial para o portal cativo funcionar.
+
+### 4. Correção do Walled Garden
+
+**Linha 512 - Antes:**
+```routeros
+add dst-host="*.navspot.local" action=allow
+```
+
+**Depois:**
+```routeros
+add dst-host="navspot.local" action=allow comment="navspot-${hotspotSlug}-system"
+```
+
+Sem o wildcard problemático. O hotspot aceita subdomínios automaticamente quando o domínio principal está liberado.
 
 ---
 
-## Resumo das Mudanças no TypeScript
+## Localizações das Correções
 
-| Linha Atual | Ação | Nova Posição |
-|-------------|------|--------------|
-| 240-302 | Smart Interface Detection | Mover para DEPOIS do Bridge Infrastructure |
-| 304-363 | Bridge Port Assignment | Mover para ANTES da Interface Detection |
-| 233 | Version | Atualizar para 3.8 |
-
-### Adicionar Delays Estratégicos
-
-| Posição | Delay | Motivo |
-|---------|-------|--------|
-| Após criar bridge1 | `:delay 1s` | Aguardar interface subir no kernel |
-| Após adicionar portas | `:delay 1s` | Aguardar portas estarem em estado running |
-| Após criar arquivo | `:delay 500ms` | Aguardar filesystem (já existe) |
+| Linha | Contexto | Ação |
+|-------|----------|------|
+| 233 | Versão | Atualizar para 3.9 |
+| 356-367 | navspot-interface.txt | Refatorar criação de arquivo |
+| 410 | DNS | Mudar para allow-remote-requests=yes |
+| 512 | Walled Garden | Remover wildcard problemático |
+| 682-692 | navspot-token.txt | Refatorar criação de arquivo |
+| 770-776 | navspot-actions.txt | Refatorar criação de arquivo |
+| 968-974 | navspot-executed.txt | Refatorar criação de arquivo |
 
 ---
 
 ## Comportamento Após Correção
 
-| Antes (v3.7) | Depois (v3.8) |
+| Antes (v3.8) | Depois (v3.9) |
 |--------------|---------------|
-| `bridge1` não existe na detecção | `bridge1` criada ANTES da detecção |
-| `targetIf = ""` (vazio) | `targetIf = "bridge1"` |
-| IP, DHCP, Hotspot FALHAM | IP, DHCP, Hotspot FUNCIONAM |
-| Script executa sem erros visíveis | Script funciona corretamente |
+| Script trava no parsing | Script executa completamente |
+| Nenhum log visível | Logs de todas as etapas |
+| DNS bloqueado antes do login | DNS funciona para portal cativo |
+| Walled garden com wildcards v6 | Sintaxe universal |
 
 ---
 
-## Fluxo do Script v3.8
+## Fluxo do Script v3.9
 
 ```text
 1. Header (variáveis, identity)
-2. [NOVO] Bridge Infrastructure (criar bridge1 + portas)
-3. [MOVIDO] Interface Detection (agora encontra bridge1)
-4. IP Address
-5. IP Pool
-6. DHCP Network + Server
-7. DNS
-8. Hotspot Profile + IP Binding
-9. User Profiles
-10. Hotspot Server
-11. Walled Garden
-12. Layer 7 + Firewall
-13. NAT Masquerade
-14. Sync Scripts + Schedulers
-15. Final Log
+2. Bridge Infrastructure (criar bridge1 + portas)
+3. Interface Detection (detecta bridge1)
+4. [FIX] Salvar interface em arquivo (método universal)
+5. IP Address
+6. IP Pool
+7. DHCP Network + Server
+8. [FIX] DNS (allow-remote-requests=yes)
+9. Hotspot Profile + IP Binding
+10. User Profiles
+11. Hotspot Server
+12. [FIX] Walled Garden (sem wildcards)
+13. Layer 7 + Firewall
+14. NAT Masquerade
+15. [FIX] Sync Scripts (criação de arquivos)
+16. Schedulers
+17. Final Log
 ```
 
 ---
 
-## Validação de Idempotência
+## Compatibilidade
 
-Todos os comandos seguem o padrão:
+| RouterOS | Sintaxe Atual (v3.8) | Sintaxe Nova (v3.9) |
+|----------|---------------------|---------------------|
+| v6.x | ERRO de parsing | OK |
+| v7.x | Funciona (parcialmente) | OK |
 
-```routeros
-:if ([:len [find name="X"]] = 0) do={ add name="X" ... }
-```
-
-Isso garante que:
-- Se o item já existe, não tenta criar novamente
-- Se não existe, cria
-- Script pode ser executado múltiplas vezes sem erros
+A nova sintaxe é 100% compatível com ambas as versões.
 
 ---
 
-## Segurança Mantida
+## Secao Tecnica
 
-- ether1 continua excluída (WAN)
-- Apenas ether2-5 são adicionadas à bridge
-- Firewall permanece ativo
-- NAT masquerade funcional
-- Delays previnem race conditions
+### Bloco de Criacao de Arquivo Refatorado
+
+```typescript
+// Antes (v3.8)
+script += `:do {
+  /file add name="navspot-interface.txt" contents=\\$targetIf
+} on-error={
+  /file print file="navspot-interface" where name=""
+  :delay 1s
+  /file set "navspot-interface.txt" contents=\\$targetIf
+}`
+
+// Depois (v3.9)
+script += `# Remove existing file if present
+:do { /file remove "navspot-interface.txt" } on-error={}
+:delay 500ms
+# Create new file with contents
+/file add name="navspot-interface.txt" contents=\\$targetIf
+:log info ("NAVSPOT: Interface salva em arquivo: " . \\$targetIf)`
+```
+
+Este padrão deve ser aplicado em todos os 4 locais onde arquivos são criados.
 
