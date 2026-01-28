@@ -230,7 +230,7 @@ function generateMikroTikScript(
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
-# Version: 3.9 - RouterOS v6/v7 Universal Syntax
+# Version: 3.10 - RouterOS v6 String Quoting Fix
 # ============================================
 
 # AVISO: Este script configura o hotspot do zero.
@@ -249,7 +249,7 @@ function generateMikroTikScript(
 # Step 1: Create bridge1 if it doesn't exist
 /interface bridge
 :if ([:len [find name="bridge1"]] = 0) do={
-    add name=bridge1 comment="navspot-hotspot-bridge"
+    add name="bridge1" comment="navspot-hotspot-bridge"
     :log info "NAVSPOT: bridge1 criada"
 } else={
     :log info "NAVSPOT: bridge1 ja existe"
@@ -380,7 +380,7 @@ enable [find name="bridge1"]
 # ============================================
 /ip pool
 :do { remove [find name="hs-pool-${hotspotSlug}"] } on-error={}
-add name=hs-pool-${hotspotSlug} ranges=${poolStart}-${poolEnd}
+add name="hs-pool-${hotspotSlug}" ranges=${poolStart}-${poolEnd}
 
 # ============================================
 # DHCP Server Network
@@ -395,7 +395,7 @@ add address=${networkCidr} gateway=${gateway} dns-server=${gateway} comment="nav
 # ============================================
 /ip dhcp-server
 :do { remove [find name="dhcp-${hotspotSlug}"] } on-error={}
-add name="dhcp-${hotspotSlug}" interface=\$targetIf address-pool=hs-pool-${hotspotSlug} disabled=no
+add name="dhcp-${hotspotSlug}" interface=\$targetIf address-pool="hs-pool-${hotspotSlug}" disabled=no
 
 # ============================================
 # DNS Server (local cache)
@@ -410,7 +410,7 @@ set allow-remote-requests=yes servers=8.8.8.8,8.8.4.4
 
 /ip hotspot profile
 :do { remove [find name="hsprof-${hotspotSlug}"] } on-error={}
-add name=hsprof-${hotspotSlug} hotspot-address=${gateway} dns-name=${hotspotSlug}.navspot.local \\
+add name="hsprof-${hotspotSlug}" hotspot-address=${gateway} dns-name="${hotspotSlug}.navspot.local" \\
     html-directory=hotspot login-by=http-chap,http-pap \\
     http-cookie-lifetime=1d keepalive-timeout=5m rate-limit=""
 
@@ -468,8 +468,8 @@ add address=${networkCidr} type=bypassed comment="navspot-admin-bypass"
 # ============================================
 /ip hotspot
 :do { remove [find name="hs-${hotspotSlug}"] } on-error={}
-add name=hs-${hotspotSlug} interface=\$targetIf address-pool=hs-pool-${hotspotSlug} \\
-    profile=hsprof-${hotspotSlug} disabled=no
+add name="hs-${hotspotSlug}" interface=\$targetIf address-pool="hs-pool-${hotspotSlug}" \\
+    profile="hsprof-${hotspotSlug}" disabled=no
 
 `
 
@@ -916,7 +916,7 @@ add name="navspot-action-processor" owner=admin policy=read,write,test,policy so
                       :set profile "default"
                     }
                   }
-                  /ip hotspot user add name=\$param1 password=\$param2 profile=\$profile server=hs-${hotspotSlug}
+                  /ip hotspot user add name=\$param1 password=\$param2 profile=\$profile server="hs-${hotspotSlug}"
                   :log info ("NAVSPOT: Added user " . \$param1 . " with profile " . \$profile)
                   :set executed (\$executed . "\\"" . \$actionId . "\\",")
                 } on-error={
@@ -1061,7 +1061,7 @@ add name="navspot-health-scheduler" interval=1h on-event="/system script run nav
 :log info "NAVSPOT: Porta WAN: ether1 (excluida do hotspot)"
 :log info "NAVSPOT: NAT Masquerade: ativo (clientes podem acessar internet)"
 :log info "NAVSPOT: Sync a cada ${hotspot.sync_interval_minutes} minutos"
-:log info "NAVSPOT: Versao: 3.9 - RouterOS v6/v7 Universal Syntax"
+:log info "NAVSPOT: Versao: 3.10 - RouterOS v6 String Quoting Fix"
 :log info "============================================"
 `
 
