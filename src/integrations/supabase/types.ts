@@ -475,6 +475,7 @@ export type Database = {
           ultima_sincronizacao: string | null
           updated_at: string
           wan_interface: string
+          wan_type: string
         }
         Insert: {
           created_at?: string
@@ -492,6 +493,7 @@ export type Database = {
           ultima_sincronizacao?: string | null
           updated_at?: string
           wan_interface?: string
+          wan_type?: string
         }
         Update: {
           created_at?: string
@@ -509,6 +511,7 @@ export type Database = {
           ultima_sincronizacao?: string | null
           updated_at?: string
           wan_interface?: string
+          wan_type?: string
         }
         Relationships: [
           {
