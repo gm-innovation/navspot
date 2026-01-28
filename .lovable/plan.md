@@ -1,75 +1,90 @@
 
 
-# ✅ Correção de Acesso Administrativo (WinBox/SSH) - IMPLEMENTADO
+# Correção da Detecção de Interface (v3.5)
 
-## Status: CONCLUÍDO
+## Problema Identificado
 
-Implementado em: 2026-01-28
-
----
-
-## Problema Corrigido
-
-O script bloqueava acesso WinBox/SSH da rede de gerência (WAN) porque as regras de firewall só permitiam acesso do CIDR do hotspot (ex: 192.168.88.0/24).
-
-**Antes:**
-```
-PC (192.168.0.8) → WinBox → MikroTik:8291 → DROP ❌ (bloqueado)
-```
-
----
-
-## Solução Implementada
-
-### 1. IP Binding com Bypass Global (linhas 356-371)
+A lista de prioridade de interfaces (linha 251) inclui `bridgeLocal` que em alguns ambientes é a **interface WAN** (com internet), não uma interface adequada para Hotspot.
 
 ```routeros
-/ip hotspot ip-binding
-:do { remove [find comment~"navspot"] } on-error={}
-
-# Bypass global - qualquer conexão não-hotspot é bypassada automaticamente
-add address=0.0.0.0/0 type=bypassed server=none comment="navspot-admin-global-bypass"
-
-# Bypass para rede local do hotspot
-add address=${networkCidr} type=bypassed comment="navspot-admin-bypass"
+:local interfacePriority {"bridge1";"bridgeLocal";"wlan1";"wlan2";"ether2";"ether3";"ether4";"ether5";"ether1"}
 ```
 
-### 2. Regras de Firewall RFC1918 (linhas 549-573)
+**O que acontece:**
+1. O script detecta `bridgeLocal` como primeira interface disponivel
+2. Monta o Hotspot na interface que tem a internet
+3. Causa "curto-circuito" na rede
+4. Internet cai, WinBox trava, sincronizacao falha
 
+---
+
+## Solucao Proposta
+
+### Alteracao 1: Remover interfaces de sistema da lista de prioridade
+
+**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
+
+**Linha 251 - Antes:**
 ```routeros
-# WinBox - todas as redes privadas
-add chain=input action=accept src-address=10.0.0.0/8 dst-port=8291 protocol=tcp
-add chain=input action=accept src-address=172.16.0.0/12 dst-port=8291 protocol=tcp
-add chain=input action=accept src-address=192.168.0.0/16 dst-port=8291 protocol=tcp
+:local interfacePriority {"bridge1";"bridgeLocal";"wlan1";"wlan2";"ether2";"ether3";"ether4";"ether5";"ether1"}
+```
 
-# SSH - todas as redes privadas
-add chain=input action=accept src-address=10.0.0.0/8 dst-port=22 protocol=tcp
-add chain=input action=accept src-address=172.16.0.0/12 dst-port=22 protocol=tcp
-add chain=input action=accept src-address=192.168.0.0/16 dst-port=22 protocol=tcp
+**Linha 251 - Depois:**
+```routeros
+:local interfacePriority {"bridge1";"wlan1";"wlan2";"ether3";"ether4";"ether5"}
+```
+
+**Interfaces removidas:**
+- `bridgeLocal` - Frequentemente usada para WAN/gerencia
+- `ether2` - Pode ser porta WAN secundaria
+- `ether1` - Quase sempre e WAN
+
+### Logica da Nova Lista de Prioridade
+
+| Prioridade | Interface | Justificativa |
+|------------|-----------|---------------|
+| 1 | `bridge1` | Bridge padrao para clientes (mais comum) |
+| 2 | `wlan1` | WiFi integrado do MikroTik |
+| 3 | `wlan2` | WiFi secundario |
+| 4 | `ether3` | Porta LAN tipica |
+| 5 | `ether4` | Porta LAN alternativa |
+| 6 | `ether5` | Porta LAN de backup |
+
+---
+
+## Comportamento Apos Correcao
+
+```text
+ANTES (Problemático):
+Script detecta → bridgeLocal (WAN) → Hotspot na WAN → Internet cai
+
+DEPOIS (Correto):
+Script detecta → bridge1 (LAN) → Hotspot na LAN → Internet OK
 ```
 
 ---
 
-## Comportamento Após a Correção
+## Seguranca Mantida
 
-| Origem | WinBox/SSH | Resultado |
-|--------|------------|-----------|
-| 192.168.88.x (Hotspot) | Porta 8291/22 | ✅ PERMITIDO |
-| 192.168.0.x (WAN/Gerência) | Porta 8291/22 | ✅ PERMITIDO |
-| 10.x.x.x (Rede Corporativa) | Porta 8291/22 | ✅ PERMITIDO |
-| 172.16.x.x (VPN) | Porta 8291/22 | ✅ PERMITIDO |
-| IP Público (Internet) | Porta 8291/22 | ❌ BLOQUEADO |
+- Se nenhuma interface da lista existir, o script aborta com erro
+- O usuario pode forcar uma interface especifica via configuracao do Hotspot
+- Interfaces WAN (ether1, bridgeLocal) nao serao selecionadas automaticamente
 
 ---
 
-## Segurança Mantida
+## Versao do Script
 
-1. **Acesso externo (internet) permanece bloqueado** - apenas redes RFC1918 são permitidas
-2. **Clientes do hotspot continuam controlados** - IP Binding não afeta usuários do portal
-3. **Drop rule final permanece ativa** - qualquer tráfego não autorizado é descartado
+Atualizar a versao de **3.3** para **3.5** na linha 233:
+
+```typescript
+# Version: 3.5 - Safe Interface Detection (exclude WAN interfaces)
+```
 
 ---
 
-## Arquivo Modificado
+## Arquivo a Modificar
 
-- `supabase/functions/mikrotik-script-generator/index.ts` (versão 3.4)
+| Arquivo | Linhas | Alteracao |
+|---------|--------|-----------|
+| `supabase/functions/mikrotik-script-generator/index.ts` | 233, 251 | Remover interfaces WAN da lista de prioridade |
+
