@@ -230,7 +230,7 @@ function generateMikroTikScript(
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
-# Version: 3.3 - Critical Fixes (Persistence, Security, Performance)
+# Version: 3.5 - Safe Interface Detection (exclude WAN interfaces)
 # ============================================
 
 # AVISO: Este script configura o hotspot do zero.
@@ -241,14 +241,14 @@ function generateMikroTikScript(
 # ============================================
 # Smart Interface Detection with Priority Fallback
 # ============================================
-# Priority order based on real vessel topologies:
-# 1. bridge1/bridgeLocal - Structured networks with bridge
+# Priority order based on real vessel topologies (WAN interfaces EXCLUDED):
+# 1. bridge1 - Default client bridge (most common LAN setup)
 # 2. wlan1/wlan2 - MikroTik integrated Wi-Fi
-# 3. ether2-5 - LAN ports (APs usually connect here)
-# 4. ether1 - Last resort (usually WAN port)
+# 3. ether3-5 - LAN ports (safe for hotspot)
+# NOTE: bridgeLocal, ether1, ether2 are excluded (commonly WAN/management)
 
 :local targetIf ""
-:local interfacePriority {"bridge1";"bridgeLocal";"wlan1";"wlan2";"ether2";"ether3";"ether4";"ether5";"ether1"}
+:local interfacePriority {"bridge1";"wlan1";"wlan2";"ether3";"ether4";"ether5"}
 :local configuredIf "${interfaceWifi}"
 
 # Only try configured interface if explicitly set (not empty/auto)
