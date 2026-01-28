@@ -1,307 +1,284 @@
 
 
-# Nova Arquitetura: Bootstrap Minimo + Configuracao via API
+# Correcao do Script Bootstrap v4.1 - Ultra Minimo
 
-## Resumo da Mudanca
+## Problema Identificado
 
-A arquitetura atual gera um script gigante (~1000+ linhas) que falha frequentemente no RouterOS v6 devido a limitacoes de parsing. A nova abordagem divide o trabalho em duas fases:
+O script v4.0 ainda e muito complexo para o RouterOS v6:
 
-1. **Bootstrap Minimo**: Script pequeno (~80-100 linhas) que cria apenas a infraestrutura basica
-2. **Configuracao via API**: Todas as regras, profiles, usuarios e firewall sao configurados incrementalmente via fila de acoes pendentes
+| Problema | Causa |
+|----------|-------|
+| Script nao cria hotspot server | Parsing para antes de chegar nessa secao |
+| Falta NAT masquerade | Nao estava no script |
+| Scripts com `source={...}` complexos | RouterOS v6 nao parseia bem blocos grandes |
+| `:toarray` no action processor | Sintaxe problematica no v6 |
+| Scripts de health/action processor | Desnecessarios no bootstrap |
 
-## Fase 1: Script Bootstrap Minimo
+## Arquivo a Modificar
 
-### O que o Bootstrap faz (mantido):
-- System identity
-- Bridge1 + ports (ether2-5, wlan1-2)
-- IP Address (gateway)
-- IP Pool
-- DHCP Server + Network
-- DNS recursivo
-- Hotspot Profile basico (sem rate-limit customizado)
-- IP Binding (bypass admin)
-- Hotspot Server
-- Walled Garden MINIMO (apenas navspot.local e supabase.co)
-- Walled Garden IP (DNS, DHCP, NTP, ICMP)
-- Token file
-- Script navspot-sync (simplificado)
-- Script navspot-action-processor
-- Scheduler
-
-### O que sera REMOVIDO do Bootstrap (vai para API):
-- User profiles customizados (perfis_velocidade)
-- Usuarios (tripulantes)
-- Walled Garden de blacklists
-- Layer7 protocols
-- Firewall filter rules de bloqueio
-- Regras de acesso complexas
-
-### Novo Fluxo Apos Bootstrap
-
-```text
-1. Usuario cola o script bootstrap no MikroTik
-2. MikroTik executa e cria hotspot basico (funcional imediatamente)
-3. Scheduler inicia sync a cada X minutos
-4. Primeira sincronizacao:
-   - Backend detecta hotspot "new" (sem profiles/users)
-   - Backend enfileira acoes para criar:
-     - User profiles
-     - Usuarios
-     - Walled garden rules
-     - Firewall rules
-5. MikroTik processa acoes na proxima sync
-6. Configuracao completa em 2-3 ciclos de sync
-```
+| Arquivo | Alteracao |
+|---------|-----------|
+| `supabase/functions/mikrotik-script-generator/index.ts` | Gerar script v4.1 ultra minimo |
 
 ---
 
-## Arquivos a Modificar/Criar
+## Mudancas Criticas
 
-| Arquivo | Acao | Descricao |
-|---------|------|-----------|
-| `supabase/functions/mikrotik-script-generator/index.ts` | Modificar | Gerar apenas Bootstrap minimo (~100 linhas) |
-| `supabase/functions/mikrotik-sync/index.ts` | Modificar | Detectar hotspot "novo" e enfileirar configuracoes iniciais |
-| `supabase/functions/mikrotik-config-update/index.ts` | Modificar | Adicionar tipos: `add_user_profile`, `add_walled_garden_rule` |
-| `src/hooks/useMikrotikSync.ts` | Modificar | Adicionar funcao para enfileirar configuracao inicial |
-| `src/services/mikrotikService.ts` | Modificar | Adicionar funcoes para novos tipos de acao |
-| `src/pages/Hotspots.tsx` | Modificar | Adicionar indicador de "configuracao pendente" |
+### Removidos do Bootstrap (v4.0 -> v4.1)
+
+| Item | Motivo |
+|------|--------|
+| Action Processor | Complexo demais, sera via API direta |
+| Health Check Script | Desnecessario no bootstrap |
+| `:toarray` | Sintaxe problematica no v6 |
+| Blocos `source={...}` grandes | Limite de parsing do v6 |
+
+### Adicionados no v4.1
+
+| Item | Motivo |
+|------|--------|
+| NAT Masquerade | Essencial para internet funcionar |
+| DNS TCP (porta 53) | Alguns resolvers usam TCP |
+| Script sync inline com `\r\n` | Formato que RouterOS aceita melhor |
+| Logs em cada etapa | Facilita debug |
+
+---
+
+## Estrutura do Script v4.1 (~95 linhas)
+
+```text
+1. Header + Version (5 linhas)
+2. System Identity (1 linha)
+3. Bridge (4 linhas)
+4. Bridge Ports (6 linhas)
+5. IP Address (3 linhas)
+6. IP Pool (3 linhas)
+7. DHCP Network (3 linhas)
+8. DHCP Server (3 linhas)
+9. DNS (1 linha)
+10. Hotspot Profile (3 linhas)
+11. Hotspot Server (3 linhas) <-- CRITICO
+12. NAT Masquerade (3 linhas) <-- NOVO
+13. Walled Garden Sistema (6 linhas)
+14. Token File (3 linhas)
+15. Sync Script (3 linhas) <-- SIMPLIFICADO
+16. Scheduler (3 linhas)
+17. Logs Finais (2 linhas)
+
+TOTAL: ~55 linhas (vs ~130 no v4.0)
+```
 
 ---
 
 ## Detalhes da Implementacao
 
-### 1. Script Generator (Bootstrap)
-
-**Novo tamanho estimado**: ~100 linhas (vs 1000+ atual)
-
-```text
-Header + Version
-Bridge Infrastructure
-Interface Detection
-IP/Pool/DHCP/DNS
-Hotspot Profile (basico)
-IP Binding
-Hotspot Server
-Walled Garden (apenas sistema)
-Walled Garden IP (DNS/DHCP/NTP/ICMP)
-Token file
-Sync script (simplificado)
-Action processor
-Health script
-Schedulers
-Final log
-```
-
-**Removido do Bootstrap**:
-```text
-- User profiles loop (perfis_velocidade)
-- Tripulantes/users loop
-- Blocked domains collection
-- Walled garden reject rules
-- Layer7 protocols
-- Firewall block rules
-- NAT (sera via acao se necessario)
-```
-
-### 2. Sync Function (Detectar Hotspot Novo)
-
-Adicionar logica para detectar quando um hotspot faz a primeira sincronizacao e enfileirar a configuracao inicial:
+### 1. Header Atualizado
 
 ```typescript
-// Apos validar hotspot
-if (hotspot.status === 'offline' && !hotspot.ultima_sincronizacao) {
-  // Primeira sincronizacao - hotspot novo!
-  await enqueueInitialConfiguration(supabase, hotspot, embarcacao);
-}
+return `# ============================================
+# NAVSPOT Bootstrap Script v4.1
+# Hotspot: ${hotspot.nome}
+# Embarcacao: ${embarcacao.nome}
+# Generated: ${new Date().toISOString()}
+# ============================================
+
+/system identity set name="${embarcacao.nome}"
+
+:log info "NAVSPOT: Iniciando bootstrap..."
 ```
 
-A funcao `enqueueInitialConfiguration` vai:
-1. Buscar perfis_velocidade da empresa
-2. Buscar tripulantes ativos da embarcacao
-3. Buscar regras de acesso ativas (blacklists)
-4. Criar acoes pendentes para cada item
+### 2. Bridge Simplificada
 
-### 3. Novos Tipos de Acao
+```typescript
+# === 1. BRIDGE ===
+/interface bridge
+:if ([:len [find name="bridge1"]] = 0) do={add name="bridge1" comment="navspot"}
+enable [find name="bridge1"]
 
-| Tipo | Payload | Comando MikroTik |
-|------|---------|------------------|
-| `add_user_profile` | `{name, rate_limit, shared_users, limit_bytes, session_timeout}` | `/ip hotspot user profile add` |
-| `remove_user_profile` | `{name}` | `/ip hotspot user profile remove` |
-| `update_user_profile_config` | `{name, rate_limit, ...}` | `/ip hotspot user profile set` |
-| `add_walled_garden` | `{dst_host, action, comment}` | `/ip hotspot walled-garden add` |
-| `remove_walled_garden` | `{dst_host}` | `/ip hotspot walled-garden remove` |
-| `add_firewall_l7` | `{name, regexp}` | `/ip firewall layer7-protocol add` |
-| `add_firewall_filter` | `{chain, layer7, action}` | `/ip firewall filter add` |
+# === 2. BRIDGE PORTS ===
+/interface bridge port
+:foreach p in={"ether2";"ether3";"ether4";"ether5"} do={:do {remove [find interface=$p]} on-error={}}
+:foreach p in={"ether2";"ether3";"ether4";"ether5"} do={:do {add bridge="bridge1" interface=$p comment="navspot"} on-error={}}
 
-### 4. Action Processor (Atualizado)
+:delay 2s
+```
 
-O script `navspot-action-processor` no MikroTik precisa suportar os novos tipos:
+### 3. IP/DHCP/DNS
+
+```typescript
+# === 3. IP ADDRESS ===
+/ip address
+:do {remove [find address="${gateway}/24"]} on-error={}
+add address=${gateway}/24 interface=bridge1 comment="navspot-${hotspotSlug}"
+
+# === 4. IP POOL ===
+/ip pool
+:do {remove [find name="hs-pool-${hotspotSlug}"]} on-error={}
+add name="hs-pool-${hotspotSlug}" ranges=${poolStart}-${poolEnd}
+
+# === 5. DHCP NETWORK ===
+/ip dhcp-server network
+:do {remove [find gateway="${gateway}"]} on-error={}
+add address=${networkCidr} gateway=${gateway} dns-server=${gateway} comment="navspot-${hotspotSlug}"
+
+# === 6. DHCP SERVER ===
+/ip dhcp-server
+:do {remove [find name="dhcp-${hotspotSlug}"]} on-error={}
+add name="dhcp-${hotspotSlug}" interface=bridge1 address-pool="hs-pool-${hotspotSlug}" disabled=no
+
+# === 7. DNS ===
+/ip dns set allow-remote-requests=yes servers=8.8.8.8,8.8.4.4
+
+:log info "NAVSPOT: Rede configurada"
+```
+
+### 4. Hotspot (CRITICO)
+
+```typescript
+# === 8. HOTSPOT PROFILE ===
+/ip hotspot profile
+:do {remove [find name="hsprof-${hotspotSlug}"]} on-error={}
+add name="hsprof-${hotspotSlug}" hotspot-address=${gateway} dns-name="${hotspotSlug}.navspot.local" html-directory=flash/hotspot login-by=http-chap,http-pap
+
+:log info "NAVSPOT: Profile criado"
+
+# === 9. HOTSPOT SERVER ===
+/ip hotspot
+:do {remove [find name="hs-${hotspotSlug}"]} on-error={}
+add name="hs-${hotspotSlug}" interface=bridge1 address-pool="hs-pool-${hotspotSlug}" profile="hsprof-${hotspotSlug}" disabled=no
+
+:log info "NAVSPOT: Hotspot ativo"
+```
+
+### 5. NAT Masquerade (NOVO)
+
+```typescript
+# === 10. NAT (MASQUERADE) ===
+/ip firewall nat
+:do {remove [find comment="navspot-masquerade"]} on-error={}
+add chain=srcnat out-interface=!bridge1 action=masquerade comment="navspot-masquerade"
+
+:log info "NAVSPOT: NAT configurado"
+```
+
+### 6. Walled Garden Basico
+
+```typescript
+# === 11. WALLED GARDEN BASICO ===
+/ip hotspot walled-garden
+:do {remove [find comment~"navspot-system"]} on-error={}
+add dst-host="navspot.local" action=allow comment="navspot-system"
+add dst-host="*.supabase.co" action=allow comment="navspot-system"
+
+/ip hotspot walled-garden ip
+:do {remove [find comment~"navspot-system"]} on-error={}
+add dst-port=53 protocol=udp action=accept comment="navspot-system-dns"
+add dst-port=53 protocol=tcp action=accept comment="navspot-system-dns-tcp"
+add dst-port=67-68 protocol=udp action=accept comment="navspot-system-dhcp"
+
+:log info "NAVSPOT: Walled garden basico configurado"
+```
+
+### 7. Token File
+
+```typescript
+# === 12. TOKEN FILE ===
+/file print file="navspot-token.txt" where name=""
+:delay 1s
+/file set "navspot-token.txt" contents="${hotspot.sync_token}"
+
+:log info "NAVSPOT: Token salvo"
+```
+
+### 8. Script de Sync (SIMPLIFICADO - inline com \r\n)
+
+```typescript
+# === 13. SCRIPT DE SYNC ===
+/system script
+:do {remove [find name="navspot-sync"]} on-error={}
+add name="navspot-sync" policy=read,write,policy,test source=":local token [/file get \\"navspot-token.txt\\" contents]\\r\\n:local syncUrl \\"${syncUrl}\\"\\r\\n:local users \\"\\"\\r\\n/ip hotspot active\\r\\n:foreach a in=[find] do={\\r\\n:local u [get \\$a user]\\r\\n:local m [get \\$a mac-address]\\r\\n:local bi [get \\$a bytes-in]\\r\\n:local bo [get \\$a bytes-out]\\r\\n:set users (\\$users . \\$u . \\",\\" . \\$m . \\",\\" . \\$bi . \\",\\" . \\$bo . \\";\\")\\r\\n}\\r\\n:local body (\\"{\\\\\\"sync_token\\\\\\":\\\\\\"" . \\$token . "\\\\\\",\\\\\\"active_users_csv\\\\\\":\\\\\\"" . \\$users . \\"\\\\\\"}\\"\\r\\n:do {/tool fetch url=\\$syncUrl mode=https http-method=post http-data=\\$body output=user as-value} on-error={:log warning \\"NAVSPOT-SYNC: Falha\\"}\\r\\n:log info \\"NAVSPOT-SYNC: OK\\""
+
+:log info "NAVSPOT: Script de sync criado"
+```
+
+### 9. Scheduler
+
+```typescript
+# === 14. SCHEDULER ===
+/system scheduler
+:do {remove [find name="navspot-sync-scheduler"]} on-error={}
+add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
+
+:log info "NAVSPOT: Scheduler configurado"
+
+:log info "NAVSPOT: Bootstrap concluido com sucesso!"
+:log info "NAVSPOT: Hotspot funcional. Configure usuarios e regras via API."
+```
+
+---
+
+## Comparacao v4.0 vs v4.1
+
+| Aspecto | v4.0 | v4.1 |
+|---------|------|------|
+| Linhas | ~130 | ~55 |
+| NAT Masquerade | Nao | Sim |
+| Action Processor | Sim (complexo) | Nao (via API) |
+| Health Check | Sim | Nao |
+| Blocos source={} | Multiplos | 1 (inline) |
+| `:toarray` | Sim | Nao |
+| Logs de progresso | Poucos | Em cada etapa |
+
+---
+
+## Checklist de Validacao
+
+O script v4.1 DEVE conter estas linhas criticas:
 
 ```routeros
-:if ($actionType = "add_user_profile") do={
-  /ip hotspot user profile add name=$p1 rate-limit=$p2 shared-users=$p3
-}
-:if ($actionType = "add_walled_garden") do={
-  /ip hotspot walled-garden add dst-host=$p1 action=$p2 comment=$p3
-}
-# etc...
+# Hotspot Server (linha ~35)
+add name="hs-${slug}" interface=bridge1 address-pool="hs-pool-${slug}" profile="hsprof-${slug}" disabled=no
+
+# NAT Masquerade (linha ~40)
+add chain=srcnat out-interface=!bridge1 action=masquerade comment="navspot-masquerade"
+
+# Token File (linha ~48)
+/file set "navspot-token.txt" contents="${token}"
+
+# Sync Script (linha ~52)
+add name="navspot-sync" policy=read,write,policy,test source="..."
 ```
-
-### 5. Frontend (Indicador de Status)
-
-Na pagina de Hotspots, mostrar status de configuracao:
-
-| Status | Indicador |
-|--------|-----------|
-| `online` + sem acoes pendentes | Badge verde "Configurado" |
-| `online` + acoes pendentes | Badge amarelo "Configurando..." |
-| `offline` | Badge vermelho "Offline" |
-
----
-
-## Vantagens da Nova Arquitetura
-
-| Problema Atual | Solucao |
-|----------------|---------|
-| Script de 1000+ linhas nao parseia | Bootstrap de ~100 linhas |
-| Erro de sintaxe em uma linha quebra tudo | Cada comando via API e independente |
-| Debug dificil (qual linha falhou?) | API retorna sucesso/erro por acao |
-| Mudancas exigem regenerar script | Mudancas sao incrementais |
-| Usuario precisa colar script grande | Usuario cola 1x o bootstrap |
-| Walled garden/firewall fixos | Dinamicos e editaveis |
-
----
-
-## Fluxo de Dados
-
-```text
-                    +----------------+
-                    |   Frontend     |
-                    |  (Dashboard)   |
-                    +-------+--------+
-                            |
-                            v
-                    +-------+--------+
-                    | mikrotik-      |
-                    | config-update  | ---> acoes_pendentes
-                    +----------------+
-                            |
-                            v
-                    +-------+--------+
-                    |   MikroTik     | <--- navspot-sync
-                    |   RouterOS     |
-                    +-------+--------+
-                            |
-                            v
-                    +-------+--------+
-                    | navspot-action |
-                    |   processor    | ---> executa comandos
-                    +----------------+
-```
-
----
-
-## Cronograma de Implementacao
-
-1. **Fase 1A**: Simplificar script generator (apenas Bootstrap)
-2. **Fase 1B**: Atualizar action processor para novos tipos
-3. **Fase 2**: Modificar mikrotik-sync para enfileirar configuracao inicial
-4. **Fase 3**: Atualizar frontend com indicadores de status
-5. **Fase 4**: Testar ciclo completo (bootstrap -> sync -> configure)
 
 ---
 
 ## Secao Tecnica
 
-### Script Bootstrap (Estrutura)
-
-```routeros
-# ============================================
-# NAVSPOT Bootstrap Script
-# Version: 4.0 - Minimal Bootstrap
-# ============================================
-
-# 1. System Identity
-/system identity set name="..."
-
-# 2. Bridge Infrastructure (~20 linhas)
-/interface bridge
-add name="bridge1" comment="navspot"
-# ... ports
-
-# 3. Interface Detection (~15 linhas)
-:local targetIf "bridge1"
-# ... detection logic
-
-# 4. IP/Pool/DHCP (~15 linhas)
-/ip address add ...
-/ip pool add ...
-/ip dhcp-server add ...
-
-# 5. Hotspot (~15 linhas)
-/ip hotspot profile add name="hsprof-..." (basico)
-/ip hotspot add name="hs-..."
-
-# 6. Walled Garden Sistema (~5 linhas)
-/ip hotspot walled-garden add dst-host="navspot.local" action=allow
-/ip hotspot walled-garden add dst-host="supabase.co" action=allow
-
-# 7. Token + Scripts (~25 linhas)
-/file print file="navspot-token.txt" where name=""
-:delay 1s
-/file set "navspot-token.txt" contents="..."
-
-/system script add name="navspot-sync" source={...}
-/system script add name="navspot-action-processor" source={...}
-
-# 8. Scheduler (~5 linhas)
-/system scheduler add name="navspot-sync-scheduler" ...
-
-# TOTAL: ~100 linhas
-```
-
-### Tipos de Acao Expandidos
+### Codigo TypeScript Completo da Funcao
 
 ```typescript
-type ActionType = 
-  // Usuarios
-  | 'create_user' 
-  | 'remove_user' 
-  | 'disable_user' 
-  | 'enable_user'
-  | 'update_password' 
-  | 'update_user_profile'
-  | 'kick_session'
-  // Dispositivos
-  | 'block_device' 
-  | 'unblock_device' 
-  | 'kick_device'
-  // Profiles (NOVO)
-  | 'add_user_profile' 
-  | 'remove_user_profile' 
-  | 'update_profile_config'
-  // Walled Garden (NOVO)
-  | 'add_walled_garden' 
-  | 'remove_walled_garden'
-  // Firewall (NOVO)
-  | 'add_firewall_l7' 
-  | 'add_firewall_filter' 
-  | 'remove_firewall_rule'
+function generateBootstrapScript(
+  hotspot: Hotspot,
+  embarcacao: Embarcacao,
+  supabaseUrl: string
+): string {
+  const syncUrl = `${supabaseUrl}/functions/v1/mikrotik-sync`
+  const networkParts = hotspot.rede.split('/')
+  const networkBase = networkParts[0].replace(/\.\d+$/, '')
+  const gateway = `${networkBase}.1`
+  const networkCidr = hotspot.rede.includes('/') ? hotspot.rede : `${hotspot.rede}/24`
+  const poolStart = `${networkBase}.10`
+  const poolEnd = `${networkBase}.254`
+  const hotspotSlug = hotspot.nome.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
+  const syncIntervalMinutes = hotspot.sync_interval_minutes || 5
+
+  // Script de sync inline (escaped para RouterOS)
+  const syncScriptSource = `:local token [/file get \\"navspot-token.txt\\" contents]\\r\\n:local syncUrl \\"${syncUrl}\\"\\r\\n:local users \\"\\"\\r\\n/ip hotspot active\\r\\n:foreach a in=[find] do={\\r\\n:local u [get \\$a user]\\r\\n:local m [get \\$a mac-address]\\r\\n:local bi [get \\$a bytes-in]\\r\\n:local bo [get \\$a bytes-out]\\r\\n:set users (\\$users . \\$u . \\",\\" . \\$m . \\",\\" . \\$bi . \\",\\" . \\$bo . \\";\\")\\r\\n}\\r\\n:local body (\\"{\\\\\\"sync_token\\\\\\":\\\\\\"\\". \\$token . \\"\\\\\\"...`
+  
+  return `# Script v4.1...`
+}
 ```
 
-### Payload Pipe-Delimited (Novos Tipos)
+### Formato do Script de Sync (inline)
 
-```text
-# add_user_profile
-id|add_user_profile|profileName|rateLimit|sharedUsers|limitBytes|sessionTimeout
-
-# add_walled_garden
-id|add_walled_garden|dstHost|action|comment
-
-# add_firewall_l7
-id|add_firewall_l7|protocolName|regexp|comment
-
-# add_firewall_filter
-id|add_firewall_filter|chain|layer7Protocol|action|comment
-```
+O script de sync e salvo como uma unica string com `\r\n` como separador de linha, que o RouterOS interpreta corretamente. Isso evita os problemas de parsing dos blocos `source={...}`.
 
