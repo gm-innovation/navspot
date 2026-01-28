@@ -150,72 +150,78 @@ function generateBootstrapScript(
   const poolEnd = `${networkBase}.254`
   const hotspotSlug = hotspot.nome.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
   const syncIntervalMinutes = hotspot.sync_interval_minutes || 5
-  const syncIntervalSeconds = syncIntervalMinutes * 60
 
-  // Bootstrap script - minimal, just infrastructure + sync
+  // Bootstrap script v4.1 - ultra minimal (~55 lines)
   return `# ============================================
-# NAVSPOT Bootstrap Script v4.0
+# NAVSPOT Bootstrap Script v4.1
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
 # ============================================
-# Este script cria APENAS a infraestrutura basica.
-# Usuarios, perfis e regras sao configurados via API.
-# ============================================
 
-/system identity set name="${hotspot.nome}"
+/system identity set name="${embarcacao.nome}"
 
-# === Bridge Infrastructure ===
+:log info "NAVSPOT: Iniciando bootstrap..."
+
+# === 1. BRIDGE ===
 /interface bridge
 :if ([:len [find name="bridge1"]] = 0) do={add name="bridge1" comment="navspot"}
 enable [find name="bridge1"]
-:delay 2s
 
+# === 2. BRIDGE PORTS ===
 /interface bridge port
-:foreach p in={"ether2";"ether3";"ether4";"ether5"} do={:do {remove [find interface=\$p]} on-error={}}
-:foreach p in={"ether2";"ether3";"ether4";"ether5"} do={:do {add bridge="bridge1" interface=\$p} on-error={}}
-:foreach w in={"wlan1";"wlan2"} do={:if ([/interface find name=\$w]!="") do={:do {/interface bridge port remove [find interface=\$w]} on-error={};:do {/interface bridge port add bridge="bridge1" interface=\$w} on-error={}}}
-/interface ethernet
-:foreach p in={"ether2";"ether3";"ether4";"ether5"} do={:do {enable [find name=\$p]} on-error={}}
+:foreach p in={"ether2";"ether3";"ether4";"ether5"} do={:do {remove [find interface=$p]} on-error={}}
+:foreach p in={"ether2";"ether3";"ether4";"ether5"} do={:do {add bridge="bridge1" interface=$p comment="navspot"} on-error={}}
+
 :delay 2s
 
-# === IP Configuration ===
+# === 3. IP ADDRESS ===
 /ip address
-:do {remove [find interface="bridge1" comment~"navspot"]} on-error={}
-:do {add address=${gateway}/24 interface="bridge1" comment="navspot-${hotspotSlug}"} on-error={}
+:do {remove [find address="${gateway}/24"]} on-error={}
+add address=${gateway}/24 interface=bridge1 comment="navspot-${hotspotSlug}"
 
+# === 4. IP POOL ===
 /ip pool
 :do {remove [find name="hs-pool-${hotspotSlug}"]} on-error={}
 add name="hs-pool-${hotspotSlug}" ranges=${poolStart}-${poolEnd}
 
+# === 5. DHCP NETWORK ===
 /ip dhcp-server network
 :do {remove [find gateway="${gateway}"]} on-error={}
 add address=${networkCidr} gateway=${gateway} dns-server=${gateway} comment="navspot-${hotspotSlug}"
 
+# === 6. DHCP SERVER ===
 /ip dhcp-server
 :do {remove [find name="dhcp-${hotspotSlug}"]} on-error={}
-add name="dhcp-${hotspotSlug}" interface="bridge1" address-pool="hs-pool-${hotspotSlug}" disabled=no
+add name="dhcp-${hotspotSlug}" interface=bridge1 address-pool="hs-pool-${hotspotSlug}" disabled=no
 
+# === 7. DNS ===
 /ip dns set allow-remote-requests=yes servers=8.8.8.8,8.8.4.4
 
-# === Hotspot ===
+:log info "NAVSPOT: Rede configurada"
+
+# === 8. HOTSPOT PROFILE ===
 /ip hotspot profile
 :do {remove [find name="hsprof-${hotspotSlug}"]} on-error={}
-add name="hsprof-${hotspotSlug}" hotspot-address=${gateway} dns-name="${hotspotSlug}.navspot.local" html-directory=hotspot login-by=http-chap,http-pap
+add name="hsprof-${hotspotSlug}" hotspot-address=${gateway} dns-name="${hotspotSlug}.navspot.local" html-directory=flash/hotspot login-by=http-chap,http-pap
 
-/ip hotspot user profile
-:do {remove [find name="default-navspot"]} on-error={}
-add name="default-navspot" rate-limit="2M/5M" shared-users=1
+:log info "NAVSPOT: Profile criado"
 
-/ip hotspot ip-binding
-:do {remove [find comment~"navspot"]} on-error={}
-add address=0.0.0.0/0 type=bypassed server=none comment="navspot-admin-bypass"
-
+# === 9. HOTSPOT SERVER ===
 /ip hotspot
 :do {remove [find name="hs-${hotspotSlug}"]} on-error={}
-add name="hs-${hotspotSlug}" interface="bridge1" address-pool="hs-pool-${hotspotSlug}" profile="hsprof-${hotspotSlug}" disabled=no
+add name="hs-${hotspotSlug}" interface=bridge1 address-pool="hs-pool-${hotspotSlug}" profile="hsprof-${hotspotSlug}" disabled=no
 
-# === Walled Garden (sistema) ===
+:log info "NAVSPOT: Hotspot ativo"
+
+# === 10. NAT (MASQUERADE) ===
+/ip firewall nat
+:do {remove [find comment="navspot-masquerade"]} on-error={}
+add chain=srcnat out-interface=!bridge1 action=masquerade comment="navspot-masquerade"
+
+:log info "NAVSPOT: NAT configurado"
+
+# === 11. WALLED GARDEN BASICO ===
 /ip hotspot walled-garden
 :do {remove [find comment~"navspot-system"]} on-error={}
 add dst-host="navspot.local" action=allow comment="navspot-system"
@@ -224,63 +230,33 @@ add dst-host="*.supabase.co" action=allow comment="navspot-system"
 /ip hotspot walled-garden ip
 :do {remove [find comment~"navspot-system"]} on-error={}
 add dst-port=53 protocol=udp action=accept comment="navspot-system-dns"
+add dst-port=53 protocol=tcp action=accept comment="navspot-system-dns-tcp"
 add dst-port=67-68 protocol=udp action=accept comment="navspot-system-dhcp"
 
-# === Token File ===
+:log info "NAVSPOT: Walled garden basico configurado"
+
+# === 12. TOKEN FILE ===
 /file print file="navspot-token.txt" where name=""
 :delay 1s
 /file set "navspot-token.txt" contents="${hotspot.sync_token}"
 
-# === Sync Script ===
+:log info "NAVSPOT: Token salvo"
+
+# === 13. SCRIPT DE SYNC ===
 /system script
 :do {remove [find name="navspot-sync"]} on-error={}
-add name="navspot-sync" policy=read,write,policy,test source={
-:local token [/file get "navspot-token.txt" contents]
-:local syncUrl "${syncUrl}"
-:local users ""
-/ip hotspot active
-:foreach a in=[find] do={
-:local u [get \$a user]
-:local m [get \$a mac-address]
-:local bi [get \$a bytes-in]
-:local bo [get \$a bytes-out]
-:set users (\$users . \$u . "," . \$m . "," . \$bi . "," . \$bo . ";")
-}
-:local body ("{\\"sync_token\\":\\"" . \$token . "\\",\\"active_users_csv\\":\\"" . \$users . "\\"}")
-:do {/tool fetch url=\$syncUrl mode=https http-method=post http-data=\$body output=user as-value} on-error={:log warning "NAVSPOT: Sync failed"}
-}
+add name="navspot-sync" policy=read,write,policy,test source=":local token [/file get \\"navspot-token.txt\\" contents]\\r\\n:local syncUrl \\"${syncUrl}\\"\\r\\n:local users \\"\\"\\r\\n/ip hotspot active\\r\\n:foreach a in=[find] do={\\r\\n:local u [get \\$a user]\\r\\n:local m [get \\$a mac-address]\\r\\n:local bi [get \\$a bytes-in]\\r\\n:local bo [get \\$a bytes-out]\\r\\n:set users (\\$users . \\$u . \\",\\" . \\$m . \\",\\" . \\$bi . \\",\\" . \\$bo . \\";\\")\\r\\n}\\r\\n:local body (\\"{\\\\\\"sync_token\\\\\\":\\\\\\"\\". \\$token . \\"\\\\\\"\\",\\\\\\"active_users_csv\\\\\\":\\\\\\"\\". \\$users . \\"\\\\\\"}\\"\\r\\n:do {/tool fetch url=\\$syncUrl mode=https http-method=post http-data=\\$body output=user as-value} on-error={:log warning \\"NAVSPOT-SYNC: Falha\\"}\\r\\n:log info \\"NAVSPOT-SYNC: OK\\""
 
-# === Action Processor ===
-:do {remove [find name="navspot-action-processor"]} on-error={}
-add name="navspot-action-processor" policy=read,write,policy,test source={
-:local actions [:toarray ""]
-:foreach a in=\$actions do={
-:local parts [:toarray \$a]
-:local id [:pick \$parts 0]
-:local t [:pick \$parts 1]
-:if (\$t="create_user") do={/ip hotspot user add name=[:pick \$parts 2] password=[:pick \$parts 3] profile=[:pick \$parts 4]}
-:if (\$t="remove_user") do={/ip hotspot user remove [find name=[:pick \$parts 2]]}
-:if (\$t="disable_user") do={/ip hotspot user set [find name=[:pick \$parts 2]] disabled=yes}
-:if (\$t="enable_user") do={/ip hotspot user set [find name=[:pick \$parts 2]] disabled=no}
-:if (\$t="kick_session") do={/ip hotspot active remove [find user=[:pick \$parts 2]]}
-:if (\$t="add_user_profile") do={/ip hotspot user profile add name=[:pick \$parts 2] rate-limit=[:pick \$parts 3] shared-users=[:pick \$parts 4]}
-:if (\$t="add_walled_garden") do={/ip hotspot walled-garden add dst-host=[:pick \$parts 2] action=[:pick \$parts 3] comment=[:pick \$parts 4]}
-}
-}
+:log info "NAVSPOT: Script de sync criado"
 
-# === Health Check ===
-:do {remove [find name="navspot-health"]} on-error={}
-add name="navspot-health" policy=read,write,policy,test source={
-:if ([/ip hotspot find name="hs-${hotspotSlug}"]="") do={:log error "NAVSPOT: Hotspot not found!"}
-:if ([/ip dhcp-server find name="dhcp-${hotspotSlug}"]="") do={:log error "NAVSPOT: DHCP not found!"}
-}
-
-# === Scheduler ===
+# === 14. SCHEDULER ===
 /system scheduler
 :do {remove [find name="navspot-sync-scheduler"]} on-error={}
-add name="navspot-sync-scheduler" interval=${syncIntervalSeconds}s on-event="/system script run navspot-sync" start-time=startup
+add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
 
-:log info "NAVSPOT: Bootstrap concluido! Hotspot funcional."
-:log info "NAVSPOT: Usuarios e regras serao configurados via API."
+:log info "NAVSPOT: Scheduler configurado"
+
+:log info "NAVSPOT: Bootstrap concluido com sucesso!"
+:log info "NAVSPOT: Hotspot funcional. Configure usuarios e regras via API."
 `
 }
