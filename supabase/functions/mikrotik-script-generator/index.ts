@@ -236,23 +236,44 @@ function generateMikroTikScript(
 /system identity set name="${hotspot.nome}"
 
 # ============================================
-# Interface Verification with Fallback
+# Smart Interface Detection with Priority Fallback
 # ============================================
-:local targetIf "${interfaceWifi}"
-:if ([/interface find name=\$targetIf] = "") do={
-  :log error "NAVSPOT: Interface \$targetIf nao encontrada!"
-  :log info "NAVSPOT: Tentando wlan1..."
-  :set targetIf "wlan1"
-  :if ([/interface find name=\$targetIf] = "") do={
-    :log error "NAVSPOT: Nenhuma interface WiFi encontrada. Tentando ether1..."
-    :set targetIf "ether1"
-    :if ([/interface find name=\$targetIf] = "") do={
-      :log error "NAVSPOT: ERRO CRITICO - Nenhuma interface disponivel. Abortando."
-      :error "Interface nao encontrada"
+# Priority order based on real vessel topologies:
+# 1. bridge1/bridgeLocal - Structured networks with bridge
+# 2. wlan1/wlan2 - MikroTik integrated Wi-Fi
+# 3. ether2-5 - LAN ports (APs usually connect here)
+# 4. ether1 - Last resort (usually WAN port)
+
+:local targetIf ""
+:local interfacePriority {"bridge1";"bridgeLocal";"wlan1";"wlan2";"ether2";"ether3";"ether4";"ether5";"ether1"}
+
+# First, try the configured interface from database
+:local configuredIf "${interfaceWifi}"
+:if ([/interface find name=\$configuredIf] != "") do={
+  :set targetIf \$configuredIf
+  :log info ("NAVSPOT: Usando interface configurada: " . \$targetIf)
+} else={
+  :log warning ("NAVSPOT: Interface configurada '" . \$configuredIf . "' nao encontrada. Iniciando deteccao automatica...")
+  
+  # Auto-detect best available interface using priority list
+  :foreach ifName in=\$interfacePriority do={
+    :if (\$targetIf = "") do={
+      :if ([/interface find name=\$ifName] != "") do={
+        :set targetIf \$ifName
+        :log info ("NAVSPOT: Interface detectada automaticamente: " . \$targetIf)
+      }
     }
   }
 }
-:log info ("NAVSPOT: Usando interface " . \$targetIf)
+
+# Final validation - abort if no interface found
+:if (\$targetIf = "") do={
+  :log error "NAVSPOT: ERRO CRITICO - Nenhuma interface valida encontrada!"
+  :log error "NAVSPOT: Interfaces testadas: bridge1, bridgeLocal, wlan1, wlan2, ether2-5, ether1"
+  :error "Abortando - nenhuma interface disponivel"
+}
+
+:log info ("NAVSPOT: Interface final selecionada: " . \$targetIf)
 
 # Save interface to global variable for use throughout script
 :global navspotInterface \$targetIf
