@@ -230,7 +230,7 @@ function generateMikroTikScript(
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
-# Version: 3.8 - Infrastructure First (bridge before detection)
+# Version: 3.9 - RouterOS v6/v7 Universal Syntax
 # ============================================
 
 # AVISO: Este script configura o hotspot do zero.
@@ -353,17 +353,11 @@ enable [find name="bridge1"]
 # Save interface to global variable for use throughout script
 :global navspotInterface \$targetIf
 
-# Save interface to FILE for persistence between scripts
+# Save interface to FILE for persistence between scripts (v3.9 universal syntax)
 /file
-:do { remove [find name="navspot-interface.txt"] } on-error={}
+:do { /file remove "navspot-interface.txt" } on-error={}
 :delay 500ms
-:do {
-  /file add name="navspot-interface.txt" contents=\$targetIf
-} on-error={
-  /file print file="navspot-interface" where name=""
-  :delay 1s
-  /file set "navspot-interface.txt" contents=\$targetIf
-}
+/file add name="navspot-interface.txt" contents=\$targetIf
 :log info ("NAVSPOT: Interface salva em arquivo: " . \$targetIf)
 
 # ============================================
@@ -407,7 +401,7 @@ add name="dhcp-${hotspotSlug}" interface=\$targetIf address-pool=hs-pool-${hotsp
 # DNS Server (local cache)
 # ============================================
 /ip dns
-set allow-remote-requests=no
+set allow-remote-requests=yes servers=8.8.8.8,8.8.4.4
 
 # ============================================
 # Hotspot Profile (with Security Settings)
@@ -508,9 +502,9 @@ add name=hs-${hotspotSlug} interface=\$targetIf address-pool=hs-pool-${hotspotSl
 # Remove existing walled garden entries for this hotspot
 :foreach w in=[find comment~"navspot-${hotspotSlug}"] do={ remove \$w }
 
-# NAVSPOT system domains (APENAS estes com action=allow)
-add dst-host="*.navspot.local" action=allow comment="navspot-${hotspotSlug}-system"
-add dst-host="*.supabase.co" action=allow comment="navspot-${hotspotSlug}-system"
+# NAVSPOT system domains (APENAS estes com action=allow) - v3.9 sem wildcards
+add dst-host="navspot.local" action=allow comment="navspot-${hotspotSlug}-system"
+add dst-host="supabase.co" action=allow comment="navspot-${hotspotSlug}-system"
 
 `
 
@@ -679,17 +673,11 @@ add chain=srcnat out-interface=!\$targetIf action=masquerade comment="navspot-ma
   script += `# ============================================
 # Sync Token (Stored Securely)
 # ============================================
+# v3.9 universal file creation syntax
 /file
-:do { remove [find name="navspot-token.txt"] } on-error={}
+:do { /file remove "navspot-token.txt" } on-error={}
 :delay 500ms
-# Create file with contents (try direct method first, fallback for newer firmwares)
-:do {
-  /file add name="navspot-token.txt" contents="${hotspot.sync_token}"
-} on-error={
-  /file print file="navspot-token" where name=""
-  :delay 1s
-  /file set "navspot-token.txt" contents="${hotspot.sync_token}"
-}
+/file add name="navspot-token.txt" contents="${hotspot.sync_token}"
 :log info "NAVSPOT: Token salvo em arquivo"
 
 `
@@ -770,9 +758,10 @@ add name="navspot-sync" owner=admin policy=read,write,test,policy source={
           }
           
           :if ([:len \$cleanContent] > 2) do={
-            /file print file="navspot-actions" where name=""
-            :delay 1s
-            /file set "navspot-actions.txt" contents=\$cleanContent
+            # v3.9 universal file creation syntax
+            :do { /file remove "navspot-actions.txt" } on-error={}
+            :delay 500ms
+            /file add name="navspot-actions.txt" contents=\$cleanContent
             :log info ("NAVSPOT: " . [:len \$cleanContent] . " bytes of actions to process")
             /system script run navspot-action-processor
           }
@@ -967,10 +956,11 @@ add name="navspot-action-processor" owner=admin policy=read,write,test,policy so
     }
     
     # FIX #4: Save executed actions and ONLY THEN remove action file
+    # v3.9 universal file creation syntax
     :if ([:len \$executed] > 0) do={
-      /file print file="navspot-executed" where name=""
-      :delay 1s
-      /file set "navspot-executed.txt" contents=\$executed
+      :do { /file remove "navspot-executed.txt" } on-error={}
+      :delay 500ms
+      /file add name="navspot-executed.txt" contents=\$executed
       
       # Remove action file AFTER saving executed successfully
       :do { /file remove \$actionFile } on-error={}
@@ -1071,7 +1061,7 @@ add name="navspot-health-scheduler" interval=1h on-event="/system script run nav
 :log info "NAVSPOT: Porta WAN: ether1 (excluida do hotspot)"
 :log info "NAVSPOT: NAT Masquerade: ativo (clientes podem acessar internet)"
 :log info "NAVSPOT: Sync a cada ${hotspot.sync_interval_minutes} minutos"
-:log info "NAVSPOT: Versao: 3.8 - Infrastructure First"
+:log info "NAVSPOT: Versao: 3.9 - RouterOS v6/v7 Universal Syntax"
 :log info "============================================"
 `
 
