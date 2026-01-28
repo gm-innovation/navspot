@@ -186,7 +186,7 @@ export function useCreateListaAcesso() {
       try {
         await createMikrotikActionForEmpresa({
           empresaId: data.empresa_id,
-          tipo: 'update_firewall_rules',
+          tipo: 'add_walled_garden',
           payload: { 
             lista_id: data.id,
             action: 'add',
@@ -236,7 +236,7 @@ export function useUpdateListaAcesso() {
       try {
         await createMikrotikActionForEmpresa({
           empresaId: data.empresa_id,
-          tipo: 'update_firewall_rules',
+          tipo: 'add_walled_garden',
           payload: { 
             lista_id: data.id,
             action: 'update',
@@ -294,7 +294,7 @@ export function useDeleteListaAcesso() {
         try {
           await createMikrotikActionForEmpresa({
             empresaId: lista.empresa_id,
-            tipo: 'update_firewall_rules',
+            tipo: 'remove_walled_garden',
             payload: { 
               lista_id: id,
               action: 'remove',

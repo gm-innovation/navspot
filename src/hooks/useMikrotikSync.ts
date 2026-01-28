@@ -14,12 +14,17 @@ export type MikrotikActionType =
   | 'block_device' 
   | 'unblock_device' 
   | 'kick_device'
-  // Profile management
-  | 'add_profile' 
-  | 'update_profile_config' 
-  | 'remove_profile'
-  // Firewall/Access rules
-  | 'update_firewall_rules';
+  // Profile management (v4.0 - via API)
+  | 'add_user_profile' 
+  | 'remove_user_profile' 
+  | 'update_profile_config'
+  // Walled Garden (v4.0 - via API)
+  | 'add_walled_garden'
+  | 'remove_walled_garden'
+  // Firewall (v4.0 - via API)
+  | 'add_firewall_l7'
+  | 'add_firewall_filter'
+  | 'remove_firewall_rule';
 
 interface CreateActionParams {
   embarcacaoId: string;

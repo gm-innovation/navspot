@@ -15,7 +15,12 @@ type UpdateType =
   | 'update_user_password'
   | 'kick_session'
   | 'disable_user'
-  | 'enable_user';
+  | 'enable_user'
+  // v4.0 - Profile/Walled Garden/Firewall via API
+  | 'add_user_profile'
+  | 'remove_user_profile'
+  | 'add_firewall_l7'
+  | 'add_firewall_filter';
 
 interface ConfigUpdateResult {
   success: boolean;
