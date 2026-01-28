@@ -474,6 +474,7 @@ export type Database = {
           sync_token: string
           ultima_sincronizacao: string | null
           updated_at: string
+          wan_interface: string
         }
         Insert: {
           created_at?: string
@@ -490,6 +491,7 @@ export type Database = {
           sync_token?: string
           ultima_sincronizacao?: string | null
           updated_at?: string
+          wan_interface?: string
         }
         Update: {
           created_at?: string
@@ -506,6 +508,7 @@ export type Database = {
           sync_token?: string
           ultima_sincronizacao?: string | null
           updated_at?: string
+          wan_interface?: string
         }
         Relationships: [
           {
