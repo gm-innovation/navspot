@@ -358,9 +358,14 @@ add name=hsprof-${hotspotSlug} hotspot-address=${gateway} dns-name=${hotspotSlug
 # IMPORTANT: This MUST be configured BEFORE the Hotspot Server
 # to prevent administrative lockout during setup
 /ip hotspot ip-binding
-:do { remove [find comment~"navspot-admin-bypass"] } on-error={}
+:do { remove [find comment~"navspot"] } on-error={}
 
-# Bypass hotspot authentication for local network (administrative access)
+# Bypass para acesso administrativo (WinBox/SSH de qualquer rede que não seja o hotspot)
+# type=bypassed + server=none = qualquer conexão não-hotspot é bypassada automaticamente
+# Isso permite gerenciamento remoto (WAN, LAN, VPN) sem interferir no controle dos clientes
+add address=0.0.0.0/0 type=bypassed server=none comment="navspot-admin-global-bypass"
+
+# Bypass para rede local do hotspot (administradores locais)
 add address=${networkCidr} type=bypassed comment="navspot-admin-bypass"
 
 `
@@ -546,13 +551,23 @@ add chain=input action=accept in-interface=\$targetIf \\
 add chain=input action=accept in-interface=\$targetIf \\
     dst-port=53 protocol=tcp comment="navspot-security-dns-tcp"
 
-# Allow WinBox from local network only (security - keep src-address)
-add chain=input action=accept src-address=${networkCidr} \\
-    dst-port=8291 protocol=tcp comment="navspot-security-winbox"
+# Allow WinBox from any local/private network (RFC1918 ranges)
+# Isso permite acesso de: rede WAN, rede LAN, VPNs corporativas
+# IPs públicos (internet) são bloqueados pela regra drop final
+add chain=input action=accept src-address=10.0.0.0/8 \\
+    dst-port=8291 protocol=tcp comment="navspot-security-winbox-10"
+add chain=input action=accept src-address=172.16.0.0/12 \\
+    dst-port=8291 protocol=tcp comment="navspot-security-winbox-172"
+add chain=input action=accept src-address=192.168.0.0/16 \\
+    dst-port=8291 protocol=tcp comment="navspot-security-winbox-192"
 
-# Allow SSH from local network only (security - keep src-address)
-add chain=input action=accept src-address=${networkCidr} \\
-    dst-port=22 protocol=tcp comment="navspot-security-ssh"
+# Allow SSH from any local/private network (RFC1918 ranges)
+add chain=input action=accept src-address=10.0.0.0/8 \\
+    dst-port=22 protocol=tcp comment="navspot-security-ssh-10"
+add chain=input action=accept src-address=172.16.0.0/12 \\
+    dst-port=22 protocol=tcp comment="navspot-security-ssh-172"
+add chain=input action=accept src-address=192.168.0.0/16 \\
+    dst-port=22 protocol=tcp comment="navspot-security-ssh-192"
 
 # Allow ICMP from hotspot interface
 add chain=input action=accept in-interface=\$targetIf \\

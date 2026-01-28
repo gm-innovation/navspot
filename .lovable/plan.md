@@ -1,97 +1,51 @@
 
 
-# Correção de Acesso Administrativo (WinBox/SSH)
+# ✅ Correção de Acesso Administrativo (WinBox/SSH) - IMPLEMENTADO
 
-## Problema Identificado
+## Status: CONCLUÍDO
 
-O script atual bloqueia acesso WinBox/SSH da rede de gerência (WAN) porque:
-
-```routeros
-# Regra atual - só permite da rede do Hotspot
-add chain=input action=accept src-address=192.168.88.0/24 \
-    dst-port=8291 protocol=tcp comment="navspot-security-winbox"
-```
-
-Quando você conecta de `192.168.0.8` (rede WAN), o firewall descarta o pacote antes da autenticação.
+Implementado em: 2026-01-28
 
 ---
 
-## Solução Proposta: IP Binding para Bypass Administrativo
+## Problema Corrigido
 
-Em vez de adicionar regras de firewall para redes de gerência (que variam entre embarcações), vamos usar **IP Binding com type=bypassed** - a forma correta de garantir acesso administrativo no MikroTik Hotspot.
-
-### Por que IP Binding é melhor?
-
-| Abordagem | Problema |
-|-----------|----------|
-| Adicionar src-address=192.168.0.0/24 | Cada embarcação pode ter rede WAN diferente |
-| IP Binding type=bypassed | Funciona automaticamente para qualquer rede não-hotspot |
-
-### O que é IP Binding type=bypassed?
-
-```routeros
-/ip hotspot ip-binding
-add address=0.0.0.0/0 type=bypassed comment="navspot-admin-bypass"
-```
-
-Isso significa: **qualquer conexão que NÃO seja da interface do Hotspot é automaticamente bypassada**.
-
----
-
-## Alterações no Script Generator
-
-### Arquivo: `supabase/functions/mikrotik-script-generator/index.ts`
-
-### Alteração 1: Adicionar IP Binding para bypass administrativo (linhas ~405-415)
+O script bloqueava acesso WinBox/SSH da rede de gerência (WAN) porque as regras de firewall só permitiam acesso do CIDR do hotspot (ex: 192.168.88.0/24).
 
 **Antes:**
-```routeros
-/ip hotspot ip-binding
-:do { remove [find comment~"navspot-admin-bypass"] } on-error={}
-# (sem regra de bypass)
+```
+PC (192.168.0.8) → WinBox → MikroTik:8291 → DROP ❌ (bloqueado)
 ```
 
-**Depois:**
+---
+
+## Solução Implementada
+
+### 1. IP Binding com Bypass Global (linhas 356-371)
+
 ```routeros
 /ip hotspot ip-binding
 :do { remove [find comment~"navspot"] } on-error={}
 
-# Bypass para acesso administrativo (WinBox/SSH de qualquer rede que não seja o hotspot)
-# Isso permite gerenciamento remoto sem interferir no controle dos clientes
+# Bypass global - qualquer conexão não-hotspot é bypassada automaticamente
 add address=0.0.0.0/0 type=bypassed server=none comment="navspot-admin-global-bypass"
+
+# Bypass para rede local do hotspot
+add address=${networkCidr} type=bypassed comment="navspot-admin-bypass"
 ```
 
-### Alteração 2: Modificar regras de firewall (linhas 549-555)
+### 2. Regras de Firewall RFC1918 (linhas 549-573)
 
-**Antes:**
 ```routeros
-# Allow WinBox from local network only (security - keep src-address)
-add chain=input action=accept src-address=${networkCidr} \
-    dst-port=8291 protocol=tcp comment="navspot-security-winbox"
+# WinBox - todas as redes privadas
+add chain=input action=accept src-address=10.0.0.0/8 dst-port=8291 protocol=tcp
+add chain=input action=accept src-address=172.16.0.0/12 dst-port=8291 protocol=tcp
+add chain=input action=accept src-address=192.168.0.0/16 dst-port=8291 protocol=tcp
 
-# Allow SSH from local network only (security - keep src-address)
-add chain=input action=accept src-address=${networkCidr} \
-    dst-port=22 protocol=tcp comment="navspot-security-ssh"
-```
-
-**Depois:**
-```routeros
-# Allow WinBox from any local/private network (not just hotspot network)
-# RFC1918 private ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-add chain=input action=accept src-address=10.0.0.0/8 \
-    dst-port=8291 protocol=tcp comment="navspot-security-winbox-10"
-add chain=input action=accept src-address=172.16.0.0/12 \
-    dst-port=8291 protocol=tcp comment="navspot-security-winbox-172"
-add chain=input action=accept src-address=192.168.0.0/16 \
-    dst-port=8291 protocol=tcp comment="navspot-security-winbox-192"
-
-# Allow SSH from any local/private network
-add chain=input action=accept src-address=10.0.0.0/8 \
-    dst-port=22 protocol=tcp comment="navspot-security-ssh-10"
-add chain=input action=accept src-address=172.16.0.0/12 \
-    dst-port=22 protocol=tcp comment="navspot-security-ssh-172"
-add chain=input action=accept src-address=192.168.0.0/16 \
-    dst-port=22 protocol=tcp comment="navspot-security-ssh-192"
+# SSH - todas as redes privadas
+add chain=input action=accept src-address=10.0.0.0/8 dst-port=22 protocol=tcp
+add chain=input action=accept src-address=172.16.0.0/12 dst-port=22 protocol=tcp
+add chain=input action=accept src-address=192.168.0.0/16 dst-port=22 protocol=tcp
 ```
 
 ---
@@ -100,10 +54,11 @@ add chain=input action=accept src-address=192.168.0.0/16 \
 
 | Origem | WinBox/SSH | Resultado |
 |--------|------------|-----------|
-| 192.168.88.x (Hotspot) | Porta 8291/22 | PERMITIDO |
-| 192.168.0.x (WAN/Gerência) | Porta 8291/22 | PERMITIDO |
-| 10.x.x.x (Rede Corporativa) | Porta 8291/22 | PERMITIDO |
-| IP Público (Internet) | Porta 8291/22 | BLOQUEADO |
+| 192.168.88.x (Hotspot) | Porta 8291/22 | ✅ PERMITIDO |
+| 192.168.0.x (WAN/Gerência) | Porta 8291/22 | ✅ PERMITIDO |
+| 10.x.x.x (Rede Corporativa) | Porta 8291/22 | ✅ PERMITIDO |
+| 172.16.x.x (VPN) | Porta 8291/22 | ✅ PERMITIDO |
+| IP Público (Internet) | Porta 8291/22 | ❌ BLOQUEADO |
 
 ---
 
@@ -115,35 +70,6 @@ add chain=input action=accept src-address=192.168.0.0/16 \
 
 ---
 
-## Ordem de Execução
+## Arquivo Modificado
 
-A ordem correta das regras de firewall será:
-
-```
-1. Accept established/related (sempre primeiro)
-2. Accept DNS (in-interface=$targetIf)
-3. Accept WinBox (src-address=RFC1918)  ← NOVO
-4. Accept SSH (src-address=RFC1918)      ← NOVO
-5. Accept ICMP
-6. Accept DHCP
-7. Accept Hotspot HTTP
-8. Log suspicious
-9. Drop all other from $targetIf
-```
-
----
-
-## Resultado Esperado
-
-Após aplicar esta correção:
-
-```
-Seu PC (192.168.0.8) → Winbox → MikroTik:8291
-                                    ↓
-                            Chain INPUT verifica:
-                                    ↓
-                    "src-address=192.168.0.0/16?" → SIM
-                                    ↓
-                            ACCEPT ✓ (permitido)
-```
-
+- `supabase/functions/mikrotik-script-generator/index.ts` (versão 3.4)
