@@ -48,11 +48,6 @@ interface EmbarcacaoFormProps {
 
 import { TIPOS_EMBARCACAO } from "@/constants/embarcacoes";
 
-const INTERFACE_WIFI_OPTIONS = [
-  { value: "wlan1", label: "wlan1" },
-  { value: "wlan2", label: "wlan2" },
-  { value: "bridge1", label: "bridge1" },
-];
 
 export function EmbarcacaoForm({
   open,
@@ -77,7 +72,7 @@ export function EmbarcacaoForm({
   });
 
   const [hotspotData, setHotspotData] = useState({
-    interface_wifi: "wlan1",
+    interface_wifi: "auto",
     rede: "192.168.88.0/24",
     max_usuarios: 50,
     sync_interval_minutes: 5,
@@ -118,14 +113,14 @@ export function EmbarcacaoForm({
   useEffect(() => {
     if (initialHotspot) {
       setHotspotData({
-        interface_wifi: initialHotspot.interface_wifi || "wlan1",
+        interface_wifi: "auto",
         rede: initialHotspot.rede || "192.168.88.0/24",
         max_usuarios: initialHotspot.max_usuarios || 50,
         sync_interval_minutes: initialHotspot.sync_interval_minutes || 5,
       });
     } else {
       setHotspotData({
-        interface_wifi: "wlan1",
+        interface_wifi: "auto",
         rede: "192.168.88.0/24",
         max_usuarios: 50,
         sync_interval_minutes: 5,
@@ -352,26 +347,6 @@ export function EmbarcacaoForm({
                 </h3>
               </div>
 
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="interface_wifi" className="text-right">
-                  Interface WiFi
-                </Label>
-                <Select
-                  value={hotspotData.interface_wifi}
-                  onValueChange={(value) => handleHotspotChange("interface_wifi", value)}
-                >
-                  <SelectTrigger className="col-span-3">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {INTERFACE_WIFI_OPTIONS.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
 
               <div className="grid grid-cols-4 items-center gap-4">
                 <Label htmlFor="rede" className="text-right">
