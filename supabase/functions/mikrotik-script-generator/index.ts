@@ -230,7 +230,7 @@ function generateMikroTikScript(
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
-# Version: 3.2 - Fixed Walled-Garden Logic (use lista.tipo)
+# Version: 3.3 - Critical Fixes (Persistence, Security, Performance)
 # ============================================
 
 # AVISO: Este script configura o hotspot do zero.
@@ -287,13 +287,33 @@ function generateMikroTikScript(
 # Save interface to global variable for use throughout script
 :global navspotInterface \$targetIf
 
+# FIX #1 (CRITICAL): Save interface to FILE for persistence between scripts
+# Global variables don't persist across script executions in RouterOS
+/file
+:do { remove [find name="navspot-interface.txt"] } on-error={}
+:delay 500ms
+:do {
+  /file add name="navspot-interface.txt" contents=\$targetIf
+} on-error={
+  /file print file="navspot-interface" where name=""
+  :delay 1s
+  /file set "navspot-interface.txt" contents=\$targetIf
+}
+:log info ("NAVSPOT: Interface salva em arquivo: " . \$targetIf)
+
 # ============================================
 # IP Address Configuration
 # ============================================
+# FIX #9: Add validation with error logging
 /ip address
 :do { remove [find interface=\$targetIf comment~"navspot"] } on-error={}
 :do { remove [find address="${gateway}/24"] } on-error={}
-add address=${gateway}/24 interface=\$targetIf comment="navspot-${hotspotSlug}"
+:do {
+  add address=${gateway}/24 interface=\$targetIf comment="navspot-${hotspotSlug}"
+  :log info "NAVSPOT: IP ${gateway}/24 adicionado com sucesso"
+} on-error={
+  :log error "NAVSPOT: ERRO ao adicionar IP ${gateway}/24 - hotspot pode nao funcionar!"
+}
 
 # ============================================
 # IP Pool Configuration
@@ -449,69 +469,75 @@ add dst-host="*.supabase.co" action=allow comment="navspot-${hotspotSlug}-system
     script += `\n`
   }
 
-  // Walled Garden IP (essential traffic before auth)
+  // FIX #5: Walled Garden IP with in-interface for security
   script += `
 # ============================================
 # Walled Garden IP (Essential Traffic)
 # ============================================
+# FIX #5: Added in-interface to restrict rules to hotspot interface only
 /ip hotspot walled-garden ip
 :do { remove [find comment~"navspot-${hotspotSlug}"] } on-error={}
 
-# DNS (UDP + TCP)
-add dst-address=0.0.0.0/0 dst-port=53 protocol=udp action=accept comment="navspot-${hotspotSlug}-dns"
-add dst-address=0.0.0.0/0 dst-port=53 protocol=tcp action=accept comment="navspot-${hotspotSlug}-dns-tcp"
+# DNS (UDP + TCP) - restricted to hotspot interface
+add in-interface=\$targetIf dst-address=0.0.0.0/0 dst-port=53 protocol=udp action=accept comment="navspot-${hotspotSlug}-dns"
+add in-interface=\$targetIf dst-address=0.0.0.0/0 dst-port=53 protocol=tcp action=accept comment="navspot-${hotspotSlug}-dns-tcp"
 
-# DHCP
-add dst-address=0.0.0.0/0 dst-port=67-68 protocol=udp action=accept comment="navspot-${hotspotSlug}-dhcp"
+# DHCP - restricted to hotspot interface
+add in-interface=\$targetIf dst-address=0.0.0.0/0 dst-port=67-68 protocol=udp action=accept comment="navspot-${hotspotSlug}-dhcp"
 
-# NTP (time sync)
-add dst-address=0.0.0.0/0 dst-port=123 protocol=udp action=accept comment="navspot-${hotspotSlug}-ntp"
+# NTP (time sync) - restricted to hotspot interface
+add in-interface=\$targetIf dst-address=0.0.0.0/0 dst-port=123 protocol=udp action=accept comment="navspot-${hotspotSlug}-ntp"
 
-# ICMP (ping for diagnostics)
-add protocol=icmp action=accept comment="navspot-${hotspotSlug}-icmp"
+# ICMP (ping for diagnostics) - restricted to hotspot interface
+add in-interface=\$targetIf protocol=icmp action=accept comment="navspot-${hotspotSlug}-icmp"
 
 `
 
-  // Add Layer 7 protocols for blocked domains
+  // FIX #6: Consolidated Layer 7 protocols for better CPU performance
   if (blockedDomains.size > 0) {
     script += `
 # ============================================
-# Layer 7 Protocols (Pattern Matching)
+# Layer 7 Protocols (Consolidated for Performance)
 # ============================================
+# FIX #6: Consolidated multiple L7 protocols into groups of 5 to reduce CPU load
 /ip firewall layer7-protocol
 # Remove existing NAVSPOT L7 protocols
 :foreach l in=[find comment~"navspot-${hotspotSlug}"] do={ remove \$l }
 
 `
+    // Group domains into chunks of 5 for consolidated regexp
+    const domainsArray = Array.from(blockedDomains)
+    const chunkSize = 5
     let l7Index = 0
-    for (const domain of blockedDomains) {
-      const cleanDomain = domain.replace(/^\*\./, '').replace(/\./g, '\\\\.')
-      script += `add name="navspot-block-${l7Index}" regexp="^.*(${cleanDomain}).*\$" comment="navspot-${hotspotSlug}"\n`
+    
+    for (let i = 0; i < domainsArray.length; i += chunkSize) {
+      const chunk = domainsArray.slice(i, i + chunkSize)
+      const patterns = chunk.map(d => d.replace(/^\*\./, '').replace(/\./g, '\\\\.')).join('|')
+      script += `add name="navspot-block-${l7Index}" regexp="^.*(${patterns}).*\$" comment="navspot-${hotspotSlug}"\n`
       l7Index++
     }
 
-    // Add firewall filter rules for blocked domains
+    // Add firewall filter rules for blocked domains (one per consolidated L7 protocol)
     script += `
 # ============================================
-# Firewall Rules (Block Domains)
+# Firewall Rules (Block Domains - Consolidated)
 # ============================================
 /ip firewall filter
 # Remove existing NAVSPOT block rules
 :foreach f in=[find comment~"navspot-${hotspotSlug}-block"] do={ remove \$f }
 
 `
-    l7Index = 0
-    for (const domain of blockedDomains) {
-      script += `add chain=forward layer7-protocol="navspot-block-${l7Index}" action=drop comment="navspot-${hotspotSlug}-block-${domain}"\n`
-      l7Index++
+    for (let i = 0; i < Math.ceil(domainsArray.length / chunkSize); i++) {
+      script += `add chain=forward layer7-protocol="navspot-block-${i}" action=drop comment="navspot-${hotspotSlug}-block-group-${i}"\n`
     }
   }
 
-  // Security firewall rules - Optimized with in-interface for robustness
+  // FIX #2: Security firewall rules with in-interface for robustness
   script += `
 # ============================================
 # Firewall Rules (Security) - Optimized
 # ============================================
+# FIX #2: Added in-interface to forward rules for security
 /ip firewall filter
 # Remove existing NAVSPOT security rules
 :foreach f in=[find comment~"navspot-security"] do={ remove \$f }
@@ -521,9 +547,9 @@ add chain=input action=accept connection-state=established,related \\
     comment="navspot-security-established"
 
 # Allow DNS (UDP/TCP) from hotspot interface - works before login
-add chain=input action=accept in-interface=\$navspotInterface \\
+add chain=input action=accept in-interface=\$targetIf \\
     dst-port=53 protocol=udp comment="navspot-security-dns"
-add chain=input action=accept in-interface=\$navspotInterface \\
+add chain=input action=accept in-interface=\$targetIf \\
     dst-port=53 protocol=tcp comment="navspot-security-dns-tcp"
 
 # Allow WinBox from local network only (security - keep src-address)
@@ -535,30 +561,30 @@ add chain=input action=accept src-address=${networkCidr} \\
     dst-port=22 protocol=tcp comment="navspot-security-ssh"
 
 # Allow ICMP from hotspot interface
-add chain=input action=accept in-interface=\$navspotInterface \\
+add chain=input action=accept in-interface=\$targetIf \\
     protocol=icmp comment="navspot-security-ping"
 
 # Allow DHCP (discover, renew, release)
 add chain=input action=accept dst-port=67-68 protocol=udp comment="navspot-security-dhcp"
 
 # CRITICAL: Allow hotspot HTTP redirect (portal capture)
-add chain=input action=accept in-interface=\$navspotInterface \\
+add chain=input action=accept in-interface=\$targetIf \\
     dst-port=80,443,8080 protocol=tcp comment="navspot-security-hotspot-http"
 
 # Log suspicious traffic before dropping (for debugging)
-add chain=input action=log in-interface=\$navspotInterface \\
+add chain=input action=log in-interface=\$targetIf \\
     log-prefix="NAVSPOT-DROP: " comment="navspot-security-log-drop"
 
 # Drop all other input from hotspot interface
-add chain=input action=drop in-interface=\$navspotInterface \\
+add chain=input action=drop in-interface=\$targetIf \\
     comment="navspot-security-drop-other"
 
-# Allow access to gateway (router itself) - MUST come before isolation drop
-add chain=forward action=accept src-address=${networkCidr} dst-address=${gateway} \\
+# FIX #2: Allow access to gateway with in-interface - MUST come before isolation drop
+add chain=forward action=accept in-interface=\$targetIf src-address=${networkCidr} dst-address=${gateway} \\
     comment="navspot-security-allow-gateway"
 
-# Client Isolation - prevent clients from reaching each other directly
-add chain=forward action=drop src-address=${networkCidr} dst-address=${networkCidr} \\
+# FIX #2: Client Isolation with in-interface - prevent clients from reaching each other
+add chain=forward action=drop in-interface=\$targetIf src-address=${networkCidr} dst-address=${networkCidr} \\
     comment="navspot-security-client-isolation"
 
 `
@@ -583,9 +609,9 @@ add chain=forward action=drop src-address=${networkCidr} dst-address=${networkCi
 
 `
 
-  // Enhanced sync script with proper JSON parsing for pipe-delimited actions
+  // FIX #3, #10: Enhanced sync script with proper existence checks and response validation
   script += `# ============================================
-# NAVSPOT Sync Script (v3 - Fixed JSON Parsing)
+# NAVSPOT Sync Script (v3.3 - Fixed Parsing & Validation)
 # ============================================
 /system script
 :do { remove [find name="navspot-sync"] } on-error={}
@@ -611,12 +637,12 @@ add name="navspot-sync" owner=admin policy=read,write,test,policy source={
     :set userCount (\$userCount + 1)
   }
   
-  # Read executed actions from file
+  # FIX #3: Read executed actions from file with existence check
   :local executedActions ""
-  :do {
+  :if ([/file find name="navspot-executed.txt"] != "") do={
     :set executedActions [/file get "navspot-executed.txt" contents]
     /file remove "navspot-executed.txt"
-  } on-error={}
+  }
   
   :local payload "{\\"sync_token\\":\\"" . \$syncToken . "\\",\\"active_users\\":[" . \$activeUsers . "],\\"executed_actions\\":[" . \$executedActions . "]}"
   
@@ -625,40 +651,46 @@ add name="navspot-sync" owner=admin policy=read,write,test,policy source={
   :do {
     :local result [/tool fetch url=\$syncUrl mode=https http-method=post http-data=\$payload http-header-field="Content-Type: application/json" output=user as-value]
     :local response (\$result->"data")
-    :log info "NAVSPOT: Sync completed successfully"
     
-    # Extract pending_actions_pipe from JSON response
-    # Format in response: "pending_actions_pipe":"id|type|p1\\nid2|type2|p2"
-    :local marker "pending_actions_pipe\\":\\""
-    :local pipeStart [:find \$response \$marker]
-    
-    :if (\$pipeStart > 0) do={
-      :local contentStart (\$pipeStart + [:len \$marker])
-      :local contentEnd [:find \$response "\\"" \$contentStart]
+    # FIX #10: Validate response before processing
+    :if ([:len \$response] < 10) do={
+      :log warning "NAVSPOT: Resposta vazia ou invalida do servidor"
+    } else={
+      :log info "NAVSPOT: Sync completed successfully"
       
-      :if (\$contentEnd > \$contentStart) do={
-        :local pipeContent [:pick \$response \$contentStart \$contentEnd]
+      # Extract pending_actions_pipe from JSON response
+      # Format in response: "pending_actions_pipe":"id|type|p1\\nid2|type2|p2"
+      :local marker "pending_actions_pipe\\":\\""
+      :local pipeStart [:find \$response \$marker]
+      
+      :if (\$pipeStart > 0) do={
+        :local contentStart (\$pipeStart + [:len \$marker])
+        :local contentEnd [:find \$response "\\"" \$contentStart]
         
-        # Convert \\n to actual newlines for processing
-        :local cleanContent ""
-        :local i 0
-        :while (\$i < [:len \$pipeContent]) do={
-          :local char [:pick \$pipeContent \$i (\$i+1)]
-          :if (\$char = "\\\\" && ([:pick \$pipeContent (\$i+1) (\$i+2)] = "n")) do={
-            :set cleanContent (\$cleanContent . "\\n")
-            :set i (\$i + 2)
-          } else={
-            :set cleanContent (\$cleanContent . \$char)
-            :set i (\$i + 1)
+        :if (\$contentEnd > \$contentStart) do={
+          :local pipeContent [:pick \$response \$contentStart \$contentEnd]
+          
+          # Convert \\n to actual newlines for processing
+          :local cleanContent ""
+          :local i 0
+          :while (\$i < [:len \$pipeContent]) do={
+            :local char [:pick \$pipeContent \$i (\$i+1)]
+            :if (\$char = "\\\\" && ([:pick \$pipeContent (\$i+1) (\$i+2)] = "n")) do={
+              :set cleanContent (\$cleanContent . "\\n")
+              :set i (\$i + 2)
+            } else={
+              :set cleanContent (\$cleanContent . \$char)
+              :set i (\$i + 1)
+            }
           }
-        }
-        
-        :if ([:len \$cleanContent] > 2) do={
-          /file print file="navspot-actions" where name=""
-          :delay 1s
-          /file set "navspot-actions.txt" contents=\$cleanContent
-          :log info ("NAVSPOT: " . [:len \$cleanContent] . " bytes of actions to process")
-          /system script run navspot-action-processor
+          
+          :if ([:len \$cleanContent] > 2) do={
+            /file print file="navspot-actions" where name=""
+            :delay 1s
+            /file set "navspot-actions.txt" contents=\$cleanContent
+            :log info ("NAVSPOT: " . [:len \$cleanContent] . " bytes of actions to process")
+            /system script run navspot-action-processor
+          }
         }
       }
     }
@@ -669,7 +701,7 @@ add name="navspot-sync" owner=admin policy=read,write,test,policy source={
 }
 
 # ============================================
-# Action Processor Script (v3 - Manual Parsing)
+# Action Processor Script (v3.3 - Fixed Duplication)
 # ============================================
 :do { remove [find name="navspot-action-processor"] } on-error={}
 add name="navspot-action-processor" owner=admin policy=read,write,test,policy source={
@@ -849,15 +881,19 @@ add name="navspot-action-processor" owner=admin policy=read,write,test,policy so
       }
     }
     
-    # Save executed actions for next sync
+    # FIX #4: Save executed actions and ONLY THEN remove action file
     :if ([:len \$executed] > 0) do={
       /file print file="navspot-executed" where name=""
       :delay 1s
       /file set "navspot-executed.txt" contents=\$executed
+      
+      # Remove action file AFTER saving executed successfully
+      :do { /file remove \$actionFile } on-error={}
+      :log info ("NAVSPOT: Processadas " . [:len \$executed] . " bytes de acoes executadas")
+    } else={
+      # No actions executed, but still remove action file to avoid reprocessing
+      :do { /file remove \$actionFile } on-error={}
     }
-    
-    # Clean up action file
-    :do { /file remove \$actionFile } on-error={}
     
   } on-error={
     :log debug "NAVSPOT: No pending actions to process"
@@ -865,7 +901,7 @@ add name="navspot-action-processor" owner=admin policy=read,write,test,policy so
 }
 
 # ============================================
-# Health Check Script
+# Health Check Script (v3.3 - Read interface from file)
 # ============================================
 :do { remove [find name="navspot-health"] } on-error={}
 add name="navspot-health" owner=admin policy=read,write,test source={
@@ -873,10 +909,23 @@ add name="navspot-health" owner=admin policy=read,write,test source={
   :local dhcpName "dhcp-${hotspotSlug}"
   :local issues 0
   
+  # FIX #1: Read interface from FILE instead of global variable
+  :local navspotInterface ""
+  :do {
+    :set navspotInterface [/file get "navspot-interface.txt" contents]
+  } on-error={
+    :log error "NAVSPOT: Arquivo navspot-interface.txt nao encontrado!"
+    :set navspotInterface ""
+  }
+  
   # Check if interface still exists
-  :global navspotInterface
-  :if ([/interface find name=\$navspotInterface] = "") do={
-    :log error ("NAVSPOT: Interface " . \$navspotInterface . " desapareceu!")
+  :if ([:len \$navspotInterface] > 0) do={
+    :if ([/interface find name=\$navspotInterface] = "") do={
+      :log error ("NAVSPOT: Interface " . \$navspotInterface . " desapareceu!")
+      :set issues (\$issues + 1)
+    }
+  } else={
+    :log error "NAVSPOT: Nao foi possivel ler a interface do arquivo"
     :set issues (\$issues + 1)
   }
   
@@ -909,16 +958,18 @@ add name="navspot-health" owner=admin policy=read,write,test source={
 }
 
 # ============================================
-# Schedulers
+# Schedulers (FIX #8: Removed incorrect start-time)
 # ============================================
+# FIX #8: start-time=00:00:30 means "run at 00:00:30 daily", NOT "30s after boot"
+# Removed start-time and rely on interval + initial delay below
 /system scheduler
 :do { remove [find name="navspot-sync-scheduler"] } on-error={}
 add name="navspot-sync-scheduler" interval=${hotspot.sync_interval_minutes}m on-event="/system script run navspot-sync" \\
-    start-time=00:00:30 policy=read,write,test comment="Start 30s after boot"
+    policy=read,write,test comment="NAVSPOT sync every ${hotspot.sync_interval_minutes}min"
 
 :do { remove [find name="navspot-health-scheduler"] } on-error={}
 add name="navspot-health-scheduler" interval=1h on-event="/system script run navspot-health" \\
-    start-time=00:05:00 policy=read,write,test comment="Start 5min after boot"
+    policy=read,write,test comment="NAVSPOT health check every hour"
 
 # ============================================
 # Initial Delay and First Sync
