@@ -229,7 +229,7 @@ function generateMikroTikScript(
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
-# Version: 3.11 - Universal Syntax (No Backslashes)
+# Version: 3.12 - Whitespace Fix
 # ============================================
 
 # AVISO: Este script configura o hotspot do zero.
@@ -259,7 +259,7 @@ enable [find name="bridge1"]
 :log info "NAVSPOT: bridge1 ativada"
 
 # Step 3: Wait for bridge to be ready in kernel
- :delay 3s
+:delay 3s
 
 # Step 4: Remove ether2-5 from any existing bridge (prevent conflicts)
 /interface bridge port
@@ -302,14 +302,14 @@ enable [find name="bridge1"]
 }
 
 # Step 8: Wait for all ports to be fully initialized
- :delay 3s
+:delay 3s
 
- # Step 9: RouterOS v6 pode demorar a expor a bridge em /interface
- :local __waitBridge 0
- :while ((\$__waitBridge < 5) && ([/interface find name="bridge1"] = "")) do={
-     :delay 1s
-     :set __waitBridge (\$__waitBridge + 1)
- }
+# Step 9: RouterOS v6 pode demorar a expor a bridge em /interface
+:local __waitBridge 0
+:while ((\$__waitBridge < 5) && ([/interface find name="bridge1"] = "")) do={
+    :delay 1s
+    :set __waitBridge (\$__waitBridge + 1)
+}
 
 :log info "NAVSPOT: Infraestrutura de rede pronta"
 
@@ -321,7 +321,7 @@ enable [find name="bridge1"]
 :log info "NAVSPOT: [2/6] Detectando interface de rede..."
 
 :local targetIf ""
- :local interfacePriority {"bridge1";"wlan1";"wlan2";"ether2";"ether3";"ether4";"ether5"}
+:local interfacePriority {"bridge1";"wlan1";"wlan2";"ether2";"ether3";"ether4";"ether5"}
 :local configuredIf "${interfaceWifi}"
 
 # Only try configured interface if explicitly set (not empty/auto)
