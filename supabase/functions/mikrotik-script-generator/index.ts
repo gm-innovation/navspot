@@ -220,10 +220,9 @@ function generateMikroTikScript(
   const poolStart = `${networkBase}.10`
   const poolEnd = `${networkBase}.254`
   const hotspotSlug = hotspot.nome.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
-  // "auto" or empty means auto-detect, don't try to use a specific interface
-  const interfaceWifi = (hotspot.interface_wifi && hotspot.interface_wifi !== 'auto') 
-    ? hotspot.interface_wifi 
-    : ''  // Empty string signals auto-detect
+  // "auto" or empty/whitespace means auto-detect, don't try to use a specific interface
+  const interfaceWifiRaw = (hotspot.interface_wifi ?? '').trim()
+  const interfaceWifi = interfaceWifiRaw && interfaceWifiRaw !== 'auto' ? interfaceWifiRaw : ''
   
   let script = `# ============================================
 # NAVSPOT MikroTik Configuration Script
@@ -260,7 +259,7 @@ enable [find name="bridge1"]
 :log info "NAVSPOT: bridge1 ativada"
 
 # Step 3: Wait for bridge to be ready in kernel
-:delay 1s
+ :delay 3s
 
 # Step 4: Remove ether2-5 from any existing bridge (prevent conflicts)
 /interface bridge port
@@ -274,7 +273,7 @@ enable [find name="bridge1"]
 # Step 5: Add ether2-5 to bridge1 (Hotspot LAN)
 :foreach port in={"ether2";"ether3";"ether4";"ether5"} do={
     :do {
-        add bridge=bridge1 interface=\$port comment="navspot-hotspot-port"
+        add bridge="bridge1" interface=\$port comment="navspot-hotspot-port"
         :log info ("NAVSPOT: " . \$port . " adicionada a bridge1")
     } on-error={
         :log warning ("NAVSPOT: " . \$port . " nao existe neste modelo")
@@ -288,7 +287,7 @@ enable [find name="bridge1"]
             /interface bridge port remove [find interface=\$wlan]
         } on-error={}
         :do {
-            /interface bridge port add bridge=bridge1 interface=\$wlan comment="navspot-hotspot-port"
+            /interface bridge port add bridge="bridge1" interface=\$wlan comment="navspot-hotspot-port"
             :log info ("NAVSPOT: " . \$wlan . " adicionada a bridge1")
         } on-error={}
     }
@@ -303,7 +302,14 @@ enable [find name="bridge1"]
 }
 
 # Step 8: Wait for all ports to be fully initialized
-:delay 1s
+ :delay 3s
+
+ # Step 9: RouterOS v6 pode demorar a expor a bridge em /interface
+ :local __waitBridge 0
+ :while ((\$__waitBridge < 5) && ([/interface find name="bridge1"] = "")) do={
+     :delay 1s
+     :set __waitBridge (\$__waitBridge + 1)
+ }
 
 :log info "NAVSPOT: Infraestrutura de rede pronta"
 
@@ -315,7 +321,7 @@ enable [find name="bridge1"]
 :log info "NAVSPOT: [2/6] Detectando interface de rede..."
 
 :local targetIf ""
-:local interfacePriority {"bridge1";"wlan1";"wlan2";"ether3";"ether4";"ether5"}
+ :local interfacePriority {"bridge1";"wlan1";"wlan2";"ether2";"ether3";"ether4";"ether5"}
 :local configuredIf "${interfaceWifi}"
 
 # Only try configured interface if explicitly set (not empty/auto)
