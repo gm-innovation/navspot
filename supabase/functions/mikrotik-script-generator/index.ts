@@ -302,6 +302,17 @@ add name=hsprof-${hotspotSlug} hotspot-address=${gateway} dns-name=${hotspotSlug
     html-directory=hotspot login-by=http-chap,http-pap \\
     http-cookie-lifetime=1d keepalive-timeout=5m rate-limit=""
 
+# ============================================
+# IP Binding (Administrative Access Bypass)
+# ============================================
+# IMPORTANT: This MUST be configured BEFORE the Hotspot Server
+# to prevent administrative lockout during setup
+/ip hotspot ip-binding
+:do { remove [find comment~"navspot-admin-bypass"] } on-error={}
+
+# Bypass hotspot authentication for local network (administrative access)
+add address=${networkCidr} type=bypassed comment="navspot-admin-bypass"
+
 `
 
   // Add user profiles with rate limits and shared-users (device limit)
@@ -504,9 +515,17 @@ add chain=input action=accept dst-port=67-68 protocol=udp comment="navspot-secur
 add chain=input action=accept in-interface=\$navspotInterface \\
     dst-port=80,443,8080 protocol=tcp comment="navspot-security-hotspot-http"
 
+# Log suspicious traffic before dropping (for debugging)
+add chain=input action=log in-interface=\$navspotInterface \\
+    log-prefix="NAVSPOT-DROP: " comment="navspot-security-log-drop"
+
 # Drop all other input from hotspot interface
 add chain=input action=drop in-interface=\$navspotInterface \\
     comment="navspot-security-drop-other"
+
+# Allow access to gateway (router itself) - MUST come before isolation drop
+add chain=forward action=accept src-address=${networkCidr} dst-address=${gateway} \\
+    comment="navspot-security-allow-gateway"
 
 # Client Isolation - prevent clients from reaching each other directly
 add chain=forward action=drop src-address=${networkCidr} dst-address=${networkCidr} \\
@@ -514,19 +533,6 @@ add chain=forward action=drop src-address=${networkCidr} dst-address=${networkCi
 
 `
 
-  // IP Binding for administrative access bypass
-  script += `
-# ============================================
-# IP Binding (Administrative Access Bypass)
-# ============================================
-/ip hotspot ip-binding
-:do { remove [find comment~"navspot-admin-bypass"] } on-error={}
-
-# Bypass hotspot authentication for local network (administrative access)
-# This allows WinBox/SSH access without hotspot login requirement
-add address=${networkCidr} type=bypassed comment="navspot-admin-bypass"
-
-`
 
   // Token stored in separate file for security (with increased delay)
   script += `# ============================================
@@ -837,6 +843,13 @@ add name="navspot-health" owner=admin policy=read,write,test source={
   :local dhcpName "dhcp-${hotspotSlug}"
   :local issues 0
   
+  # Check if interface still exists
+  :global navspotInterface
+  :if ([/interface find name=\$navspotInterface] = "") do={
+    :log error ("NAVSPOT: Interface " . \$navspotInterface . " desapareceu!")
+    :set issues (\$issues + 1)
+  }
+  
   # Check if hotspot is enabled
   :if ([/ip hotspot find name=\$hotspotName disabled=no] = "") do={
     :log warning "NAVSPOT: Hotspot desativado, reativando..."
@@ -871,11 +884,11 @@ add name="navspot-health" owner=admin policy=read,write,test source={
 /system scheduler
 :do { remove [find name="navspot-sync-scheduler"] } on-error={}
 add name="navspot-sync-scheduler" interval=${hotspot.sync_interval_minutes}m on-event="/system script run navspot-sync" \\
-    start-time=startup policy=read,write,test
+    start-time=00:00:30 policy=read,write,test comment="Start 30s after boot"
 
 :do { remove [find name="navspot-health-scheduler"] } on-error={}
 add name="navspot-health-scheduler" interval=1h on-event="/system script run navspot-health" \\
-    start-time=startup policy=read,write,test
+    start-time=00:05:00 policy=read,write,test comment="Start 5min after boot"
 
 # ============================================
 # Initial Delay and First Sync
