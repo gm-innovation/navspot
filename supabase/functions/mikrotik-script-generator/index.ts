@@ -159,9 +159,9 @@ function generateBootstrapScript(
   // Script sync inline com \r\n (NAO usar bloco source={})
   const syncScriptSource = `:local token [/file get \\"navspot-token.txt\\" contents]\\r\\n:local syncUrl \\"${syncUrl}\\"\\r\\n:local users \\"\\"\\r\\n/ip hotspot active\\r\\n:foreach a in=[find] do={\\r\\n:local u [get \\$a user]\\r\\n:local m [get \\$a mac-address]\\r\\n:local bi [get \\$a bytes-in]\\r\\n:local bo [get \\$a bytes-out]\\r\\n:set users (\\$users . \\$u . \\",\\" . \\$m . \\",\\" . \\$bi . \\",\\" . \\$bo . \\";\\")\\r\\n}\\r\\n:local body (\\"{\\\\\\\"sync_token\\\\\\\":\\\\\\\"\\" . \\$token . \\"\\\\\\\",\\\\\\\"active_users_csv\\\\\\\":\\\\\\\"\\" . \\$users . \\"\\\\\\\"}\\")\\r\\n:do {/tool fetch url=\\$syncUrl mode=https http-method=post http-data=\\$body output=user as-value} on-error={:log warning \\"NAVSPOT-SYNC: Falha\\"}\\r\\n:log info \\"NAVSPOT-SYNC: OK\\"`
 
-  // Bootstrap script v5.0 - Producao Definitiva
+  // Bootstrap script v5.1 - Producao com Protecao Tripla da WAN
   return `# ============================================
-# NAVSPOT Bootstrap Script v5.0 - PRODUCAO
+# NAVSPOT Bootstrap Script v5.1 - PRODUCAO
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # WAN: ${wanInterface} (${wanType})
@@ -174,24 +174,34 @@ function generateBootstrapScript(
 :local DNSNAME "${dnsName}"
 :local TOKEN "${hotspot.sync_token}"
 
-:log info "NAVSPOT: Iniciando instalacao segura v5.0..."
+:log info "NAVSPOT: Iniciando instalacao segura v5.1..."
 
-# 1. VALIDACAO DE SEGURANCA
+# 1. VALIDACAO DA WAN - Interface deve existir
 :if ([:len [/interface find name=\$WANIF]] = 0) do={
   :log error ("NAVSPOT: Erro critico - Interface WAN " . \$WANIF . " nao existe!")
   :error "Abortando: WAN inexistente"
 }
 :log info ("NAVSPOT: WAN validada = " . \$WANIF)
 
-# 2. REMOVER WAN DE QUALQUER BRIDGE EXISTENTE (CRITICO)
+# 2. PROTECAO TRIPLA DA WAN - REMOVER DE TODAS AS BRIDGES
+# Passo 1: Loop para remover WAN de qualquer bridge existente
 /interface bridge port
-:do { remove [find interface=\$WANIF] } on-error={}
-:log info ("NAVSPOT: WAN " . \$WANIF . " removida de bridges")
+:foreach bp in=[find interface=\$WANIF] do={
+  :log warning ("NAVSPOT: Removendo WAN " . \$WANIF . " de bridge...")
+  :do { remove \$bp } on-error={}
+}
 
-# 3. CONFIGURAR INTERNET (WAN)
+# Passo 2: Verificar se WAN foi realmente liberada
+:if ([:len [/interface bridge port find interface=\$WANIF]] > 0) do={
+  :log error ("NAVSPOT: ERRO CRITICO - WAN " . \$WANIF . " ainda em bridge!")
+  :error "Abortando: WAN presa em bridge"
+}
+:log info ("NAVSPOT: WAN " . \$WANIF . " isolada com sucesso")
+
+# 3. CONFIGURAR INTERNET (WAN) - DHCP ou PPPoE
 :if (\$WANTYPE = "dhcp") do={
   /ip dhcp-client
-  :do { remove [find interface=\$WANIF comment~"navspot"] } on-error={}
+  :do { remove [find interface=\$WANIF] } on-error={}
   :do { add interface=\$WANIF disabled=no comment="navspot-wan" } on-error={}
   :log info "NAVSPOT: DHCP client configurado na WAN"
 }
@@ -203,20 +213,36 @@ function generateBootstrapScript(
 :if ([:len [find name="bridge1"]] = 0) do={ add name="bridge1" comment="navspot" }
 enable [find name="bridge1"]
 
-# 5. PORTAS LAN (NUNCA INCLUI WAN)
+:log info "NAVSPOT: Bridge1 criada"
+
+# 5. PORTAS LAN - COM VERIFICACAO DUPLA (NUNCA ADICIONA WAN)
 /interface bridge port
 :foreach p in={"ether2";"ether3";"ether4";"ether5"} do={
-  :if (\$p != \$WANIF) do={
-    :if ([:len [/interface find name=\$p]] > 0) do={
+  # Verificacao 1: Porta existe?
+  :if ([:len [/interface find name=\$p]] > 0) do={
+    # Verificacao 2: NAO e a WAN? (usando variaveis locais para compatibilidade RouterOS v6)
+    :local portName \$p
+    :local wanName \$WANIF
+    :if (\$portName != \$wanName) do={
       :do { remove [find interface=\$p] } on-error={}
       :do { add bridge="bridge1" interface=\$p comment="navspot-lan" } on-error={}
+      :log info ("NAVSPOT: " . \$p . " -> bridge1")
+    } else={
+      :log warning ("NAVSPOT: " . \$p . " e WAN - IGNORADA!")
     }
   }
 }
 
 :delay 2s
 
-# 6. REDE IP
+# 6. VERIFICACAO DE SEGURANCA POS-LOOP - WAN NAO PODE ESTAR NA BRIDGE
+:if ([:len [/interface bridge port find interface=\$WANIF]] > 0) do={
+  :log error "NAVSPOT: WAN detectada na bridge! Removendo emergencialmente..."
+  /interface bridge port remove [find interface=\$WANIF]
+  :log warning "NAVSPOT: WAN removida da bridge"
+}
+
+# 7. REDE IP
 /ip address
 :do { remove [find interface="bridge1" comment~"navspot"] } on-error={}
 add address=${gateway}/24 interface=bridge1 comment="navspot"
@@ -237,14 +263,14 @@ add name="dhcp-navspot" interface=bridge1 address-pool="hs-pool-navspot" disable
 
 :log info "NAVSPOT: Rede configurada"
 
-# 7. NAT (EXPLICITO NA WAN)
+# 8. NAT (EXPLICITO NA WAN - NUNCA USAR !bridge1)
 /ip firewall nat
 :do { remove [find comment="navspot-nat"] } on-error={}
 add chain=srcnat out-interface=\$WANIF action=masquerade comment="navspot-nat"
 
 :log info ("NAVSPOT: NAT configurado na " . \$WANIF)
 
-# 8. HOTSPOT
+# 9. HOTSPOT
 /ip hotspot profile
 :do { remove [find name="hsprof-navspot"] } on-error={}
 add name="hsprof-navspot" hotspot-address=${gateway} dns-name=\$DNSNAME html-directory=flash/hotspot login-by=http-chap,http-pap
@@ -255,7 +281,7 @@ add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="
 
 :log info "NAVSPOT: Hotspot ativo"
 
-# 9. WALLED GARDEN BASICO
+# 10. WALLED GARDEN BASICO
 /ip hotspot walled-garden
 :do { remove [find comment~"navspot"] } on-error={}
 add dst-host="navspot.local" action=allow comment="navspot-system"
@@ -267,28 +293,36 @@ add dst-port=53 protocol=udp action=accept comment="navspot-dns"
 add dst-port=53 protocol=tcp action=accept comment="navspot-dns-tcp"
 add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
 
-# 10. TOKEN FILE
+# 11. TOKEN FILE
 /file print file="navspot-token.txt" where name=""
 :delay 2s
 /file set "navspot-token.txt" contents=\$TOKEN
 
 :log info "NAVSPOT: Token salvo"
 
-# 11. SYNC SCRIPT (INLINE COM \\r\\n - NAO BLOCO)
+# 12. SYNC SCRIPT (INLINE COM \\r\\n - NAO BLOCO)
 /system script
 :do { remove [find name="navspot-sync"] } on-error={}
 add name="navspot-sync" policy=read,write,policy,test source="${syncScriptSource}"
 
 :log info "NAVSPOT: Script de sync criado"
 
-# 12. SCHEDULER
+# 13. SCHEDULER
 /system scheduler
 :do { remove [find name="navspot-sync-scheduler"] } on-error={}
 add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
 
 :log info "NAVSPOT: Scheduler configurado"
 
-:log info "NAVSPOT: Bootstrap v5.0 concluido com sucesso!"
-:log info ("NAVSPOT: WAN=" . \$WANIF . " preservada. Hotspot funcional.")
+# 14. VERIFICACAO FINAL - GARANTIR QUE WAN ESTA ISOLADA
+:local wanInBridge [:len [/interface bridge port find interface=\$WANIF]]
+:if (\$wanInBridge > 0) do={
+  :log error "NAVSPOT: FALHA CRITICA - WAN na bridge apos instalacao!"
+  /interface bridge port remove [find interface=\$WANIF]
+  :log warning "NAVSPOT: WAN removida emergencialmente"
+}
+
+:log info "NAVSPOT: Bootstrap v5.1 concluido com sucesso!"
+:log info ("NAVSPOT: WAN=" . \$WANIF . " ISOLADA. Hotspot funcional.")
 `
 }
