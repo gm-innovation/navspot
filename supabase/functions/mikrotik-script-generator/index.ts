@@ -230,7 +230,7 @@ function generateMikroTikScript(
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
-# Version: 3.7 - NAT Masquerade (internet access for clients)
+# Version: 3.8 - Infrastructure First (bridge before detection)
 # ============================================
 
 # AVISO: Este script configura o hotspot do zero.
@@ -239,13 +239,80 @@ function generateMikroTikScript(
 /system identity set name="${hotspot.nome}"
 
 # ============================================
-# Smart Interface Detection with Priority Fallback
+# Bridge Infrastructure (MUST BE FIRST)
 # ============================================
-# Priority order based on real vessel topologies (WAN interfaces EXCLUDED):
-# 1. bridge1 - Default client bridge (most common LAN setup)
-# 2. wlan1/wlan2 - MikroTik integrated Wi-Fi
-# 3. ether3-5 - LAN ports (safe for hotspot)
-# NOTE: bridgeLocal, ether1, ether2 are excluded (commonly WAN/management)
+# Topologia: ether1 = WAN/Internet, ether2-5 = Hotspot LAN
+# A bridge DEVE existir ANTES da detecção de interface
+
+:log info "NAVSPOT: [1/6] Configurando infraestrutura de rede..."
+
+# Step 1: Create bridge1 if it doesn't exist
+/interface bridge
+:if ([:len [find name="bridge1"]] = 0) do={
+    add name=bridge1 comment="navspot-hotspot-bridge"
+    :log info "NAVSPOT: bridge1 criada"
+} else={
+    :log info "NAVSPOT: bridge1 ja existe"
+}
+
+# Step 2: Enable bridge1
+enable [find name="bridge1"]
+:log info "NAVSPOT: bridge1 ativada"
+
+# Step 3: Wait for bridge to be ready in kernel
+:delay 1s
+
+# Step 4: Remove ether2-5 from any existing bridge (prevent conflicts)
+/interface bridge port
+:foreach port in={"ether2";"ether3";"ether4";"ether5"} do={
+    :do {
+        remove [find interface=\$port]
+        :log info ("NAVSPOT: " . \$port . " removida de bridges anteriores")
+    } on-error={}
+}
+
+# Step 5: Add ether2-5 to bridge1 (Hotspot LAN)
+:foreach port in={"ether2";"ether3";"ether4";"ether5"} do={
+    :do {
+        add bridge=bridge1 interface=\$port comment="navspot-hotspot-port"
+        :log info ("NAVSPOT: " . \$port . " adicionada a bridge1")
+    } on-error={
+        :log warning ("NAVSPOT: " . \$port . " nao existe neste modelo")
+    }
+}
+
+# Step 6: Add wlan interfaces to bridge1 if they exist
+:foreach wlan in={"wlan1";"wlan2"} do={
+    :if ([/interface find name=\$wlan] != "") do={
+        :do {
+            /interface bridge port remove [find interface=\$wlan]
+        } on-error={}
+        :do {
+            /interface bridge port add bridge=bridge1 interface=\$wlan comment="navspot-hotspot-port"
+            :log info ("NAVSPOT: " . \$wlan . " adicionada a bridge1")
+        } on-error={}
+    }
+}
+
+# Step 7: Enable physical interfaces
+/interface ethernet
+:foreach port in={"ether2";"ether3";"ether4";"ether5"} do={
+    :do {
+        enable [find name=\$port]
+    } on-error={}
+}
+
+# Step 8: Wait for all ports to be fully initialized
+:delay 1s
+
+:log info "NAVSPOT: Infraestrutura de rede pronta"
+
+# ============================================
+# Smart Interface Detection (bridge1 agora existe!)
+# ============================================
+# Priority order: bridge1 > wlan1 > wlan2 > ether3-5
+
+:log info "NAVSPOT: [2/6] Detectando interface de rede..."
 
 :local targetIf ""
 :local interfacePriority {"bridge1";"wlan1";"wlan2";"ether3";"ether4";"ether5"}
@@ -278,7 +345,6 @@ function generateMikroTikScript(
 # Final validation - abort if no interface found
 :if (\$targetIf = "") do={
   :log error "NAVSPOT: ERRO CRITICO - Nenhuma interface valida encontrada!"
-  :log error "NAVSPOT: Interfaces testadas: bridge1, bridgeLocal, wlan1, wlan2, ether2-5, ether1"
   :error "Abortando - nenhuma interface disponivel"
 }
 
@@ -287,8 +353,7 @@ function generateMikroTikScript(
 # Save interface to global variable for use throughout script
 :global navspotInterface \$targetIf
 
-# FIX #1 (CRITICAL): Save interface to FILE for persistence between scripts
-# Global variables don't persist across script executions in RouterOS
+# Save interface to FILE for persistence between scripts
 /file
 :do { remove [find name="navspot-interface.txt"] } on-error={}
 :delay 500ms
@@ -302,70 +367,10 @@ function generateMikroTikScript(
 :log info ("NAVSPOT: Interface salva em arquivo: " . \$targetIf)
 
 # ============================================
-# Automatic Bridge Port Assignment
-# ============================================
-# Topologia: ether1 = WAN/Internet, ether2-5 = Hotspot LAN
-# Garante que bridge1 existe, esta habilitada e com portas conectadas
-
-:log info "NAVSPOT: Configurando portas fisicas..."
-
-# Ensure bridge1 exists and is enabled
-/interface bridge
-:if ([:len [find name="bridge1"]] = 0) do={
-    add name=bridge1 comment="navspot-hotspot-bridge"
-    :log info "NAVSPOT: bridge1 criada"
-}
-enable [find name="bridge1"]
-:log info "NAVSPOT: bridge1 ativada"
-
-# Remove ether2-5 from any existing bridge (prevent conflicts)
-/interface bridge port
-:foreach port in={"ether2";"ether3";"ether4";"ether5"} do={
-    :do {
-        remove [find interface=\$port]
-        :log info ("NAVSPOT: " . \$port . " removida de bridges anteriores")
-    } on-error={}
-}
-
-# Add ether2-5 to bridge1 (Hotspot LAN)
-:foreach port in={"ether2";"ether3";"ether4";"ether5"} do={
-    :do {
-        add bridge=bridge1 interface=\$port comment="navspot-hotspot-port"
-        :log info ("NAVSPOT: " . \$port . " adicionada a bridge1")
-    } on-error={
-        :log warning ("NAVSPOT: Falha ao adicionar " . \$port . " (pode nao existir neste modelo)")
-    }
-}
-
-# Also add wlan interfaces to bridge1 if they exist and are NOT the target interface
-:foreach wlan in={"wlan1";"wlan2"} do={
-    :if ([/interface find name=\$wlan] != "") do={
-        :if (\$wlan != \$targetIf) do={
-            :do {
-                remove [find interface=\$wlan]
-            } on-error={}
-            :do {
-                add bridge=bridge1 interface=\$wlan comment="navspot-hotspot-port"
-                :log info ("NAVSPOT: " . \$wlan . " adicionada a bridge1")
-            } on-error={}
-        }
-    }
-}
-
-# Enable physical interfaces
-/interface ethernet
-:foreach port in={"ether2";"ether3";"ether4";"ether5"} do={
-    :do {
-        enable [find name=\$port]
-    } on-error={}
-}
-
-:log info "NAVSPOT: Configuracao de portas concluida"
-
-# ============================================
 # IP Address Configuration
 # ============================================
-# FIX #9: Add validation with error logging
+:log info "NAVSPOT: [3/6] Configurando rede IP..."
+
 /ip address
 :do { remove [find interface=\$targetIf comment~"navspot"] } on-error={}
 :do { remove [find address="${gateway}/24"] } on-error={}
@@ -407,6 +412,8 @@ set allow-remote-requests=no
 # ============================================
 # Hotspot Profile (with Security Settings)
 # ============================================
+:log info "NAVSPOT: [4/6] Configurando Hotspot..."
+
 /ip hotspot profile
 :do { remove [find name="hsprof-${hotspotSlug}"] } on-error={}
 add name=hsprof-${hotspotSlug} hotspot-address=${gateway} dns-name=${hotspotSlug}.navspot.local \\
@@ -422,8 +429,6 @@ add name=hsprof-${hotspotSlug} hotspot-address=${gateway} dns-name=${hotspotSlug
 :do { remove [find comment~"navspot"] } on-error={}
 
 # Bypass para acesso administrativo (WinBox/SSH de qualquer rede que não seja o hotspot)
-# type=bypassed + server=none = qualquer conexão não-hotspot é bypassada automaticamente
-# Isso permite gerenciamento remoto (WAN, LAN, VPN) sem interferir no controle dos clientes
 add address=0.0.0.0/0 type=bypassed server=none comment="navspot-admin-global-bypass"
 
 # Bypass para rede local do hotspot (administradores locais)
@@ -1059,13 +1064,14 @@ add name="navspot-health-scheduler" interval=1h on-event="/system script run nav
 /system script run navspot-health
 
 :log info "============================================"
-:log info "NAVSPOT: Configuracao completa para ${hotspot.nome}"
+:log info "NAVSPOT: [6/6] Configuracao completa para ${hotspot.nome}"
 :log info "NAVSPOT: ${tripulantes.length} usuarios, ${perfis.length} perfis"
 :log info ("NAVSPOT: Interface: " . \$navspotInterface . ", Gateway: ${gateway}")
-:log info "NAVSPOT: Portas Hotspot: ether2, ether3, ether4, ether5"
+:log info "NAVSPOT: Infraestrutura: bridge1 com ether2-5"
 :log info "NAVSPOT: Porta WAN: ether1 (excluida do hotspot)"
 :log info "NAVSPOT: NAT Masquerade: ativo (clientes podem acessar internet)"
 :log info "NAVSPOT: Sync a cada ${hotspot.sync_interval_minutes} minutos"
+:log info "NAVSPOT: Versao: 3.8 - Infrastructure First"
 :log info "============================================"
 `
 
