@@ -230,7 +230,7 @@ function generateMikroTikScript(
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
-# Version: 3.6 - Bridge Port Assignment (physical port connection)
+# Version: 3.7 - NAT Masquerade (internet access for clients)
 # ============================================
 
 # AVISO: Este script configura o hotspot do zero.
@@ -657,6 +657,16 @@ add chain=forward action=accept in-interface=\$targetIf src-address=${networkCid
 add chain=forward action=drop in-interface=\$targetIf src-address=${networkCidr} dst-address=${networkCidr} \\
     comment="navspot-security-client-isolation"
 
+# ============================================
+# NAT Configuration (Internet Access for Clients)
+# ============================================
+# Masquerade: Traduz IPs privados dos clientes para o IP da WAN
+# out-interface=!$targetIf: Qualquer interface que NAO seja a bridge1 (ou seja, WAN)
+/ip firewall nat
+:do { remove [find comment~"navspot-masquerade"] } on-error={}
+add chain=srcnat out-interface=!\$targetIf action=masquerade comment="navspot-masquerade"
+:log info "NAVSPOT: NAT Masquerade configurado para acesso a internet"
+
 `
 
 
@@ -1054,6 +1064,7 @@ add name="navspot-health-scheduler" interval=1h on-event="/system script run nav
 :log info ("NAVSPOT: Interface: " . \$navspotInterface . ", Gateway: ${gateway}")
 :log info "NAVSPOT: Portas Hotspot: ether2, ether3, ether4, ether5"
 :log info "NAVSPOT: Porta WAN: ether1 (excluida do hotspot)"
+:log info "NAVSPOT: NAT Masquerade: ativo (clientes podem acessar internet)"
 :log info "NAVSPOT: Sync a cada ${hotspot.sync_interval_minutes} minutos"
 :log info "============================================"
 `
