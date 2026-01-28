@@ -41,7 +41,7 @@ export function HotspotForm({
   const [formData, setFormData] = useState({
     nome: "",
     embarcacao_id: "",
-    interface_wifi: "wlan1",
+    interface_wifi: "auto",
     rede: "192.168.88.0/24",
     max_usuarios: 50,
     sync_interval_minutes: 5,
@@ -53,7 +53,7 @@ export function HotspotForm({
       setFormData({
         nome: initialData.nome || "",
         embarcacao_id: initialData.embarcacao_id || "",
-        interface_wifi: initialData.interface_wifi || "wlan1",
+        interface_wifi: "auto",
         rede: initialData.rede || "192.168.88.0/24",
         max_usuarios: initialData.max_usuarios || 50,
         sync_interval_minutes: initialData.sync_interval_minutes || 5,
@@ -63,7 +63,7 @@ export function HotspotForm({
       setFormData({
         nome: "",
         embarcacao_id: "",
-        interface_wifi: "wlan1",
+        interface_wifi: "auto",
         rede: "192.168.88.0/24",
         max_usuarios: 50,
         sync_interval_minutes: 5,
@@ -135,25 +135,6 @@ export function HotspotForm({
               </Select>
             </div>
 
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="interface_wifi" className="text-right">
-                Interface WiFi
-              </Label>
-              <Select
-                value={formData.interface_wifi}
-                onValueChange={(value) => handleChange("interface_wifi", value)}
-              >
-                <SelectTrigger className="col-span-3">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="wlan1">wlan1</SelectItem>
-                  <SelectItem value="wlan2">wlan2</SelectItem>
-                  <SelectItem value="wlan3">wlan3</SelectItem>
-                  <SelectItem value="bridge1">bridge1</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
 
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="rede" className="text-right">
