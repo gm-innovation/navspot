@@ -230,7 +230,7 @@ function generateMikroTikScript(
 # Hotspot: ${hotspot.nome}
 # Embarcacao: ${embarcacao.nome}
 # Generated: ${new Date().toISOString()}
-# Version: 3.10 - RouterOS v6 String Quoting Fix
+# Version: 3.11 - Universal Syntax (No Backslashes)
 # ============================================
 
 # AVISO: Este script configura o hotspot do zero.
@@ -353,11 +353,10 @@ enable [find name="bridge1"]
 # Save interface to global variable for use throughout script
 :global navspotInterface \$targetIf
 
-# Save interface to FILE for persistence between scripts (v3.9 universal syntax)
-/file
-:do { /file remove "navspot-interface.txt" } on-error={}
-:delay 500ms
-/file add name="navspot-interface.txt" contents=\$targetIf
+# Save interface to FILE for persistence between scripts (v3.11 universal syntax)
+/file print file="navspot-interface.txt" where name=""
+:delay 1s
+/file set "navspot-interface.txt" contents=\$targetIf
 :log info ("NAVSPOT: Interface salva em arquivo: " . \$targetIf)
 
 # ============================================
@@ -410,9 +409,7 @@ set allow-remote-requests=yes servers=8.8.8.8,8.8.4.4
 
 /ip hotspot profile
 :do { remove [find name="hsprof-${hotspotSlug}"] } on-error={}
-add name="hsprof-${hotspotSlug}" hotspot-address=${gateway} dns-name="${hotspotSlug}.navspot.local" \\
-    html-directory=hotspot login-by=http-chap,http-pap \\
-    http-cookie-lifetime=1d keepalive-timeout=5m rate-limit=""
+add name="hsprof-${hotspotSlug}" hotspot-address=${gateway} dns-name="${hotspotSlug}.navspot.local" html-directory=hotspot login-by=http-chap,http-pap http-cookie-lifetime=1d keepalive-timeout=5m rate-limit=""
 
 # ============================================
 # IP Binding (Administrative Access Bypass)
@@ -468,8 +465,7 @@ add address=${networkCidr} type=bypassed comment="navspot-admin-bypass"
 # ============================================
 /ip hotspot
 :do { remove [find name="hs-${hotspotSlug}"] } on-error={}
-add name="hs-${hotspotSlug}" interface=\$targetIf address-pool="hs-pool-${hotspotSlug}" \\
-    profile="hsprof-${hotspotSlug}" disabled=no
+add name="hs-${hotspotSlug}" interface=\$targetIf address-pool="hs-pool-${hotspotSlug}" profile="hsprof-${hotspotSlug}" disabled=no
 
 `
 
@@ -602,59 +598,44 @@ add chain=forward layer7-protocol="navspot-block-all" action=drop comment="navsp
 :foreach f in=[find comment~"navspot-security"] do={ remove \$f }
 
 # Accept established/related connections
-add chain=input action=accept connection-state=established,related \\
-    comment="navspot-security-established"
+add chain=input action=accept connection-state=established,related comment="navspot-security-established"
 
 # Allow DNS (UDP/TCP) from hotspot interface - works before login
-add chain=input action=accept in-interface=\$targetIf \\
-    dst-port=53 protocol=udp comment="navspot-security-dns"
-add chain=input action=accept in-interface=\$targetIf \\
-    dst-port=53 protocol=tcp comment="navspot-security-dns-tcp"
+add chain=input action=accept in-interface=\$targetIf dst-port=53 protocol=udp comment="navspot-security-dns"
+add chain=input action=accept in-interface=\$targetIf dst-port=53 protocol=tcp comment="navspot-security-dns-tcp"
 
 # Allow WinBox from any local/private network (RFC1918 ranges)
 # Isso permite acesso de: rede WAN, rede LAN, VPNs corporativas
 # IPs públicos (internet) são bloqueados pela regra drop final
-add chain=input action=accept src-address=10.0.0.0/8 \\
-    dst-port=8291 protocol=tcp comment="navspot-security-winbox-10"
-add chain=input action=accept src-address=172.16.0.0/12 \\
-    dst-port=8291 protocol=tcp comment="navspot-security-winbox-172"
-add chain=input action=accept src-address=192.168.0.0/16 \\
-    dst-port=8291 protocol=tcp comment="navspot-security-winbox-192"
+add chain=input action=accept src-address=10.0.0.0/8 dst-port=8291 protocol=tcp comment="navspot-security-winbox-10"
+add chain=input action=accept src-address=172.16.0.0/12 dst-port=8291 protocol=tcp comment="navspot-security-winbox-172"
+add chain=input action=accept src-address=192.168.0.0/16 dst-port=8291 protocol=tcp comment="navspot-security-winbox-192"
 
 # Allow SSH from any local/private network (RFC1918 ranges)
-add chain=input action=accept src-address=10.0.0.0/8 \\
-    dst-port=22 protocol=tcp comment="navspot-security-ssh-10"
-add chain=input action=accept src-address=172.16.0.0/12 \\
-    dst-port=22 protocol=tcp comment="navspot-security-ssh-172"
-add chain=input action=accept src-address=192.168.0.0/16 \\
-    dst-port=22 protocol=tcp comment="navspot-security-ssh-192"
+add chain=input action=accept src-address=10.0.0.0/8 dst-port=22 protocol=tcp comment="navspot-security-ssh-10"
+add chain=input action=accept src-address=172.16.0.0/12 dst-port=22 protocol=tcp comment="navspot-security-ssh-172"
+add chain=input action=accept src-address=192.168.0.0/16 dst-port=22 protocol=tcp comment="navspot-security-ssh-192"
 
 # Allow ICMP from hotspot interface
-add chain=input action=accept in-interface=\$targetIf \\
-    protocol=icmp comment="navspot-security-ping"
+add chain=input action=accept in-interface=\$targetIf protocol=icmp comment="navspot-security-ping"
 
 # Allow DHCP (discover, renew, release)
 add chain=input action=accept dst-port=67-68 protocol=udp comment="navspot-security-dhcp"
 
 # CRITICAL: Allow hotspot HTTP redirect (portal capture)
-add chain=input action=accept in-interface=\$targetIf \\
-    dst-port=80,443,8080 protocol=tcp comment="navspot-security-hotspot-http"
+add chain=input action=accept in-interface=\$targetIf dst-port=80,443,8080 protocol=tcp comment="navspot-security-hotspot-http"
 
 # Log suspicious traffic before dropping (for debugging)
-add chain=input action=log in-interface=\$targetIf \\
-    log-prefix="NAVSPOT-DROP: " comment="navspot-security-log-drop"
+add chain=input action=log in-interface=\$targetIf log-prefix="NAVSPOT-DROP: " comment="navspot-security-log-drop"
 
 # Drop all other input from hotspot interface
-add chain=input action=drop in-interface=\$targetIf \\
-    comment="navspot-security-drop-other"
+add chain=input action=drop in-interface=\$targetIf comment="navspot-security-drop-other"
 
 # FIX #2: Allow access to gateway with in-interface - MUST come before isolation drop
-add chain=forward action=accept in-interface=\$targetIf src-address=${networkCidr} dst-address=${gateway} \\
-    comment="navspot-security-allow-gateway"
+add chain=forward action=accept in-interface=\$targetIf src-address=${networkCidr} dst-address=${gateway} comment="navspot-security-allow-gateway"
 
 # FIX #2: Client Isolation with in-interface - prevent clients from reaching each other
-add chain=forward action=drop in-interface=\$targetIf src-address=${networkCidr} dst-address=${networkCidr} \\
-    comment="navspot-security-client-isolation"
+add chain=forward action=drop in-interface=\$targetIf src-address=${networkCidr} dst-address=${networkCidr} comment="navspot-security-client-isolation"
 
 # ============================================
 # NAT Configuration (Internet Access for Clients)
@@ -673,11 +654,10 @@ add chain=srcnat out-interface=!\$targetIf action=masquerade comment="navspot-ma
   script += `# ============================================
 # Sync Token (Stored Securely)
 # ============================================
-# v3.9 universal file creation syntax
-/file
-:do { /file remove "navspot-token.txt" } on-error={}
-:delay 500ms
-/file add name="navspot-token.txt" contents="${hotspot.sync_token}"
+# v3.11 universal file creation syntax
+/file print file="navspot-token.txt" where name=""
+:delay 1s
+/file set "navspot-token.txt" contents="${hotspot.sync_token}"
 :log info "NAVSPOT: Token salvo em arquivo"
 
 `
@@ -758,10 +738,10 @@ add name="navspot-sync" owner=admin policy=read,write,test,policy source={
           }
           
           :if ([:len \$cleanContent] > 2) do={
-            # v3.9 universal file creation syntax
-            :do { /file remove "navspot-actions.txt" } on-error={}
-            :delay 500ms
-            /file add name="navspot-actions.txt" contents=\$cleanContent
+            # v3.11 universal file creation syntax
+            /file print file="navspot-actions.txt" where name=""
+            :delay 1s
+            /file set "navspot-actions.txt" contents=\$cleanContent
             :log info ("NAVSPOT: " . [:len \$cleanContent] . " bytes of actions to process")
             /system script run navspot-action-processor
           }
@@ -956,11 +936,11 @@ add name="navspot-action-processor" owner=admin policy=read,write,test,policy so
     }
     
     # FIX #4: Save executed actions and ONLY THEN remove action file
-    # v3.9 universal file creation syntax
+    # v3.11 universal file creation syntax
     :if ([:len \$executed] > 0) do={
-      :do { /file remove "navspot-executed.txt" } on-error={}
-      :delay 500ms
-      /file add name="navspot-executed.txt" contents=\$executed
+      /file print file="navspot-executed.txt" where name=""
+      :delay 1s
+      /file set "navspot-executed.txt" contents=\$executed
       
       # Remove action file AFTER saving executed successfully
       :do { /file remove \$actionFile } on-error={}
@@ -1039,12 +1019,10 @@ add name="navspot-health" owner=admin policy=read,write,test source={
 # Removed start-time and rely on interval + initial delay below
 /system scheduler
 :do { remove [find name="navspot-sync-scheduler"] } on-error={}
-add name="navspot-sync-scheduler" interval=${hotspot.sync_interval_minutes}m on-event="/system script run navspot-sync" \\
-    policy=read,write,test comment="NAVSPOT sync every ${hotspot.sync_interval_minutes}min"
+add name="navspot-sync-scheduler" interval=${hotspot.sync_interval_minutes}m on-event="/system script run navspot-sync" policy=read,write,test comment="NAVSPOT sync every ${hotspot.sync_interval_minutes}min"
 
 :do { remove [find name="navspot-health-scheduler"] } on-error={}
-add name="navspot-health-scheduler" interval=1h on-event="/system script run navspot-health" \\
-    policy=read,write,test comment="NAVSPOT health check every hour"
+add name="navspot-health-scheduler" interval=1h on-event="/system script run navspot-health" policy=read,write,test comment="NAVSPOT health check every hour"
 
 # ============================================
 # Initial Delay and First Sync
@@ -1061,7 +1039,7 @@ add name="navspot-health-scheduler" interval=1h on-event="/system script run nav
 :log info "NAVSPOT: Porta WAN: ether1 (excluida do hotspot)"
 :log info "NAVSPOT: NAT Masquerade: ativo (clientes podem acessar internet)"
 :log info "NAVSPOT: Sync a cada ${hotspot.sync_interval_minutes} minutos"
-:log info "NAVSPOT: Versao: 3.10 - RouterOS v6 String Quoting Fix"
+:log info "NAVSPOT: Versao: 3.11 - Universal Syntax (No Backslashes)"
 :log info "============================================"
 `
 
