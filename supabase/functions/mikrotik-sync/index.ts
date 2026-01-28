@@ -634,8 +634,6 @@ Deno.serve(async (req) => {
       
       switch (action.type) {
         case 'kick_session':
-          parts.push(String(p.user || ''), String(p.mac || ''))
-          break
         case 'kick_device':
           parts.push(String(p.user || ''), String(p.mac || ''))
           break
@@ -649,15 +647,53 @@ Deno.serve(async (req) => {
           break
         case 'add_user':
         case 'create_user':
-          // Use profile from payload, or 'default' as final fallback
-          parts.push(String(p.user || ''), String(p.password || ''), String(p.profile || 'default'))
+          parts.push(String(p.user || ''), String(p.password || ''), String(p.profile || 'default-navspot'))
           break
         case 'update_profile':
         case 'update_user_profile':
           parts.push(String(p.user || ''), String(p.profile || ''))
           break
+        // NEW: User profile management
+        case 'add_user_profile':
+          parts.push(
+            String(p.name || ''),
+            String(p.rate_limit || '2M/5M'),
+            String(p.shared_users || 1),
+            String(p.limit_bytes || 0),
+            String(p.session_timeout || '0s')
+          )
+          break
+        case 'remove_user_profile':
+          parts.push(String(p.name || ''))
+          break
+        // NEW: Walled garden management
+        case 'add_walled_garden':
+          parts.push(
+            String(p.dst_host || ''),
+            String(p.action || 'reject'),
+            String(p.comment || 'navspot-rule')
+          )
+          break
+        case 'remove_walled_garden':
+          parts.push(String(p.dst_host || ''))
+          break
+        // NEW: Firewall management
+        case 'add_firewall_l7':
+          parts.push(
+            String(p.name || ''),
+            String(p.regexp || ''),
+            String(p.comment || 'navspot-l7')
+          )
+          break
+        case 'add_firewall_filter':
+          parts.push(
+            String(p.chain || 'forward'),
+            String(p.layer7 || ''),
+            String(p.action || 'drop'),
+            String(p.comment || 'navspot-filter')
+          )
+          break
         default:
-          // For unknown types, add all payload values as params
           Object.values(p).forEach(v => parts.push(String(v)))
       }
       

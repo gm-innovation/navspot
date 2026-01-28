@@ -111,13 +111,13 @@ export function useCreatePerfilVelocidade() {
       try {
         await createMikrotikActionForEmpresa({
           empresaId: data.empresa_id,
-          tipo: 'add_profile',
+          tipo: 'add_user_profile',
           payload: {
             name: toProfileSlug(data.nome),
-            rateLimit: `${data.velocidade_upload}/${data.velocidade_download}`,
-            sharedUsers: data.max_dispositivos,
-            limitBytes: data.limite_dados_mb ? data.limite_dados_mb * 1024 * 1024 : 0,
-            sessionTimeout: data.session_timeout_minutos ? `${data.session_timeout_minutos}m` : null,
+            rate_limit: `${data.velocidade_upload}/${data.velocidade_download}`,
+            shared_users: data.max_dispositivos,
+            limit_bytes: data.limite_dados_mb ? data.limite_dados_mb * 1024 * 1024 : 0,
+            session_timeout: data.session_timeout_minutos ? `${data.session_timeout_minutos}m` : '0s',
           },
         });
       } catch (actionError) {
@@ -231,7 +231,7 @@ export function useDeletePerfilVelocidade() {
         try {
           await createMikrotikActionForEmpresa({
             empresaId: perfil.empresa_id,
-            tipo: 'remove_profile',
+            tipo: 'remove_user_profile',
             payload: { name: toProfileSlug(perfil.nome) },
           });
         } catch (actionError) {

@@ -101,7 +101,7 @@ export function useCreateRegraAcesso() {
       try {
         await createMikrotikActionForEmpresa({
           empresaId: data.empresa_id,
-          tipo: 'update_firewall_rules',
+          tipo: 'add_firewall_filter',
           payload: { regra_id: data.id, action: 'add' },
         });
       } catch (actionError) {
@@ -145,7 +145,7 @@ export function useCreateMultipleRegras() {
         try {
           await createMikrotikActionForEmpresa({
             empresaId: data[0].empresa_id,
-            tipo: 'update_firewall_rules',
+            tipo: 'add_firewall_filter',
             payload: { regra_ids: data.map(r => r.id), action: 'add_multiple' },
           });
         } catch (actionError) {
@@ -191,7 +191,7 @@ export function useUpdateRegraAcesso() {
       try {
         await createMikrotikActionForEmpresa({
           empresaId: data.empresa_id,
-          tipo: 'update_firewall_rules',
+          tipo: 'add_firewall_filter',
           payload: { regra_id: data.id, action: 'update' },
         });
       } catch (actionError) {
@@ -244,7 +244,7 @@ export function useDeleteRegraAcesso() {
         try {
           await createMikrotikActionForEmpresa({
             empresaId: regra.empresa_id,
-            tipo: 'update_firewall_rules',
+            tipo: 'remove_firewall_rule',
             payload: { regra_id: id, action: 'remove' },
           });
         } catch (actionError) {
