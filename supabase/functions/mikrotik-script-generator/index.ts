@@ -220,7 +220,10 @@ function generateMikroTikScript(
   const poolStart = `${networkBase}.10`
   const poolEnd = `${networkBase}.254`
   const hotspotSlug = hotspot.nome.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
-  const interfaceWifi = hotspot.interface_wifi || 'wlan1'
+  // "auto" or empty means auto-detect, don't try to use a specific interface
+  const interfaceWifi = (hotspot.interface_wifi && hotspot.interface_wifi !== 'auto') 
+    ? hotspot.interface_wifi 
+    : ''  // Empty string signals auto-detect
   
   let script = `# ============================================
 # NAVSPOT MikroTik Configuration Script
@@ -246,21 +249,27 @@ function generateMikroTikScript(
 
 :local targetIf ""
 :local interfacePriority {"bridge1";"bridgeLocal";"wlan1";"wlan2";"ether2";"ether3";"ether4";"ether5";"ether1"}
-
-# First, try the configured interface from database
 :local configuredIf "${interfaceWifi}"
-:if ([/interface find name=\$configuredIf] != "") do={
-  :set targetIf \$configuredIf
-  :log info ("NAVSPOT: Usando interface configurada: " . \$targetIf)
+
+# Only try configured interface if explicitly set (not empty/auto)
+:if ([:len \$configuredIf] > 0) do={
+  :if ([/interface find name=\$configuredIf] != "") do={
+    :set targetIf \$configuredIf
+    :log info ("NAVSPOT: Usando interface configurada: " . \$targetIf)
+  } else={
+    :log warning ("NAVSPOT: Interface '" . \$configuredIf . "' nao existe. Detectando automaticamente...")
+  }
 } else={
-  :log warning ("NAVSPOT: Interface configurada '" . \$configuredIf . "' nao encontrada. Iniciando deteccao automatica...")
-  
-  # Auto-detect best available interface using priority list
+  :log info "NAVSPOT: Modo auto-detect ativado"
+}
+
+# Auto-detect if no valid interface found yet
+:if (\$targetIf = "") do={
   :foreach ifName in=\$interfacePriority do={
     :if (\$targetIf = "") do={
       :if ([/interface find name=\$ifName] != "") do={
         :set targetIf \$ifName
-        :log info ("NAVSPOT: Interface detectada automaticamente: " . \$targetIf)
+        :log info ("NAVSPOT: Interface detectada: " . \$targetIf)
       }
     }
   }
