@@ -514,6 +514,20 @@ add chain=forward action=drop src-address=${networkCidr} dst-address=${networkCi
 
 `
 
+  // IP Binding for administrative access bypass
+  script += `
+# ============================================
+# IP Binding (Administrative Access Bypass)
+# ============================================
+/ip hotspot ip-binding
+:do { remove [find comment~"navspot-admin-bypass"] } on-error={}
+
+# Bypass hotspot authentication for local network (administrative access)
+# This allows WinBox/SSH access without hotspot login requirement
+add address=${networkCidr} type=bypassed comment="navspot-admin-bypass"
+
+`
+
   // Token stored in separate file for security (with increased delay)
   script += `# ============================================
 # Sync Token (Stored Securely)
