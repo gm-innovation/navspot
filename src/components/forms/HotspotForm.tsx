@@ -42,6 +42,7 @@ export function HotspotForm({
     nome: "",
     embarcacao_id: "",
     interface_wifi: "auto",
+    wan_interface: "ether1",
     rede: "192.168.88.0/24",
     max_usuarios: 50,
     sync_interval_minutes: 5,
@@ -54,6 +55,7 @@ export function HotspotForm({
         nome: initialData.nome || "",
         embarcacao_id: initialData.embarcacao_id || "",
         interface_wifi: "auto",
+        wan_interface: (initialData as any).wan_interface || "ether1",
         rede: initialData.rede || "192.168.88.0/24",
         max_usuarios: initialData.max_usuarios || 50,
         sync_interval_minutes: initialData.sync_interval_minutes || 5,
@@ -64,6 +66,7 @@ export function HotspotForm({
         nome: "",
         embarcacao_id: "",
         interface_wifi: "auto",
+        wan_interface: "ether1",
         rede: "192.168.88.0/24",
         max_usuarios: 50,
         sync_interval_minutes: 5,
@@ -135,6 +138,27 @@ export function HotspotForm({
               </Select>
             </div>
 
+
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="wan_interface" className="text-right">
+                Interface WAN
+              </Label>
+              <Select
+                value={formData.wan_interface}
+                onValueChange={(value) => handleChange("wan_interface", value)}
+              >
+                <SelectTrigger className="col-span-3">
+                  <SelectValue placeholder="Selecione a interface WAN" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ether1">ether1 (padrão)</SelectItem>
+                  <SelectItem value="sfp1">sfp1</SelectItem>
+                  <SelectItem value="lte1">lte1 (4G)</SelectItem>
+                  <SelectItem value="wlan1">wlan1 (WiFi WAN)</SelectItem>
+                  <SelectItem value="pppoe-out1">pppoe-out1 (PPPoE)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="rede" className="text-right">
