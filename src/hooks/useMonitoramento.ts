@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { getHotspotRealStatus } from '@/utils/hotspotStatus';
 
 export interface SessaoAtiva {
   id: string;
@@ -31,6 +32,7 @@ export interface HotspotStatus {
   nome: string;
   status: string;
   ultima_sincronizacao: string | null;
+  sync_interval_minutes: number;
   embarcacao_nome: string;
   sessoes_ativas: number;
 }
@@ -110,6 +112,7 @@ export function useHotspotsStatus() {
           nome,
           status,
           ultima_sincronizacao,
+          sync_interval_minutes,
           embarcacao:embarcacoes(nome)
         `)
         .order('nome');
@@ -134,6 +137,7 @@ export function useHotspotsStatus() {
         nome: h.nome,
         status: h.status,
         ultima_sincronizacao: h.ultima_sincronizacao,
+        sync_interval_minutes: h.sync_interval_minutes || 5,
         embarcacao_nome: h.embarcacao?.nome || 'N/A',
         sessoes_ativas: sessoesPorHotspot[h.id] || 0,
       })) as HotspotStatus[];
@@ -255,7 +259,17 @@ export function useLiveMetrics() {
 
   const totalSessoes = sessoesAtivas?.length || 0;
   const totalConsumo = sessoesAtivas?.reduce((acc, s) => acc + s.bytes_in + s.bytes_out, 0) || 0;
-  const hotspotsOnline = hotspots?.filter((h) => h.status === 'online').length || 0;
+  
+  // Use real calculated status
+  const hotspotsOnline = hotspots?.filter((h) => {
+    const realStatus = getHotspotRealStatus({
+      status: h.status,
+      ultima_sincronizacao: h.ultima_sincronizacao,
+      sync_interval_minutes: h.sync_interval_minutes || 5,
+    });
+    return realStatus === 'online';
+  }).length || 0;
+  
   const totalHotspots = hotspots?.length || 0;
 
   return {

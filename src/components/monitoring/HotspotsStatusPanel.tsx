@@ -4,10 +4,16 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useHotspotsStatus, formatTimeAgo, HotspotStatus } from '@/hooks/useMonitoramento';
 import { Server, Users, History } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
+import { getHotspotRealStatus } from '@/utils/hotspotStatus';
 
-function HotspotRow({ hotspot }: { hotspot: HotspotStatus }) {
+interface HotspotRowProps {
+  hotspot: HotspotStatus;
+  realStatus: 'online' | 'offline' | 'alerta';
+}
+
+function HotspotRow({ hotspot, realStatus }: HotspotRowProps) {
   const [timeAgo, setTimeAgo] = useState(formatTimeAgo(hotspot.ultima_sincronizacao));
 
   useEffect(() => {
@@ -24,7 +30,7 @@ function HotspotRow({ hotspot }: { hotspot: HotspotStatus }) {
       case 'offline':
         return <Badge variant="destructive">Offline</Badge>;
       default:
-        return <Badge variant="secondary" className="bg-yellow-500 hover:bg-yellow-600">Alerta</Badge>;
+        return <Badge variant="secondary" className="bg-yellow-500 hover:bg-yellow-600 text-white">Alerta</Badge>;
     }
   };
 
@@ -52,7 +58,7 @@ function HotspotRow({ hotspot }: { hotspot: HotspotStatus }) {
   return (
     <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors">
       <div className="flex items-center gap-3">
-        {getStatusIndicator(hotspot.status)}
+        {getStatusIndicator(realStatus)}
         <div>
           <div className="flex items-center gap-2">
             <Server className="h-4 w-4 text-muted-foreground" />
@@ -69,7 +75,7 @@ function HotspotRow({ hotspot }: { hotspot: HotspotStatus }) {
           </div>
           <p className="text-xs text-muted-foreground">Sync: {timeAgo}</p>
         </div>
-        {getStatusBadge(hotspot.status)}
+        {getStatusBadge(realStatus)}
       </div>
     </div>
   );
@@ -78,8 +84,22 @@ function HotspotRow({ hotspot }: { hotspot: HotspotStatus }) {
 export function HotspotsStatusPanel() {
   const { data: hotspots, isLoading } = useHotspotsStatus();
 
-  const onlineCount = hotspots?.filter(h => h.status === 'online').length || 0;
-  const offlineCount = hotspots?.filter(h => h.status === 'offline').length || 0;
+  // Calculate real status for each hotspot
+  const hotspotsWithRealStatus = useMemo(() => {
+    if (!hotspots) return [];
+    return hotspots.map(h => ({
+      ...h,
+      realStatus: getHotspotRealStatus({
+        status: h.status,
+        ultima_sincronizacao: h.ultima_sincronizacao,
+        sync_interval_minutes: h.sync_interval_minutes || 5,
+      }),
+    }));
+  }, [hotspots]);
+
+  const onlineCount = hotspotsWithRealStatus.filter(h => h.realStatus === 'online').length;
+  const offlineCount = hotspotsWithRealStatus.filter(h => h.realStatus === 'offline').length;
+  const alertaCount = hotspotsWithRealStatus.filter(h => h.realStatus === 'alerta').length;
 
   return (
     <Card className="h-full">
@@ -88,6 +108,9 @@ export function HotspotsStatusPanel() {
           <span>Status dos Hotspots</span>
           <div className="flex items-center gap-2">
             <Badge className="bg-green-500">{onlineCount} online</Badge>
+            {alertaCount > 0 && (
+              <Badge className="bg-yellow-500">{alertaCount} alerta</Badge>
+            )}
             {offlineCount > 0 && (
               <Badge variant="destructive">{offlineCount} offline</Badge>
             )}
@@ -107,10 +130,10 @@ export function HotspotsStatusPanel() {
               <Skeleton key={i} className="h-16 w-full" />
             ))}
           </div>
-        ) : hotspots && hotspots.length > 0 ? (
+        ) : hotspotsWithRealStatus && hotspotsWithRealStatus.length > 0 ? (
           <div className="space-y-2 max-h-[300px] overflow-auto">
-            {hotspots.map((hotspot) => (
-              <HotspotRow key={hotspot.id} hotspot={hotspot} />
+            {hotspotsWithRealStatus.map((hotspot) => (
+              <HotspotRow key={hotspot.id} hotspot={hotspot} realStatus={hotspot.realStatus} />
             ))}
           </div>
         ) : (
