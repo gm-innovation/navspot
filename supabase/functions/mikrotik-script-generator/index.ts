@@ -341,7 +341,7 @@ add name="dhcp-${hotspotSlug}" interface=\$targetIf address-pool=hs-pool-${hotsp
 # DNS Server (local cache)
 # ============================================
 /ip dns
-set allow-remote-requests=yes
+set allow-remote-requests=no
 
 # ============================================
 # Hotspot Profile (with Security Settings)
@@ -497,39 +497,33 @@ add in-interface=\$targetIf protocol=icmp action=accept comment="navspot-${hotsp
   if (blockedDomains.size > 0) {
     script += `
 # ============================================
-# Layer 7 Protocols (Consolidated for Performance)
+# Layer 7 Protocols (Single Consolidated)
 # ============================================
-# FIX #6: Consolidated multiple L7 protocols into groups of 5 to reduce CPU load
+# FIX #6 IMPROVED: Single L7 protocol for maximum performance
 /ip firewall layer7-protocol
 # Remove existing NAVSPOT L7 protocols
 :foreach l in=[find comment~"navspot-${hotspotSlug}"] do={ remove \$l }
 
 `
-    // Group domains into chunks of 5 for consolidated regexp
+    // FIX #6 IMPROVED: Consolidate ALL domains into single regexp for maximum performance
     const domainsArray = Array.from(blockedDomains)
-    const chunkSize = 5
-    let l7Index = 0
+    const allPatterns = domainsArray
+      .map(d => d.replace(/^\*\./, '').replace(/\./g, '\\\\.'))
+      .join('|')
     
-    for (let i = 0; i < domainsArray.length; i += chunkSize) {
-      const chunk = domainsArray.slice(i, i + chunkSize)
-      const patterns = chunk.map(d => d.replace(/^\*\./, '').replace(/\./g, '\\\\.')).join('|')
-      script += `add name="navspot-block-${l7Index}" regexp="^.*(${patterns}).*\$" comment="navspot-${hotspotSlug}"\n`
-      l7Index++
-    }
+    script += `add name="navspot-block-all" regexp="^.*(${allPatterns}).*\$" comment="navspot-${hotspotSlug}"\n`
 
-    // Add firewall filter rules for blocked domains (one per consolidated L7 protocol)
+    // Add single firewall filter rule for all blocked domains
     script += `
 # ============================================
-# Firewall Rules (Block Domains - Consolidated)
+# Firewall Rules (Block Domains - Single Rule)
 # ============================================
 /ip firewall filter
 # Remove existing NAVSPOT block rules
 :foreach f in=[find comment~"navspot-${hotspotSlug}-block"] do={ remove \$f }
 
+add chain=forward layer7-protocol="navspot-block-all" action=drop comment="navspot-${hotspotSlug}-block-all"
 `
-    for (let i = 0; i < Math.ceil(domainsArray.length / chunkSize); i++) {
-      script += `add chain=forward layer7-protocol="navspot-block-${i}" action=drop comment="navspot-${hotspotSlug}-block-group-${i}"\n`
-    }
   }
 
   // FIX #2: Security firewall rules with in-interface for robustness
