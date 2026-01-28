@@ -1,232 +1,216 @@
 
 
-# Correção de Sintaxe RouterOS v6 (v3.9)
+# Correcao de Strings sem Aspas para RouterOS v6 (v3.10)
 
 ## Problema Identificado
 
-O script v3.8 contém uma sintaxe incompatível com RouterOS v6:
+O erro `expected end of command (line 188 column 29)` ocorre porque o RouterOS v6 nao aceita strings contendo caracteres especiais (hifens `-`, pontos `.`, underscores `_`) sem aspas.
+
+### Exemplo do Problema
 
 ```routeros
-/file print file="navspot-interface" where name=""
+# ERRO no RouterOS v6:
+add name=hsprof-engenharia-googlemarine hotspot-address=192.168.88.1 dns-name=engenharia-googlemarine.navspot.local
+
+# O parser v6 interpreta assim:
+# name=hsprof-engenharia-googlemarine → OK ate aqui
+# .navspot.local → "Isso e um comando novo?" → ERRO!
 ```
 
-Esta linha causa um erro de parsing que **aborta o script inteiro antes mesmo de executar a primeira linha**. Por isso nenhum log aparece no console do MikroTik.
-
-### Ocorrências do Erro
-
-| Linha | Arquivo/Contexto | Propósito |
-|-------|------------------|-----------|
-| 363 | navspot-interface.txt | Persistir interface detectada |
-| 689 | navspot-token.txt | Armazenar token de sync |
-| 773 | navspot-actions.txt | Armazenar ações pendentes |
-| 971 | navspot-executed.txt | Armazenar ações executadas |
+O RouterOS v7 e mais flexivel, mas v6 requer aspas em todas as strings com caracteres especiais.
 
 ---
 
-## Problemas Adicionais Identificados
+## Localizacoes das Strings Sem Aspas
 
-### DNS (Linha 410)
-
-```routeros
-set allow-remote-requests=no
-```
-
-**Problema:** Com `no`, os clientes do hotspot não conseguem resolver DNS antes do login. O portal cativo não funciona.
-
-**Correção:** Mudar para `allow-remote-requests=yes` para que o MikroTik atue como servidor DNS local.
-
-### Walled Garden (Linha 512)
-
-```routeros
-add dst-host="*.navspot.local" action=allow
-```
-
-**Problema:** RouterOS v6 tem problemas com wildcards `*` no início sem protocolo. Pode não funcionar corretamente.
-
-**Correção:** Usar regex: `dst-host=":^.*navspot\\\\.local$"` ou simplesmente `navspot.local` (sem wildcard).
+| Linha | Codigo Atual | Problema |
+|-------|--------------|----------|
+| 252 | `add name=bridge1` | Sem aspas |
+| 382-383 | `name="hs-pool-${hotspotSlug}"` | OK (ja tem aspas) |
+| 391 | `comment="navspot-${hotspotSlug}"` | OK |
+| 397-398 | `name="dhcp-${hotspotSlug}"`, `address-pool=hs-pool-${hotspotSlug}` | address-pool SEM aspas |
+| 412-413 | `name=hsprof-${hotspotSlug}`, `dns-name=${hotspotSlug}.navspot.local` | **SEM ASPAS** |
+| 426-429 | `comment="navspot-admin..."` | OK |
+| 447-448 | `name="${profileSlug}"` | OK |
+| 461 | `name="default-navspot"` | OK |
+| 470-472 | `name=hs-${hotspotSlug}`, `address-pool=hs-pool-${hotspotSlug}`, `profile=hsprof-${hotspotSlug}` | **SEM ASPAS** |
+| 506-507 | `dst-host="navspot.local"` | OK |
+| 532 | `dst-host="${domain}"` | OK |
 
 ---
 
 ## Arquivo a Modificar
 
-| Arquivo | Alteração |
+| Arquivo | Alteracao |
 |---------|-----------|
-| `supabase/functions/mikrotik-script-generator/index.ts` | Corrigir sintaxe de criação de arquivos |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Adicionar aspas em todos os campos de string |
 
 ---
 
-## Solução Proposta
+## Correcoes Detalhadas
 
-### Sintaxe Corrigida para Criação de Arquivos
+### 1. Linha 252 - Bridge Name
 
-**Antes (v3.8 - INCORRETA):**
+**Antes:**
 ```routeros
-:do {
-  /file add name="navspot-interface.txt" contents=$targetIf
-} on-error={
-  /file print file="navspot-interface" where name=""
-  :delay 1s
-  /file set "navspot-interface.txt" contents=$targetIf
-}
+add name=bridge1 comment="navspot-hotspot-bridge"
 ```
 
-**Depois (v3.9 - CORRETA):**
+**Depois:**
 ```routeros
-:do {
-  /file add name="navspot-interface.txt" contents=$targetIf
-} on-error={
-  :do { /tool fetch url="" mode=https dst-path="navspot-interface.txt" } on-error={}
-  :delay 500ms
-  :do { /file set "navspot-interface.txt" contents=$targetIf } on-error={}
-}
+add name="bridge1" comment="navspot-hotspot-bridge"
 ```
 
-**Alternativa mais simples (recomendada):**
+### 2. Linha 398 - DHCP Server (address-pool)
+
+**Antes:**
 ```routeros
-# Remove se existir e recria
-:do { /file remove "navspot-interface.txt" } on-error={}
-:delay 500ms
-/file add name="navspot-interface.txt" contents=$targetIf
+add name="dhcp-${hotspotSlug}" interface=$targetIf address-pool=hs-pool-${hotspotSlug} disabled=no
+```
+
+**Depois:**
+```routeros
+add name="dhcp-${hotspotSlug}" interface=$targetIf address-pool="hs-pool-${hotspotSlug}" disabled=no
+```
+
+### 3. Linhas 412-415 - Hotspot Profile (CRITICO)
+
+**Antes:**
+```routeros
+add name=hsprof-${hotspotSlug} hotspot-address=${gateway} dns-name=${hotspotSlug}.navspot.local \
+    html-directory=hotspot login-by=http-chap,http-pap \
+    http-cookie-lifetime=1d keepalive-timeout=5m rate-limit=""
+```
+
+**Depois:**
+```routeros
+add name="hsprof-${hotspotSlug}" hotspot-address=${gateway} dns-name="${hotspotSlug}.navspot.local" \
+    html-directory=hotspot login-by=http-chap,http-pap \
+    http-cookie-lifetime=1d keepalive-timeout=5m rate-limit=""
+```
+
+### 4. Linhas 470-472 - Hotspot Server
+
+**Antes:**
+```routeros
+add name=hs-${hotspotSlug} interface=$targetIf address-pool=hs-pool-${hotspotSlug} \
+    profile=hsprof-${hotspotSlug} disabled=no
+```
+
+**Depois:**
+```routeros
+add name="hs-${hotspotSlug}" interface=$targetIf address-pool="hs-pool-${hotspotSlug}" \
+    profile="hsprof-${hotspotSlug}" disabled=no
+```
+
+### 5. Todos os `find name=` precisam de aspas
+
+**Antes:**
+```routeros
+:do { remove [find name="hs-pool-${hotspotSlug}"] } on-error={}
+:do { remove [find name=hs-${hotspotSlug}] } on-error={}
+```
+
+**Depois:**
+```routeros
+:do { remove [find name="hs-pool-${hotspotSlug}"] } on-error={}
+:do { remove [find name="hs-${hotspotSlug}"] } on-error={}
 ```
 
 ---
 
-## Mudanças Detalhadas
+## Lista Completa de Campos que Precisam de Aspas
 
-### 1. Versão do Script
+| Campo | Motivo |
+|-------|--------|
+| `name=` | Contém hifens |
+| `dns-name=` | Contém pontos E hifens |
+| `address-pool=` | Contém hifens |
+| `profile=` | Contém hifens |
+| `comment=` | Contém hifens e texto |
+| `dst-host=` | Contém pontos |
+| `html-directory=` | String simples (pode manter sem) |
 
+### Regra de Ouro
+
+> Toda string que contém letras + caracteres especiais (hifens, pontos, underscores) DEVE usar aspas no RouterOS v6.
+
+---
+
+## Versao do Script
+
+Atualizar para:
 ```typescript
-# Version: 3.9 - RouterOS v6/v7 Universal Syntax
-```
-
-### 2. Correção da Criação de Arquivos
-
-Substituir o padrão `file print file=... where name=""` por:
-
-```routeros
-# Método universal que funciona em v6 e v7
-:do { /file remove "nome-arquivo.txt" } on-error={}
-:delay 500ms
-/file add name="nome-arquivo.txt" contents=$conteudo
-```
-
-Este método:
-- Remove o arquivo se existir (ignora erro se não existir)
-- Aguarda o filesystem
-- Cria o arquivo novo com o conteúdo
-
-### 3. Correção do DNS
-
-**Linha 410 - Antes:**
-```routeros
-set allow-remote-requests=no
-```
-
-**Depois:**
-```routeros
-set allow-remote-requests=yes servers=8.8.8.8,8.8.4.4
-```
-
-Isso permite que o MikroTik atue como servidor DNS para os clientes do hotspot, essencial para o portal cativo funcionar.
-
-### 4. Correção do Walled Garden
-
-**Linha 512 - Antes:**
-```routeros
-add dst-host="*.navspot.local" action=allow
-```
-
-**Depois:**
-```routeros
-add dst-host="navspot.local" action=allow comment="navspot-${hotspotSlug}-system"
-```
-
-Sem o wildcard problemático. O hotspot aceita subdomínios automaticamente quando o domínio principal está liberado.
-
----
-
-## Localizações das Correções
-
-| Linha | Contexto | Ação |
-|-------|----------|------|
-| 233 | Versão | Atualizar para 3.9 |
-| 356-367 | navspot-interface.txt | Refatorar criação de arquivo |
-| 410 | DNS | Mudar para allow-remote-requests=yes |
-| 512 | Walled Garden | Remover wildcard problemático |
-| 682-692 | navspot-token.txt | Refatorar criação de arquivo |
-| 770-776 | navspot-actions.txt | Refatorar criação de arquivo |
-| 968-974 | navspot-executed.txt | Refatorar criação de arquivo |
-
----
-
-## Comportamento Após Correção
-
-| Antes (v3.8) | Depois (v3.9) |
-|--------------|---------------|
-| Script trava no parsing | Script executa completamente |
-| Nenhum log visível | Logs de todas as etapas |
-| DNS bloqueado antes do login | DNS funciona para portal cativo |
-| Walled garden com wildcards v6 | Sintaxe universal |
-
----
-
-## Fluxo do Script v3.9
-
-```text
-1. Header (variáveis, identity)
-2. Bridge Infrastructure (criar bridge1 + portas)
-3. Interface Detection (detecta bridge1)
-4. [FIX] Salvar interface em arquivo (método universal)
-5. IP Address
-6. IP Pool
-7. DHCP Network + Server
-8. [FIX] DNS (allow-remote-requests=yes)
-9. Hotspot Profile + IP Binding
-10. User Profiles
-11. Hotspot Server
-12. [FIX] Walled Garden (sem wildcards)
-13. Layer 7 + Firewall
-14. NAT Masquerade
-15. [FIX] Sync Scripts (criação de arquivos)
-16. Schedulers
-17. Final Log
+# Version: 3.10 - RouterOS v6 String Quoting Fix
 ```
 
 ---
 
-## Compatibilidade
+## Comportamento Apos Correcao
 
-| RouterOS | Sintaxe Atual (v3.8) | Sintaxe Nova (v3.9) |
-|----------|---------------------|---------------------|
-| v6.x | ERRO de parsing | OK |
-| v7.x | Funciona (parcialmente) | OK |
-
-A nova sintaxe é 100% compatível com ambas as versões.
+| Antes (v3.9) | Depois (v3.10) |
+|--------------|----------------|
+| `expected end of command` | Script executa normalmente |
+| Parsing falha na linha 188 | Todas as linhas parseadas corretamente |
+| Hotspot nao configurado | Hotspot funcional |
 
 ---
 
 ## Secao Tecnica
 
-### Bloco de Criacao de Arquivo Refatorado
+### Padroes de String a Corrigir
 
 ```typescript
-// Antes (v3.8)
-script += `:do {
-  /file add name="navspot-interface.txt" contents=\\$targetIf
-} on-error={
-  /file print file="navspot-interface" where name=""
-  :delay 1s
-  /file set "navspot-interface.txt" contents=\\$targetIf
-}`
+// ANTES (v3.9) - causa erro no v6
+script += `add name=hs-pool-${hotspotSlug} ranges=...`
+script += `add name=hs-${hotspotSlug} interface=...`
+script += `add name=hsprof-${hotspotSlug} dns-name=${hotspotSlug}.navspot.local`
 
-// Depois (v3.9)
-script += `# Remove existing file if present
-:do { /file remove "navspot-interface.txt" } on-error={}
-:delay 500ms
-# Create new file with contents
-/file add name="navspot-interface.txt" contents=\\$targetIf
-:log info ("NAVSPOT: Interface salva em arquivo: " . \\$targetIf)`
+// DEPOIS (v3.10) - funciona em v6 e v7
+script += `add name="hs-pool-${hotspotSlug}" ranges=...`
+script += `add name="hs-${hotspotSlug}" interface=...`
+script += `add name="hsprof-${hotspotSlug}" dns-name="${hotspotSlug}.navspot.local"`
 ```
 
-Este padrão deve ser aplicado em todos os 4 locais onde arquivos são criados.
+### Campos Especificos a Modificar
+
+1. **Linha 252**: `add name=bridge1` → `add name="bridge1"`
+2. **Linha 383**: `add name=hs-pool-${hotspotSlug}` → `add name="hs-pool-${hotspotSlug}"`
+3. **Linha 398**: `address-pool=hs-pool-${hotspotSlug}` → `address-pool="hs-pool-${hotspotSlug}"`
+4. **Linha 412-413**: `name=hsprof-${hotspotSlug}` → `name="hsprof-${hotspotSlug}"` e `dns-name=${hotspotSlug}.navspot.local` → `dns-name="${hotspotSlug}.navspot.local"`
+5. **Linha 470-472**: `name=hs-${hotspotSlug}`, `address-pool=...`, `profile=...` → Todos com aspas
+
+---
+
+## Compatibilidade
+
+| RouterOS | v3.9 (sem aspas) | v3.10 (com aspas) |
+|----------|-----------------|-------------------|
+| v6.x | ERRO de parsing | OK |
+| v7.x | Funciona | OK |
+
+Aspas em strings sao aceitas em ambas as versoes.
+
+---
+
+## Fluxo do Script v3.10
+
+```text
+1. Header (v3.10)
+2. Bridge Infrastructure (name="bridge1")
+3. Interface Detection
+4. IP Address
+5. IP Pool (name="hs-pool-xxx")
+6. DHCP (address-pool="hs-pool-xxx")
+7. Hotspot Profile (name="hsprof-xxx", dns-name="xxx.navspot.local")
+8. IP Binding
+9. User Profiles
+10. Hotspot Server (name="hs-xxx", profile="hsprof-xxx")
+11. Walled Garden
+12. Firewall + NAT
+13. Sync + Schedulers
+14. Final Log
+```
+
+Todas as strings com caracteres especiais estarao entre aspas.
 
