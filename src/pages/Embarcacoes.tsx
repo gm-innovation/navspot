@@ -27,6 +27,7 @@ import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { EmptyState, ErrorState } from "@/components/ui/empty-state";
 import { getTipoEmbarcacaoLabel } from "@/constants/embarcacoes";
 import { useAuth } from "@/contexts/AuthContext";
+import { getHotspotRealStatus, getHotspotStatusDisplay } from "@/utils/hotspotStatus";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -169,17 +170,33 @@ export default function Embarcacoes() {
   const totalEmbarcacoes = embarcacoes?.length || 0;
   const ativas = embarcacoes?.filter((e) => e.status === "ativo").length || 0;
   const totalTripulantes = embarcacoes?.reduce((acc, e) => acc + (e.tripulantes_count || 0), 0) || 0;
-  const hotspotsOnline = hotspots?.filter((h) => h.status === "online").length || 0;
+  
+  // Calculate hotspots online using real status
+  const hotspotsOnline = useMemo(() => {
+    if (!hotspots) return 0;
+    return hotspots.filter((h) => {
+      const realStatus = getHotspotRealStatus({
+        status: h.status,
+        ultima_sincronizacao: h.ultima_sincronizacao,
+        sync_interval_minutes: h.sync_interval_minutes || 5,
+      });
+      return realStatus === 'online';
+    }).length;
+  }, [hotspots]);
 
-  // Get hotspot status info
+  // Get hotspot status info using real calculated status
   const getHotspotStatusInfo = (embarcacaoId: string) => {
     const hotspot = getHotspotForEmbarcacao(embarcacaoId);
     if (!hotspot) return { status: 'sem_config', label: 'Sem config', color: 'bg-gray-100 text-gray-600' };
     
-    if (hotspot.status === 'online') {
-      return { status: 'online', label: 'Online', color: 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400' };
-    }
-    return { status: 'offline', label: 'Offline', color: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400' };
+    const realStatus = getHotspotRealStatus({
+      status: hotspot.status,
+      ultima_sincronizacao: hotspot.ultima_sincronizacao,
+      sync_interval_minutes: hotspot.sync_interval_minutes || 5,
+    });
+    
+    const display = getHotspotStatusDisplay(realStatus);
+    return { status: realStatus, ...display };
   };
 
   if (isLoading) {

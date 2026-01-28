@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { getHotspotRealStatus } from '@/utils/hotspotStatus';
 
 export interface DashboardStats {
   totalEmpresas: number;
@@ -40,7 +41,7 @@ export function useDashboardStats() {
       ] = await Promise.all([
         supabase.from('empresas').select('id, status'),
         supabase.from('embarcacoes').select('id, status'),
-        supabase.from('hotspots').select('id, status'),
+        supabase.from('hotspots').select('id, status, ultima_sincronizacao, sync_interval_minutes'),
         supabase.from('tripulantes').select('id, status'),
         supabase.from('alertas').select('id, severidade, resolvido'),
         supabase.from('perfis_velocidade').select('id'),
@@ -59,14 +60,24 @@ export function useDashboardStats() {
       const regras = regrasRes.data || [];
       const dispositivos = dispositivosRes.data || [];
 
+      // Calculate real status for each hotspot
+      const hotspotsWithRealStatus = hotspots.map((h) => ({
+        ...h,
+        realStatus: getHotspotRealStatus({
+          status: h.status,
+          ultima_sincronizacao: h.ultima_sincronizacao,
+          sync_interval_minutes: h.sync_interval_minutes || 5,
+        }),
+      }));
+
       return {
         totalEmpresas: empresas.length,
         totalEmbarcacoes: embarcacoes.length,
         embarcacoesAtivas: embarcacoes.filter((e) => e.status === 'ativo').length,
         totalHotspots: hotspots.length,
-        hotspotsOnline: hotspots.filter((h) => h.status === 'online').length,
-        hotspotsOffline: hotspots.filter((h) => h.status === 'offline').length,
-        hotspotsAlerta: hotspots.filter((h) => h.status === 'alerta').length,
+        hotspotsOnline: hotspotsWithRealStatus.filter((h) => h.realStatus === 'online').length,
+        hotspotsOffline: hotspotsWithRealStatus.filter((h) => h.realStatus === 'offline').length,
+        hotspotsAlerta: hotspotsWithRealStatus.filter((h) => h.realStatus === 'alerta').length,
         totalTripulantes: tripulantes.length,
         tripulantesAtivos: tripulantes.filter((t) => t.status === 'ativo').length,
         totalAlertas: alertas.length,
