@@ -127,6 +127,10 @@ Deno.serve(async (req) => {
       console.error('[script-generator] ERRO: Gerou ":do {/". Corrigir para ":do { /".')
     }
 
+    if (bootstrapScript.includes('/file add') && !bootstrapScript.includes('/file print file=')) {
+      console.error('[script-generator] AVISO: Usando /file add sem fallback para RouterOS 6.x')
+    }
+
     console.log(`[script-generator] Bootstrap script v6.5 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
@@ -438,10 +442,16 @@ ${wanConfig}
 /ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
 :log info "NAVSPOT: Walled Garden configurado"
 
-# 9. TOKEN
+# 9. TOKEN (metodo compativel com RouterOS 6.x e 7.x)
 :do { /file remove "navspot-token.txt" } on-error={}
 :delay 1s
+:do {
+/file print file=navspot-token
+:delay 1s
+/file set navspot-token.txt contents="${hotspot.sync_token}"
+} on-error={
 /file add name="navspot-token.txt" contents="${hotspot.sync_token}"
+}
 :log info "NAVSPOT: Token criado"
 
 # 10. SYNC SCRIPT v6.5 + ACTION PROCESSOR
