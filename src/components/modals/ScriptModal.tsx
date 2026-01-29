@@ -9,7 +9,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Copy, Download, Check, RefreshCw } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Copy, Download, Check, RefreshCw, AlertTriangle } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
 interface ScriptModalProps {
@@ -76,22 +77,38 @@ export function ScriptModal({
           </DialogDescription>
         </DialogHeader>
         
+        <Alert className="bg-yellow-500/10 border-yellow-500/50">
+          <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
+          <AlertTitle className="text-yellow-700 dark:text-yellow-400">
+            Atenção: Você perderá a conexão por 10-15 segundos
+          </AlertTitle>
+          <AlertDescription className="text-yellow-600 dark:text-yellow-300/80">
+            <p className="mb-2">Durante a instalação, a conexão com o MikroTik será interrompida. Para evitar problemas:</p>
+            <ol className="list-decimal list-inside space-y-1 ml-2">
+              <li>Cole o script inteiro no terminal do MikroTik</li>
+              <li>Feche o Winbox <strong>imediatamente</strong> após colar (não espere terminar)</li>
+              <li>Aguarde 30 segundos</li>
+              <li>Reconecte via <code className="bg-yellow-500/20 px-1 rounded">192.168.88.1</code></li>
+            </ol>
+            <p className="mt-2">
+              <strong>Alternativa segura:</strong> Use o botão "Download .rsc", faça upload via Files no Winbox, e execute: <code className="bg-yellow-500/20 px-1 rounded">/import navspot-bootstrap.rsc</code>
+            </p>
+          </AlertDescription>
+        </Alert>
+
         <div className="relative">
           <Textarea
             value={script}
             readOnly
-            className="font-mono text-xs min-h-[400px] resize-none"
+            className="font-mono text-xs min-h-[300px] resize-none"
           />
         </div>
 
         <div className="bg-muted/50 p-4 rounded-lg text-sm">
-          <h4 className="font-semibold mb-2">Instruções de Aplicação:</h4>
-          <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
-            <li>Acesse o terminal do MikroTik (via Winbox ou SSH)</li>
-            <li>Faça backup da configuração atual</li>
-            <li>Cole o script no terminal ou importe o arquivo .rsc</li>
-            <li>O roteador começará a sincronizar automaticamente</li>
-          </ol>
+          <h4 className="font-semibold mb-2">Verificação pós-instalação:</h4>
+          <p className="text-muted-foreground mb-2">Após reconectar, execute este comando no terminal para verificar se funcionou:</p>
+          <code className="block bg-muted p-2 rounded text-xs">/log print where message~"NAVSPOT"</code>
+          <p className="text-muted-foreground mt-2">Deve aparecer: <code className="bg-muted px-1 rounded">NAVSPOT v5.2: Bootstrap concluido!</code></p>
         </div>
 
         <DialogFooter className="flex-col sm:flex-row gap-2">
