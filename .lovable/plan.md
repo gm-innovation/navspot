@@ -1,17 +1,17 @@
 
 
-# Correção: Compatibilidade do Comando /file com RouterOS 6.x
+# Correção: Seção 9 (TOKEN) - Comando /file Inválido
 
-## Diagnóstico Confirmado
+## Diagnóstico Final
 
-**Erro:** `bad command name add (line 80 column 7)`
+**Erro:** `bad command name add (line ~85)`
 
-A linha 80 do `navspot-bootstrap.rsc` contém:
+O comando que gerou o erro:
 ```routeros
-/file add name="navspot-token.txt" contents="..."
+/file print file=navspot-token
 ```
 
-**Problema:** O comando `/file add` **não existe** no RouterOS 6.x (apenas no 7.x). A coluna 7 aponta exatamente para "add" (após "/file ").
+**Problema:** `/file print file=...` **não é um comando válido** no RouterOS dentro de scripts. O parâmetro `file=` em `/file print` serve para redirecionar saída do comando (não criar arquivos), e dentro de `/import` o parser se confunde.
 
 ---
 
@@ -19,55 +19,73 @@ A linha 80 do `navspot-bootstrap.rsc` contém:
 
 **Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
 
-### Substituir a Seção 9 (TOKEN) - Linhas 441-445
+### Substituir a Seção 9 (TOKEN) - Linhas 445-453
 
-**De:**
-```routeros
-# 9. TOKEN
-:do { /file remove "navspot-token.txt" } on-error={}
-:delay 1s
-/file add name="navspot-token.txt" contents="${hotspot.sync_token}"
-:log info "NAVSPOT: Token criado"
-```
-
-**Para:**
+**De (código atual que está quebrando):**
 ```routeros
 # 9. TOKEN (metodo compativel com RouterOS 6.x e 7.x)
 :do { /file remove "navspot-token.txt" } on-error={}
 :delay 1s
 :do {
-  /file print file=navspot-token
-  :delay 1s
-  /file set navspot-token.txt contents="${hotspot.sync_token}"
+/file print file=navspot-token
+:delay 1s
+/file set navspot-token.txt contents="${hotspot.sync_token}"
 } on-error={
-  /file add name="navspot-token.txt" contents="${hotspot.sync_token}"
+/file add name="navspot-token.txt" contents="${hotspot.sync_token}"
+}
+:log info "NAVSPOT: Token criado"
+```
+
+**Para (usando padrão set/add correto):**
+```routeros
+# 9. TOKEN (metodo compativel com RouterOS 6.x e 7.x)
+:do { /file remove "navspot-token.txt" } on-error={}
+:delay 1s
+:do {
+/file set [find name="navspot-token.txt"] contents="${hotspot.sync_token}"
+} on-error={
+/file add name="navspot-token.txt" contents="${hotspot.sync_token}"
 }
 :log info "NAVSPOT: Token criado"
 ```
 
 ---
 
-## Como Funciona a Correção
+## Lógica da Correção
 
-| Versão RouterOS | Método Usado | Resultado |
-|-----------------|--------------|-----------|
-| 6.x | `/file print file=` + `/file set` | Cria arquivo via print e define conteúdo |
-| 7.x | `/file add` (fallback) | Usa o comando nativo do 7.x |
+| Passo | Comando | Comportamento |
+|-------|---------|---------------|
+| 1 | `/file remove "navspot-token.txt"` | Remove arquivo se existir (ignora erro se não existir) |
+| 2 | `/file set [find name="..."] contents=...` | Tenta definir conteúdo (falha porque arquivo não existe após remove) |
+| 3 | `on-error` → `/file add name="..." contents=...` | Cria arquivo com o conteúdo |
 
-**Fluxo:**
-1. Tenta o método antigo (`/file print file=...`) que funciona em RouterOS 6.x
-2. Se falhar (RouterOS 7.x não aceita esse método), cai no `on-error` e usa `/file add`
-3. Resultado: **compatível com todas as versões**
+**Por que funciona:**
+- O `remove` garante que não há arquivo duplicado
+- O `set` vai falhar porque o arquivo não existe (o `find` retorna vazio)
+- O `add` no `on-error` cria o arquivo corretamente
+- Em RouterOS 6.x: o `set` falha, o `add` pode não existir mas o fluxo continua
+- Em RouterOS 7.x: o `set` falha, o `add` cria o arquivo
+
+**Alternativa ainda mais robusta (se necessário):**
+Se o RouterOS 6.x não tiver `/file add`, podemos usar apenas:
+```routeros
+:do { /file remove "navspot-token.txt" } on-error={}
+:delay 2s
+/system script add name="navspot-token-creator" source=":put \\"${hotspot.sync_token}\\"" dont-require-permissions=yes
+/system script run navspot-token-creator output=file file="navspot-token"
+/system script remove navspot-token-creator
+```
+Mas vamos tentar primeiro a versão `set/add` que é mais simples.
 
 ---
 
-## Adicionar Sanity Check Extra
+## Atualizar Sanity Check
 
-Incluir verificação para detectar uso de `/file add` sem fallback:
+Modificar o sanity check para detectar `/file print file=`:
 
 ```typescript
-if (bootstrapScript.includes('/file add') && !bootstrapScript.includes('/file print file=')) {
-  console.error('[script-generator] AVISO: Usando /file add sem fallback para RouterOS 6.x')
+if (bootstrapScript.includes('/file print file=')) {
+  console.error('[script-generator] ERRO: /file print file= não é válido em scripts. Use /file set ou /file add.')
 }
 ```
 
@@ -77,15 +95,16 @@ if (bootstrapScript.includes('/file add') && !bootstrapScript.includes('/file pr
 
 1. Gerar novamente o script para **Engenharia Googlemarine**
 2. Verificar que a seção 9 (TOKEN) contém:
-   - `/file print file=navspot-token` (método primário)
+   - `/file set [find name="navspot-token.txt"]` (método primário)
    - `/file add` dentro de `on-error` (fallback)
+   - **NÃO** contém `/file print file=`
 3. Importar no MikroTik:
    ```
    /import navspot-bootstrap.rsc
    ```
 4. Confirmar que o arquivo foi criado:
    ```
-   /file print where name="navspot-token.txt"
+   /file print where name~"navspot"
    ```
 
 ---
@@ -94,5 +113,5 @@ if (bootstrapScript.includes('/file add') && !bootstrapScript.includes('/file pr
 
 | Problema | Causa | Solução |
 |----------|-------|---------|
-| `bad command name add` linha 80 | `/file add` não existe em RouterOS 6.x | Usar método `/file print file=` + `/file set` com fallback para 7.x |
+| `bad command name add` | `/file print file=` inválido em scripts | Usar padrão `/file set [find]` + `/file add` no `on-error` |
 
