@@ -1,42 +1,16 @@
 
 
-# Correção: Seção 9 (TOKEN) - Comando /file Inválido
+# Validação Final v6.6: Gerador de Scripts MikroTik
 
-## Diagnóstico Final
+## Resumo da Análise
 
-**Erro:** `bad command name add (line ~85)`
-
-O comando que gerou o erro:
-```routeros
-/file print file=navspot-token
-```
-
-**Problema:** `/file print file=...` **não é um comando válido** no RouterOS dentro de scripts. O parâmetro `file=` em `/file print` serve para redirecionar saída do comando (não criar arquivos), e dentro de `/import` o parser se confunde.
+Revisei o código atual em `supabase/functions/mikrotik-script-generator/index.ts` e confirmo que **todas as correções solicitadas já foram implementadas**:
 
 ---
 
-## Mudança a Implementar
+## 1. Seção 9 (TOKEN) - JA CORRIGIDO
 
-**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
-
-### Substituir a Seção 9 (TOKEN) - Linhas 445-453
-
-**De (código atual que está quebrando):**
-```routeros
-# 9. TOKEN (metodo compativel com RouterOS 6.x e 7.x)
-:do { /file remove "navspot-token.txt" } on-error={}
-:delay 1s
-:do {
-/file print file=navspot-token
-:delay 1s
-/file set navspot-token.txt contents="${hotspot.sync_token}"
-} on-error={
-/file add name="navspot-token.txt" contents="${hotspot.sync_token}"
-}
-:log info "NAVSPOT: Token criado"
-```
-
-**Para (usando padrão set/add correto):**
+**Linhas 445-453** - Implementação atual está correta:
 ```routeros
 # 9. TOKEN (metodo compativel com RouterOS 6.x e 7.x)
 :do { /file remove "navspot-token.txt" } on-error={}
@@ -51,67 +25,56 @@ O comando que gerou o erro:
 
 ---
 
-## Lógica da Correção
+## 2. Action Processor (update_profile_quota) - JA CORRIGIDO
 
-| Passo | Comando | Comportamento |
-|-------|---------|---------------|
-| 1 | `/file remove "navspot-token.txt"` | Remove arquivo se existir (ignora erro se não existir) |
-| 2 | `/file set [find name="..."] contents=...` | Tenta definir conteúdo (falha porque arquivo não existe após remove) |
-| 3 | `on-error` → `/file add name="..." contents=...` | Cria arquivo com o conteúdo |
-
-**Por que funciona:**
-- O `remove` garante que não há arquivo duplicado
-- O `set` vai falhar porque o arquivo não existe (o `find` retorna vazio)
-- O `add` no `on-error` cria o arquivo corretamente
-- Em RouterOS 6.x: o `set` falha, o `add` pode não existir mas o fluxo continua
-- Em RouterOS 7.x: o `set` falha, o `add` cria o arquivo
-
-**Alternativa ainda mais robusta (se necessário):**
-Se o RouterOS 6.x não tiver `/file add`, podemos usar apenas:
+**Linhas 350-359** - Implementação atual está correta:
 ```routeros
-:do { /file remove "navspot-token.txt" } on-error={}
-:delay 2s
-/system script add name="navspot-token-creator" source=":put \\"${hotspot.sync_token}\\"" dont-require-permissions=yes
-/system script run navspot-token-creator output=file file="navspot-token"
-/system script remove navspot-token-creator
-```
-Mas vamos tentar primeiro a versão `set/add` que é mais simples.
-
----
-
-## Atualizar Sanity Check
-
-Modificar o sanity check para detectar `/file print file=`:
-
-```typescript
-if (bootstrapScript.includes('/file print file=')) {
-  console.error('[script-generator] ERRO: /file print file= não é válido em scripts. Use /file set ou /file add.')
+:if ($cmd = "update_profile_quota") do={
+:local p2 [:find $rest "|"]
+:local pName [:pick $rest 0 $p2]
+:local quota [:pick $rest ($p2 + 1) [:len $rest]]
+:local quotaBytes ($quota * 1024 * 1024)
+:foreach uId in=[/ip hotspot user find where profile="$pName"] do={
+:do { /ip hotspot user set $uId limit-bytes-total=$quotaBytes } on-error={}
+}
+:log info ("NAVSPOT: Quota aplicada para usuarios do perfil " . $pName . " = " . $quota . " MB")
 }
 ```
 
 ---
 
-## Validação Após Correção
+## 3. Sanity Checks - JA IMPLEMENTADOS
 
-1. Gerar novamente o script para **Engenharia Googlemarine**
-2. Verificar que a seção 9 (TOKEN) contém:
-   - `/file set [find name="navspot-token.txt"]` (método primário)
-   - `/file add` dentro de `on-error` (fallback)
-   - **NÃO** contém `/file print file=`
-3. Importar no MikroTik:
-   ```
-   /import navspot-bootstrap.rsc
-   ```
-4. Confirmar que o arquivo foi criado:
-   ```
-   /file print where name~"navspot"
-   ```
+**Linhas 116-132** - Todas as validações estão ativas:
+- `limit-bytes-total` em `user profile` (erro)
+- `source="` em vez de `source={` (erro)
+- `:do {/` sem espaço (erro)
+- `/file print file=` inválido (erro)
 
 ---
 
-## Resumo
+## 4. Script de Sync - VERIFICACAO
 
-| Problema | Causa | Solução |
-|----------|-------|---------|
-| `bad command name add` | `/file print file=` inválido em scripts | Usar padrão `/file set [find]` + `/file add` no `on-error` |
+O script de sync (linhas 241-266) está usando:
+- `source={...}` com chaves (correto)
+- Escapes de JSON: `\\"sync_token\\":\\"` (correto para TypeScript que gera RSC)
+
+---
+
+## Conclusao
+
+**Nenhuma mudanca adicional e necessaria** - todas as correcoes do relatorio v6.6 ja foram aplicadas nas iteracoes anteriores.
+
+### Proximos Passos Recomendados
+
+1. **Gerar novo script** para Engenharia Googlemarine
+2. **Verificar manualmente** que o arquivo `.rsc` contém:
+   - Seção 9 com `/file set [find name=...]` + fallback `/file add`
+   - Action Processor com `:foreach uId in=[/ip hotspot user find where profile=...]`
+   - Nenhum `/file print file=`
+   - Nenhum `limit-bytes-total` em `user profile`
+3. **Importar no MikroTik** e confirmar:
+   - `/file print where name~"navspot"` mostra o token
+   - `/system script print where name~"navspot"` mostra os 2 scripts
+   - `/system scheduler print where name~"navspot"` mostra o agendador
 
