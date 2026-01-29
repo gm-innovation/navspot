@@ -113,6 +113,20 @@ Deno.serve(async (req) => {
       console.error('[script-generator] Failed to save script:', updateError)
     }
 
+    // Sanity checks para evitar regressões
+    if (bootstrapScript.includes('/ip hotspot user profile set') && 
+        bootstrapScript.includes('limit-bytes-total')) {
+      console.error('[script-generator] ERRO: Gerou limit-bytes-total em /ip hotspot user profile. Deve ser em /ip hotspot user.')
+    }
+
+    if (bootstrapScript.includes('source="')) {
+      console.error('[script-generator] ERRO: Gerou source="...". Use sempre source={...} para scripts longos.')
+    }
+
+    if (bootstrapScript.includes(':do {/')) {
+      console.error('[script-generator] ERRO: Gerou ":do {/". Corrigir para ":do { /".')
+    }
+
     console.log(`[script-generator] Bootstrap script v6.5 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
@@ -265,7 +279,7 @@ function generateBootstrapScript(
 :local p2 [:find $rest "|"]
 :local pName [:pick $rest 0 $p2]
 :local pRate [:pick $rest ($p2 + 1) [:len $rest]]
-:if ([:len [/ip hotspot user profile find name=$pName]] = 0) do={
+:if ([:len [/ip hotspot user profile find name="$pName"]] = 0) do={
 /ip hotspot user profile add name=$pName rate-limit=$pRate shared-users=1
 :log info "NAVSPOT: Perfil $pName criado"
 }
@@ -277,24 +291,24 @@ function generateBootstrapScript(
 :local p3 [:find $sub "|"]
 :local uPass [:pick $sub 0 $p3]
 :local uProf [:pick $sub ($p3 + 1) [:len $sub]]
-:if ([:len [/ip hotspot user find name=$uName]] = 0) do={
+:if ([:len [/ip hotspot user find name="$uName"]] = 0) do={
 /ip hotspot user add name=$uName password=$uPass profile=$uProf comment="navspot-sync"
 :log info "NAVSPOT: Usuario $uName criado"
 } else={
-/ip hotspot user set [find name=$uName] password=$uPass profile=$uProf
+/ip hotspot user set [find name="$uName"] password=$uPass profile=$uProf
 :log info "NAVSPOT: Usuario $uName atualizado"
 }
 }
 :if ($cmd = "remove_user") do={
-:do { /ip hotspot user remove [find name=$rest] } on-error={}
+:do { /ip hotspot user remove [find name="$rest"] } on-error={}
 :log info "NAVSPOT: Usuario $rest removido"
 }
 :if ($cmd = "disable_user") do={
-:do { /ip hotspot user set [find name=$rest] disabled=yes } on-error={}
+:do { /ip hotspot user set [find name="$rest"] disabled=yes } on-error={}
 :log info "NAVSPOT: Usuario $rest desabilitado"
 }
 :if ($cmd = "enable_user") do={
-:do { /ip hotspot user set [find name=$rest] disabled=no } on-error={}
+:do { /ip hotspot user set [find name="$rest"] disabled=no } on-error={}
 :log info "NAVSPOT: Usuario $rest habilitado"
 }
 :if ($cmd = "kick_session") do={
@@ -308,14 +322,14 @@ function generateBootstrapScript(
 :local p2 [:find $rest "|"]
 :local uName [:pick $rest 0 $p2]
 :local uPass [:pick $rest ($p2 + 1) [:len $rest]]
-:do { /ip hotspot user set [find name=$uName] password=$uPass } on-error={}
+:do { /ip hotspot user set [find name="$uName"] password=$uPass } on-error={}
 :log info "NAVSPOT: Senha de $uName atualizada"
 }
 :if ($cmd = "create_whitelist_domain") do={
 :local p2 [:find $rest "|"]
 :local wName [:pick $rest 0 $p2]
 :local domain [:pick $rest ($p2 + 1) [:len $rest]]
-:if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
+:if ([:len [/ip hotspot walled-garden find dst-host="$domain"]] = 0) do={
 /ip hotspot walled-garden add dst-host=$domain action=allow comment="navspot-$wName"
 :log info "NAVSPOT: Whitelist $wName - $domain adicionado"
 }
@@ -334,8 +348,10 @@ function generateBootstrapScript(
 :local pName [:pick $rest 0 $p2]
 :local quota [:pick $rest ($p2 + 1) [:len $rest]]
 :local quotaBytes ($quota * 1024 * 1024)
-:do { /ip hotspot user profile set [find name=$pName] limit-bytes-total=$quotaBytes } on-error={}
-:log info "NAVSPOT: Quota do perfil $pName atualizada para $quota MB"
+:foreach uId in=[/ip hotspot user find where profile="$pName"] do={
+:do { /ip hotspot user set $uId limit-bytes-total=$quotaBytes } on-error={}
+}
+:log info ("NAVSPOT: Quota aplicada para usuarios do perfil " . $pName . " = " . $quota . " MB")
 }
 }
 }`
