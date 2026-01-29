@@ -127,8 +127,8 @@ Deno.serve(async (req) => {
       console.error('[script-generator] ERRO: Gerou ":do {/". Corrigir para ":do { /".')
     }
 
-    if (bootstrapScript.includes('/file add') && !bootstrapScript.includes('/file print file=')) {
-      console.error('[script-generator] AVISO: Usando /file add sem fallback para RouterOS 6.x')
+    if (bootstrapScript.includes('/file print file=')) {
+      console.error('[script-generator] ERRO: /file print file= não é válido em scripts. Use /file set ou /file add.')
     }
 
     console.log(`[script-generator] Bootstrap script v6.5 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
@@ -446,9 +446,7 @@ ${wanConfig}
 :do { /file remove "navspot-token.txt" } on-error={}
 :delay 1s
 :do {
-/file print file=navspot-token
-:delay 1s
-/file set navspot-token.txt contents="${hotspot.sync_token}"
+/file set [find name="navspot-token.txt"] contents="${hotspot.sync_token}"
 } on-error={
 /file add name="navspot-token.txt" contents="${hotspot.sync_token}"
 }
