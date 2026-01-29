@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.1 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.2 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -109,7 +109,7 @@ Deno.serve(async (req) => {
       console.error('[script-generator] Failed to save script:', updateError)
     }
 
-    console.log(`[script-generator] Bootstrap script v6.1 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.2 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -118,7 +118,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.1'
+        version: '6.2'
       }),
       { 
         status: 200, 
@@ -190,8 +190,8 @@ function generateBootstrapScript(
 :log info "NAVSPOT: DHCP client em ${wanInterface}"`
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
-  // Bootstrap script v6.1 - Critical Fixes
-  return `:log info "NAVSPOT v6.1: Iniciando instalacao..."
+  // Bootstrap script v6.2 - Factory Default Cleanup
+  return `:log info "NAVSPOT v6.2: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -200,7 +200,14 @@ function generateBootstrapScript(
 }
 :log info "NAVSPOT: Interface WAN (${wanInterface}) validada"
 
-# 1. LIMPEZA INICIAL (remover configs antigas)
+# 1. LIMPEZA INICIAL (remover configs padrao de fabrica + navspot)
+:do { /ip address remove [find address="192.168.88.1/24"] } on-error={}
+:do { /ip dhcp-server remove [find name="defconf"] } on-error={}
+:do { /ip dhcp-server remove [find name="dhcp1"] } on-error={}
+:do { /ip dhcp-server network remove [find address="192.168.88.0/24"] } on-error={}
+:do { /ip pool remove [find name="default-dhcp"] } on-error={}
+:do { /ip pool remove [find name="dhcp-pool1"] } on-error={}
+:log info "NAVSPOT: Configs de fabrica removidas"
 :do { /ip hotspot remove [find name="hs-navspot"] } on-error={}
 :do { /ip hotspot profile remove [find name~"navspot"] } on-error={}
 :do { /ip dhcp-server remove [find name="dhcp-navspot"] } on-error={}
@@ -276,7 +283,7 @@ ${portMigrationCommands}
 # 13. FINALIZACAO
 :log info "NAVSPOT: Portas migradas com sucesso"
 :log info "NAVSPOT: Bridge1 ativa e funcional"
-:log info "NAVSPOT v6.1: Bootstrap concluido!"
+:log info "NAVSPOT v6.2: Bootstrap concluido!"
 :log info "NAVSPOT: Reconecte via ${gateway}"
 `
 }
