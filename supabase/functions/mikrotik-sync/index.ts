@@ -626,87 +626,65 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Generate pipe-delimited format for RouterOS parsing
-    // Format: action_id|action_type|param1|param2|...
+    // v6.5: Generate pipe-delimited format for RouterOS parsing
+    // Format: cmd|param1|param2;cmd2|param1|param2;
+    // Wrapped in [[ ]] markers for extraction by navspot-sync script
     const pipeDelimitedActions = formattedActions.map(action => {
-      const parts = [action.id, action.type]
       const p = action.payload
       
       switch (action.type) {
         case 'kick_session':
         case 'kick_device':
-          parts.push(String(p.user || ''), String(p.mac || ''))
-          break
+          return `kick_session|${p.user || ''}|${p.mac || ''}`
         case 'disable_user':
+          return `disable_user|${p.user || ''}`
         case 'enable_user':
+          return `enable_user|${p.user || ''}`
         case 'remove_user':
-          parts.push(String(p.user || ''))
-          break
+          return `remove_user|${p.user || ''}`
         case 'update_password':
-          parts.push(String(p.user || ''), String(p.password || ''))
-          break
+          return `update_password|${p.user || ''}|${p.password || ''}`
         case 'add_user':
         case 'create_user':
-          parts.push(String(p.user || ''), String(p.password || ''), String(p.profile || 'default-navspot'))
-          break
+          return `create_user|${p.user || ''}|${p.password || ''}|${p.profile || 'default-navspot'}`
         case 'update_profile':
         case 'update_user_profile':
-          parts.push(String(p.user || ''), String(p.profile || ''))
-          break
-        // NEW: User profile management
+          // Update profile is handled via create_user with updated profile
+          return `create_user|${p.user || ''}||${p.profile || ''}`
         case 'add_user_profile':
-          parts.push(
-            String(p.name || ''),
-            String(p.rate_limit || '2M/5M'),
-            String(p.shared_users || 1),
-            String(p.limit_bytes || 0),
-            String(p.session_timeout || '0s')
-          )
-          break
+          // Create profile with rate-limit format: download/upload
+          return `create_profile|${p.name || ''}|${p.rate_limit || '2M/5M'}`
         case 'remove_user_profile':
-          parts.push(String(p.name || ''))
-          break
-        // NEW: Walled garden management
+          return `remove_profile|${p.name || ''}`
         case 'add_walled_garden':
-          parts.push(
-            String(p.dst_host || ''),
-            String(p.action || 'reject'),
-            String(p.comment || 'navspot-rule')
-          )
-          break
+          // v6.5: One domain per command for robustness
+          return `create_whitelist_domain|${p.list_name || 'default'}|${p.dst_host || ''}`
         case 'remove_walled_garden':
-          parts.push(String(p.dst_host || ''))
-          break
-        // NEW: Firewall management
-        case 'add_firewall_l7':
-          parts.push(
-            String(p.name || ''),
-            String(p.regexp || ''),
-            String(p.comment || 'navspot-l7')
-          )
-          break
+          return `remove_whitelist_domain|${p.dst_host || ''}`
         case 'add_firewall_filter':
-          parts.push(
-            String(p.chain || 'forward'),
-            String(p.layer7 || ''),
-            String(p.action || 'drop'),
-            String(p.comment || 'navspot-filter')
-          )
-          break
+          // v6.5: Blacklist as separate domain command
+          return `create_blacklist_domain|${p.list_name || 'default'}|${p.domain || ''}`
+        case 'add_firewall_l7':
+          // v6.5: Firewall rules just logged (v6.6 will implement)
+          return `create_firewall_rule|${p.order || 0}|${p.list || ''}|${p.type || ''}|${p.profile || ''}|${p.schedule || ''}|${p.action || ''}`
+        case 'update_profile_quota':
+          return `update_profile_quota|${p.profile || ''}|${p.quota_mb || 0}`
         default:
-          Object.values(p).forEach(v => parts.push(String(v)))
+          // Fallback: type|param1|param2|...
+          return [action.type, ...Object.values(p).map(String)].join('|')
       }
-      
-      return parts.join('|')
-    }).join('\n')
+    }).join(';')
 
-    console.log(`[mikrotik-sync] Returning ${formattedActions.length} pending actions, ${firewallRules.length} firewall rules, ${blockedDevices.length} blocked devices`)
+    // v6.5: Wrap in [[ ]] markers for RouterOS extraction
+    const formattedPipe = pipeDelimitedActions ? `[[ ${pipeDelimitedActions}; ]]` : ''
+
+    console.log(`[mikrotik-sync] v6.5: Returning ${formattedActions.length} pending actions, ${firewallRules.length} firewall rules, ${blockedDevices.length} blocked devices`)
 
     return new Response(
       JSON.stringify({
         success: true,
         pending_actions: formattedActions,
-        pending_actions_pipe: pipeDelimitedActions,  // RouterOS-compatible format
+        pending_actions_pipe: formattedPipe,  // v6.5: [[ cmd|p1;cmd2|p1; ]]
         firewall_rules: firewallRules,
         device_violations: deviceViolations,
         blocked_devices: blockedDevices,
