@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.0 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.1 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -109,7 +109,7 @@ Deno.serve(async (req) => {
       console.error('[script-generator] Failed to save script:', updateError)
     }
 
-    console.log(`[script-generator] Bootstrap script v6.0 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.1 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -118,7 +118,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.0'
+        version: '6.1'
       }),
       { 
         status: 200, 
@@ -167,23 +167,35 @@ function generateBootstrapScript(
     return b.localeCompare(a)
   })
 
-  // Gerar comandos de migração individual para cada porta
-  const portMigrationCommands = migrationOrder.map(port => 
-    `:do { /interface bridge port remove [find interface=${port}] } on-error={}
-/interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan"`
-  ).join('\n')
+  // Gerar comandos de migração com delays e logs individuais
+  const portMigrationCommands = migrationOrder.map((port, index) => {
+    const isLast = index === migrationOrder.length - 1
+    const delay = isLast ? '' : '\n:delay 500ms'
+    const logMessage = isLast 
+      ? `NAVSPOT: ${port} migrada - Winbox vai reconectar`
+      : `NAVSPOT: ${port} migrada`
+    
+    return `:do { /interface bridge port remove [find interface=${port}] } on-error={}
+/interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan"
+:log info "${logMessage}"${delay}`
+  }).join('\n\n')
 
-  // Script sync inline com \r\n (NAO usar bloco source={})
-  const syncScriptSource = `:local token [/file get \\"navspot-token.txt\\" contents]\\r\\n:local syncUrl \\"${syncUrl}\\"\\r\\n:local users \\"\\"\\r\\n/ip hotspot active\\r\\n:foreach a in=[find] do={\\r\\n:local u [get \\$a user]\\r\\n:local m [get \\$a mac-address]\\r\\n:local bi [get \\$a bytes-in]\\r\\n:local bo [get \\$a bytes-out]\\r\\n:set users (\\$users . \\$u . \\",\\" . \\$m . \\",\\" . \\$bi . \\",\\" . \\$bo . \\";\\")\\r\\n}\\r\\n:local body (\\"{\\\\\\\"sync_token\\\\\\\":\\\\\\\"\\" . \\$token . \\"\\\\\\\",\\\\\\\"active_users_csv\\\\\\\":\\\\\\\"\\" . \\$users . \\"\\\\\\\"}\\")\\r\\n:do {/tool fetch url=\\$syncUrl mode=https http-method=post http-data=\\$body output=user as-value} on-error={:log warning \\"NAVSPOT-SYNC: Falha\\"}\\r\\n:log info \\"NAVSPOT-SYNC: OK\\"`
-
-  // Configuração WAN baseada no tipo
+  // Configuração WAN com remoção prévia do DHCP client existente
   const wanConfig = wanType === 'dhcp' 
-    ? `/ip dhcp-client add interface=${wanInterface} disabled=no comment="navspot-wan"
+    ? `:do { /ip dhcp-client remove [find interface=${wanInterface}] } on-error={}
+/ip dhcp-client add interface=${wanInterface} disabled=no comment="navspot-wan"
 :log info "NAVSPOT: DHCP client em ${wanInterface}"`
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
-  // Bootstrap script v6.0 - Backwards Safe Migration
-  return `:log info "NAVSPOT v6.0: Iniciando instalacao..."
+  // Bootstrap script v6.1 - Critical Fixes
+  return `:log info "NAVSPOT v6.1: Iniciando instalacao..."
+
+# 0. VALIDACAO INICIAL
+:if ([:len [/interface find name="${wanInterface}"]] = 0) do={
+  :log error "NAVSPOT: ERRO CRITICO - Interface ${wanInterface} nao existe!"
+  :error "Abortando: WAN inexistente"
+}
+:log info "NAVSPOT: Interface WAN (${wanInterface}) validada"
 
 # 1. LIMPEZA INICIAL (remover configs antigas)
 :do { /ip hotspot remove [find name="hs-navspot"] } on-error={}
@@ -204,12 +216,18 @@ function generateBootstrapScript(
 :delay 2s
 :log info "NAVSPOT: Limpeza concluida"
 
-# 2. CRIAR BRIDGE1 VAZIA (sem portas ainda)
+# 2. CONFIGURAR WAN (antes de criar bridge)
+${wanConfig}
+
+# 3. IDENTIDADE
+/system identity set name="${embarcacao.nome}"
+
+# 4. CRIAR BRIDGE1 VAZIA (sem portas ainda)
 /interface bridge add name="bridge1" protocol-mode=rstp auto-mac=yes comment="navspot"
 :delay 1s
 :log info "NAVSPOT: Bridge1 criada (vazia)"
 
-# 3. CONFIGURAR REDE NA BRIDGE1 (antes de mover portas)
+# 5. CONFIGURAR REDE NA BRIDGE1 (antes de mover portas)
 /ip address add address=${gateway}/24 interface=bridge1 comment="navspot"
 /ip pool add name="hs-pool-navspot" ranges=${poolStart}-${poolEnd}
 /ip dhcp-server network add address=${networkCidr} gateway=${gateway} dns-server=${gateway} comment="navspot"
@@ -217,48 +235,45 @@ function generateBootstrapScript(
 /ip dns set allow-remote-requests=yes servers=8.8.8.8,8.8.4.4
 :log info "NAVSPOT: Rede IP configurada"
 
-# 4. NAT
+# 6. NAT
 /ip firewall nat add chain=srcnat out-interface=${wanInterface} action=masquerade comment="navspot-nat"
 :log info "NAVSPOT: NAT configurado em ${wanInterface}"
 
-# 5. HOTSPOT
+# 7. HOTSPOT
 /ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=flash/hotspot login-by=http-chap,http-pap
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
 :log info "NAVSPOT: Hotspot ativo"
 
-# 6. WALLED GARDEN
+# 8. WALLED GARDEN
 /ip hotspot walled-garden add dst-host="navspot.local" action=allow comment="navspot-system"
 /ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-system"
 /ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
 /ip hotspot walled-garden ip add dst-port=53 protocol=tcp action=accept comment="navspot-dns-tcp"
 /ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
 
-# 7. TOKEN
+# 9. TOKEN
 /file print file="navspot-token.txt" where name=""
 :delay 2s
 /file set "navspot-token.txt" contents="${hotspot.sync_token}"
 :log info "NAVSPOT: Token salvo"
 
-# 8. SYNC SCRIPT + SCHEDULER
+# 10. SYNC SCRIPT + SCHEDULER
 /system script add name="navspot-sync" policy=read,write,policy,test source="${syncScriptSource}"
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
 :log info "NAVSPOT: Sync configurado"
 
-# 9. IDENTIDADE
-/system identity set name="${embarcacao.nome}"
-
-# 10. WAN
-${wanConfig}
-
 # 11. MIGRACAO SEGURA DE PORTAS (ordem reversa, ether2 por ultimo)
 :log info "NAVSPOT: Iniciando migracao de portas..."
 ${portMigrationCommands}
-:log info "NAVSPOT: Portas migradas - Winbox vai reconectar"
 
-# 12. FINALIZACAO
+# 12. LIMPEZA FINAL (remover bridge defconf vazia)
+:do { /interface bridge remove [find name="bridge"] } on-error={}
+:log info "NAVSPOT: Bridge defconf removida"
+
+# 13. FINALIZACAO
 :log info "NAVSPOT: Portas migradas com sucesso"
 :log info "NAVSPOT: Bridge1 ativa e funcional"
-:log info "NAVSPOT v6.0: Bootstrap concluido!"
+:log info "NAVSPOT v6.1: Bootstrap concluido!"
 :log info "NAVSPOT: Reconecte via ${gateway}"
 `
 }
