@@ -286,29 +286,29 @@ function generateBootstrapScript(
 }
 }
 :if ($cmd = "remove_user") do={
-:do {/ip hotspot user remove [find name=$rest]} on-error={}
+:do { /ip hotspot user remove [find name=$rest] } on-error={}
 :log info "NAVSPOT: Usuario $rest removido"
 }
 :if ($cmd = "disable_user") do={
-:do {/ip hotspot user set [find name=$rest] disabled=yes} on-error={}
+:do { /ip hotspot user set [find name=$rest] disabled=yes } on-error={}
 :log info "NAVSPOT: Usuario $rest desabilitado"
 }
 :if ($cmd = "enable_user") do={
-:do {/ip hotspot user set [find name=$rest] disabled=no} on-error={}
+:do { /ip hotspot user set [find name=$rest] disabled=no } on-error={}
 :log info "NAVSPOT: Usuario $rest habilitado"
 }
 :if ($cmd = "kick_session") do={
 :local p2 [:find $rest "|"]
 :local kUser [:pick $rest 0 $p2]
 :local kMac [:pick $rest ($p2 + 1) [:len $rest]]
-:do {/ip hotspot active remove [find mac-address=$kMac]} on-error={}
+:do { /ip hotspot active remove [find mac-address=$kMac] } on-error={}
 :log info "NAVSPOT: Sessao $kUser/$kMac encerrada"
 }
 :if ($cmd = "update_password") do={
 :local p2 [:find $rest "|"]
 :local uName [:pick $rest 0 $p2]
 :local uPass [:pick $rest ($p2 + 1) [:len $rest]]
-:do {/ip hotspot user set [find name=$uName] password=$uPass} on-error={}
+:do { /ip hotspot user set [find name=$uName] password=$uPass } on-error={}
 :log info "NAVSPOT: Senha de $uName atualizada"
 }
 :if ($cmd = "create_whitelist_domain") do={
@@ -334,7 +334,7 @@ function generateBootstrapScript(
 :local pName [:pick $rest 0 $p2]
 :local quota [:pick $rest ($p2 + 1) [:len $rest]]
 :local quotaBytes ($quota * 1024 * 1024)
-:do {/ip hotspot user profile set [find name=$pName] limit-bytes-total=$quotaBytes} on-error={}
+:do { /ip hotspot user profile set [find name=$pName] limit-bytes-total=$quotaBytes } on-error={}
 :log info "NAVSPOT: Quota do perfil $pName atualizada para $quota MB"
 }
 }
