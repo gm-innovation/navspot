@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.4 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.5 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -89,7 +89,7 @@ Deno.serve(async (req) => {
 
     const embarcacao = hotspot.embarcacoes as unknown as Embarcacao
 
-    // Generate v6.4 scripts (bootstrap + finalize)
+    // Generate v6.5 scripts (bootstrap + finalize)
     const bootstrapScript = generateBootstrapScript(
       hotspot as unknown as Hotspot,
       embarcacao,
@@ -113,7 +113,7 @@ Deno.serve(async (req) => {
       console.error('[script-generator] Failed to save script:', updateError)
     }
 
-    console.log(`[script-generator] Bootstrap script v6.4 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.5 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -123,7 +123,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.4'
+        version: '6.5'
       }),
       { 
         status: 200, 
@@ -149,7 +149,7 @@ function generateFinalizeScript(hotspot: Hotspot): string {
   const networkBase = networkParts[0].replace(/\.\d+$/, '')
   const gateway = `${networkBase}.1`
 
-  return `:log info "NAVSPOT v6.4 Parte 2: Finalizando migracao da ether2..."
+  return `:log info "NAVSPOT v6.5 Parte 2: Finalizando migracao da ether2..."
 
 # Validacoes de seguranca
 :if ([:len [/interface bridge find name="bridge1"]] = 0) do={
@@ -176,10 +176,11 @@ function generateFinalizeScript(hotspot: Hotspot): string {
 
 # Finalizacao
 :log info "=========================================="
-:log info "NAVSPOT v6.4: INSTALACAO 100% CONCLUIDA!"
+:log info "NAVSPOT v6.5: INSTALACAO 100% CONCLUIDA!"
 :log info "Todas as portas (ether2-5) estao na bridge1"
 :log info "Hotspot ativo em ${gateway}"
-:log info "Sync rodando a cada ${syncIntervalMinutes} minuto(s)"
+:log info "Sync inteligente rodando a cada ${syncIntervalMinutes} minuto(s)"
+:log info "Action Processor ativo para comandos em tempo real"
 :log info "=========================================="
 `
 }
@@ -218,8 +219,11 @@ function generateBootstrapScript(
 :delay 2s`
   }).join('\n\n')
 
-  // Script sync inline com \r\n (NAO usar bloco source={})
-  const syncScriptSource = `:local token [/file get \\"navspot-token.txt\\" contents]\\r\\n:local syncUrl \\"${syncUrl}\\"\\r\\n:local users \\"\\"\\r\\n/ip hotspot active\\r\\n:foreach a in=[find] do={\\r\\n:local u [get \\$a user]\\r\\n:local m [get \\$a mac-address]\\r\\n:local bi [get \\$a bytes-in]\\r\\n:local bo [get \\$a bytes-out]\\r\\n:set users (\\$users . \\$u . \\",\\" . \\$m . \\",\\" . \\$bi . \\",\\" . \\$bo . \\";\\")\\r\\n}\\r\\n:local body (\\"{\\\\\\\"sync_token\\\\\\\":\\\\\\\"\\" . \\$token . \\"\\\\\\\",\\\\\\\"active_users_csv\\\\\\\":\\\\\\\"\\" . \\$users . \\"\\\\\\\"}\\")\\r\\n:do {/tool fetch url=\\$syncUrl mode=https http-method=post http-data=\\$body output=user as-value} on-error={:log warning \\"NAVSPOT-SYNC: Falha\\"}\\r\\n:log info \\"NAVSPOT-SYNC: OK\\"`
+  // v6.5: Script sync inteligente com extração de [[ ]] e chamada ao action-processor
+  const syncScriptSource = `:local token [/file get \\"navspot-token.txt\\" contents]\\r\\n:local syncUrl \\"${syncUrl}\\"\\r\\n:local users \\"\\"\\r\\n/ip hotspot active\\r\\n:foreach a in=[find] do={\\r\\n:local u [get \\$a user]\\r\\n:local m [get \\$a mac-address]\\r\\n:local bi [get \\$a bytes-in]\\r\\n:local bo [get \\$a bytes-out]\\r\\n:set users (\\$users . \\$u . \\",\\" . \\$m . \\",\\" . \\$bi . \\",\\" . \\$bo . \\";\\")\\r\\n}\\r\\n:local body (\\"{\\\\\\\"sync_token\\\\\\\":\\\\\\\"\\" . \\$token . \\"\\\\\\\",\\\\\\\"active_users_csv\\\\\\\":\\\\\\\"\\" . \\$users . \\"\\\\\\\"}\\")\\r\\n:do {\\r\\n:local result [/tool fetch url=\\$syncUrl mode=https http-method=post http-data=\\$body output=user as-value]\\r\\n:if ((\\$result->\\"status\\") = \\"finished\\") do={\\r\\n:local resp (\\$result->\\"data\\")\\r\\n:local start [:find \\$resp \\"[[ \\"]\\r\\n:local end [:find \\$resp \\" ]]\\"]\\r\\n:if (([:len \\$start] > 0) && ([:len \\$end] > 0)) do={\\r\\n:local actions [:pick \\$resp (\\$start + 3) \\$end]\\r\\n:global navspotActions \\$actions\\r\\n/system script run navspot-action-processor\\r\\n}\\r\\n}\\r\\n} on-error={:log warning \\"NAVSPOT-SYNC: Falha\\"}\\r\\n:log info \\"NAVSPOT-SYNC: OK\\"`
+
+  // v6.5: Action Processor - processa comandos separados por ; com parsing por |
+  const actionProcessorSource = `:global navspotActions\\r\\n:local rawData \\$navspotActions\\r\\n:if ([:len \\$rawData] = 0) do={:log info \\"NAVSPOT: Sem acoes\\"; :return}\\r\\n:log info \\"NAVSPOT: Processando acoes...\\"\\r\\n:local pos 0\\r\\n:while ([:find \\$rawData \\";\\\" \\$pos] >= 0) do={\\r\\n:local endPos [:find \\$rawData \\";\\\" \\$pos]\\r\\n:local line [:pick \\$rawData \\$pos \\$endPos]\\r\\n:set pos (\\$endPos + 1)\\r\\n:local p1 [:find \\$line \\"|\\"]\\r\\n:if ([:len \\$p1] > 0) do={\\r\\n:local cmd [:pick \\$line 0 \\$p1]\\r\\n:local rest [:pick \\$line (\\$p1 + 1) [:len \\$line]]\\r\\n:if (\\$cmd = \\"create_profile\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local pName [:pick \\$rest 0 \\$p2]\\r\\n:local pRate [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:if ([:len [/ip hotspot user profile find name=\\$pName]] = 0) do={\\r\\n/ip hotspot user profile add name=\\$pName rate-limit=\\$pRate shared-users=1\\r\\n:log info \\"NAVSPOT: Perfil \\$pName criado\\"\\r\\n}\\r\\n}\\r\\n:if (\\$cmd = \\"create_user\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local uName [:pick \\$rest 0 \\$p2]\\r\\n:local sub [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:local p3 [:find \\$sub \\"|\\"]\\r\\n:local uPass [:pick \\$sub 0 \\$p3]\\r\\n:local uProf [:pick \\$sub (\\$p3 + 1) [:len \\$sub]]\\r\\n:if ([:len [/ip hotspot user find name=\\$uName]] = 0) do={\\r\\n/ip hotspot user add name=\\$uName password=\\$uPass profile=\\$uProf comment=\\"navspot-sync\\"\\r\\n:log info \\"NAVSPOT: Usuario \\$uName criado\\"\\r\\n} else={\\r\\n/ip hotspot user set [find name=\\$uName] password=\\$uPass profile=\\$uProf\\r\\n:log info \\"NAVSPOT: Usuario \\$uName atualizado\\"\\r\\n}\\r\\n}\\r\\n:if (\\$cmd = \\"remove_user\\") do={\\r\\n:do {/ip hotspot user remove [find name=\\$rest]} on-error={}\\r\\n:log info \\"NAVSPOT: Usuario \\$rest removido\\"\\r\\n}\\r\\n:if (\\$cmd = \\"disable_user\\") do={\\r\\n:do {/ip hotspot user set [find name=\\$rest] disabled=yes} on-error={}\\r\\n:log info \\"NAVSPOT: Usuario \\$rest desabilitado\\"\\r\\n}\\r\\n:if (\\$cmd = \\"enable_user\\") do={\\r\\n:do {/ip hotspot user set [find name=\\$rest] disabled=no} on-error={}\\r\\n:log info \\"NAVSPOT: Usuario \\$rest habilitado\\"\\r\\n}\\r\\n:if (\\$cmd = \\"kick_session\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local kUser [:pick \\$rest 0 \\$p2]\\r\\n:local kMac [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:do {/ip hotspot active remove [find mac-address=\\$kMac]} on-error={}\\r\\n:log info \\"NAVSPOT: Sessao \\$kUser/\\$kMac encerrada\\"\\r\\n}\\r\\n:if (\\$cmd = \\"update_password\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local uName [:pick \\$rest 0 \\$p2]\\r\\n:local uPass [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:do {/ip hotspot user set [find name=\\$uName] password=\\$uPass} on-error={}\\r\\n:log info \\"NAVSPOT: Senha de \\$uName atualizada\\"\\r\\n}\\r\\n:if (\\$cmd = \\"create_whitelist_domain\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local wName [:pick \\$rest 0 \\$p2]\\r\\n:local domain [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:if ([:len [/ip hotspot walled-garden find dst-host=\\$domain]] = 0) do={\\r\\n/ip hotspot walled-garden add dst-host=\\$domain action=allow comment=\\"navspot-\\$wName\\"\\r\\n:log info \\"NAVSPOT: Whitelist \\$wName - \\$domain adicionado\\"\\r\\n}\\r\\n}\\r\\n:if (\\$cmd = \\"create_blacklist_domain\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local bName [:pick \\$rest 0 \\$p2]\\r\\n:local domain [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:log info \\"NAVSPOT: Blacklist \\$bName - \\$domain registrado (v6.6)\\"\\r\\n}\\r\\n:if (\\$cmd = \\"create_firewall_rule\\") do={\\r\\n:log info \\"NAVSPOT: Regra firewall registrada (v6.6): \\$rest\\"\\r\\n}\\r\\n:if (\\$cmd = \\"update_profile_quota\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local pName [:pick \\$rest 0 \\$p2]\\r\\n:local quota [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:local quotaBytes (\\$quota * 1024 * 1024)\\r\\n:do {/ip hotspot user profile set [find name=\\$pName] limit-bytes-total=\\$quotaBytes} on-error={}\\r\\n:log info \\"NAVSPOT: Quota do perfil \\$pName atualizada para \\$quota MB\\"\\r\\n}\\r\\n}\\r\\n}`
 
   // Configuração WAN com remoção prévia do DHCP client existente
   const wanConfig = wanType === 'dhcp' 
@@ -228,8 +232,8 @@ function generateBootstrapScript(
 :log info "NAVSPOT: DHCP client em ${wanInterface}"`
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
-  // Bootstrap script v6.4 - Migração Parcial (exceto ether2)
-  return `:log info "NAVSPOT v6.4: Iniciando instalacao..."
+  // Bootstrap script v6.5 - Sync Inteligente com Action Processor
+  return `:log info "NAVSPOT v6.5: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -258,6 +262,7 @@ function generateBootstrapScript(
 :do { /interface bridge port remove [find comment="navspot-lan"] } on-error={}
 :do { /interface bridge remove [find name="bridge1"] } on-error={}
 :do { /system script remove [find name="navspot-sync"] } on-error={}
+:do { /system script remove [find name="navspot-action-processor"] } on-error={}
 :do { /system scheduler remove [find name="navspot-sync-scheduler"] } on-error={}
 :do { /file remove "navspot-token.txt" } on-error={}
 :do { /ip dhcp-client remove [find comment="navspot-wan"] } on-error={}
@@ -287,8 +292,8 @@ ${wanConfig}
 /ip firewall nat add chain=srcnat out-interface=${wanInterface} action=masquerade comment="navspot-nat"
 :log info "NAVSPOT: NAT configurado em ${wanInterface}"
 
-# 7. HOTSPOT
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=flash/hotspot login-by=http-chap,http-pap
+# 7. HOTSPOT (login-by=http-pap para compatibilidade com senhas do sistema)
+/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=flash/hotspot login-by=http-pap
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
 :log info "NAVSPOT: Hotspot ativo"
 
@@ -305,10 +310,11 @@ ${wanConfig}
 /file set "navspot-token.txt" contents="${hotspot.sync_token}"
 :log info "NAVSPOT: Token salvo"
 
-# 10. SYNC SCRIPT + SCHEDULER
+# 10. SYNC SCRIPT v6.5 + ACTION PROCESSOR
+/system script add name="navspot-action-processor" policy=read,write,policy,test source="${actionProcessorSource}"
 /system script add name="navspot-sync" policy=read,write,policy,test source="${syncScriptSource}"
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
-:log info "NAVSPOT: Sync configurado"
+:log info "NAVSPOT: Sync v6.5 + Action Processor configurados"
 
 # 11. MIGRACAO PARCIAL DE PORTAS (apenas ether3, 4, 5 - NAO migra ether2)
 :log info "NAVSPOT: Iniciando migracao PARCIAL de portas (ether3, 4, 5)..."
@@ -326,7 +332,7 @@ ${partialMigrationCommands}
 :log warning "=========================================="
 
 # 13. FINALIZACAO PARCIAL
-:log info "NAVSPOT v6.4 Parte 1: Bootstrap parcial concluido"
+:log info "NAVSPOT v6.5 Parte 1: Bootstrap parcial concluido"
 :log info "NAVSPOT: Aguardando troca de cabo para finalizar ether2"
 `
 }
