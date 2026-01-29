@@ -1,147 +1,65 @@
 
+<contexto e diagnóstico (baseado no que já está gerado no backend)>
+- O erro “linha 171, coluna 54” bate com um ponto real do bootstrap atual: dentro do `source={...}` do `navspot-action-processor` existe um comando no formato `:do {/ip ...}` (sem espaço após a chave).
+- Mesmo com `source={...}` (já corrigido), o RouterOS pode validar/parsing do conteúdo do `source` durante `/import`, e construções “coladas” como `:do {/ip ...}` costumam disparar erro de parsing (coluna aponta para dentro do comando).
+- Ou seja: o problema agora não é mais “aspas dentro de aspas”, e sim sintaxe do script interno (especialmente `:do`).
 
-# Correção: Aspas Duplas Aninhadas no RouterOS
+<objetivo>
+Garantir que o `navspot-bootstrap.rsc` importe 100% no RouterOS, eliminando qualquer risco de parsing:
+1) manter `source={...}` (sem `source="..."`) para `navspot-sync` e `navspot-action-processor`
+2) corrigir a sintaxe interna do `action-processor` para usar `:do { /ip ... } on-error={}` (com espaços) em todas as ocorrências
+3) opcionalmente endurecer a geração com validação automática (nunca mais gerar `:do {/`)
 
-## Problema Identificado
+<arquivos envolvidos>
+- `supabase/functions/mikrotik-script-generator/index.ts` (único arquivo a alterar)
 
-Na linha 432-433 do `mikrotik-script-generator/index.ts`:
+<plano de implementação (passo a passo)>
+1) Confirmar o ponto exato do erro no script gerado
+   - Consultar no backend o `script_gerado` do hotspot em teste e extrair as linhas ~165–180.
+   - Verificar se a linha 171 cai em um trecho como:
+     - `:do {/ip hotspot user profile set ...} on-error={}`
+   - Resultado esperado: confirmar que o parsing está quebrando pelo `:do {` “sem espaço” (não por aspas).
 
-```typescript
-/system script add name="navspot-action-processor" policy=read,write,policy,test source="${actionProcessorSource}"
-/system script add name="navspot-sync" policy=read,write,policy,test source="${syncScriptSource}"
-```
+2) Corrigir TODOS os `:do` do `navspot-action-processor`
+   - No template `actionProcessorSource`, substituir cada ocorrência do padrão:
+     - `:do {/ip ...} on-error={}`
+     por:
+     - `:do { /ip ... } on-error={}`
+   - Isso inclui, no mínimo:
+     - remove_user
+     - disable_user
+     - enable_user
+     - kick_session
+     - update_password
+     - update_profile_quota (este é o que está batendo exatamente na linha 171 do bootstrap atual)
+   - Observação importante: manter também espaços antes do `}` quando fechar o bloco do `:do`, para o RouterOS não “colar” tokens.
 
-Os scripts `syncScriptSource` e `actionProcessorSource` contêm aspas duplas internas (ex: `"navspot-token.txt"`, `"${syncUrl}"`). Quando interpolados dentro de `source="..."`, o RouterOS interpreta a primeira aspa interna como fechamento do `source=`, quebrando toda a sintaxe.
+3) (Opcional, mas recomendado) Tornar o update de quota ainda mais “à prova de RouterOS”
+   - Em vez de `set [find name=$pName] ...`, usar um id intermediário, reduzindo risco de parsing/expansão:
+     - `:local profId [/ip hotspot user profile find name=$pName]`
+     - `:if ([:len $profId] > 0) do={ :do { /ip hotspot user profile set $profId limit-bytes-total=$quotaBytes } on-error={} }`
+   - Isso não é obrigatório para resolver o import, mas reduz chances de erro em variações de RouterOS.
 
-**Erro na linha 86, coluna 42**: O RouterOS vê `source=":local token [/file get "` e entende que o source terminou ali.
+4) Adicionar uma “regra de ouro” automática na geração (sanity check)
+   - Ainda no `mikrotik-script-generator`, antes de retornar o `bootstrapScript`, rodar verificações simples:
+     - Se existir `source="` no script final => logar erro e (se aplicável) abortar/ajustar
+     - Se existir `:do {/` no script final => logar erro e ajustar
+   - Objetivo: impedir regressão (esse tipo de bug volta fácil).
 
----
+5) Validar após a correção (teste de verdade)
+   - Gerar novamente o script para um hotspot (o mesmo que você está importando).
+   - Conferir no `navspot-bootstrap.rsc`:
+     - não existe `source="`
+     - não existe `:do {/`
+     - `navspot-sync` e `navspot-action-processor` continuam em `source={...}`
+   - Reimportar no RouterOS e confirmar que o erro “linha 171, coluna 54” desapareceu.
 
-## Solução
+<critérios de aceite>
+- `/import navspot-bootstrap.rsc` termina sem erro de parsing
+- `navspot-sync` e `navspot-action-processor` são criados no RouterOS
+- O trecho de quota (`update_profile_quota`) não quebra import e permanece funcional
+- Não existe mais nenhum `source="..."` para scripts longos no bootstrap
 
-Usar a sintaxe `source={ ... }` (bloco multilinha com chaves) ao invés de `source="..."`. Com chaves, aspas internas não precisam de escape.
-
----
-
-## Mudanças no Arquivo
-
-**Arquivo**: `supabase/functions/mikrotik-script-generator/index.ts`
-
-### Mudança 1: Linhas 432-433 - Usar source={ } com chaves
-
-**De:**
-```typescript
-/system script add name="navspot-action-processor" policy=read,write,policy,test source="${actionProcessorSource}"
-/system script add name="navspot-sync" policy=read,write,policy,test source="${syncScriptSource}"
-```
-
-**Para:**
-```typescript
-/system script add name="navspot-action-processor" policy=read,write,policy,test source={
-${actionProcessorSource}
-}
-/system script add name="navspot-sync" policy=read,write,policy,test source={
-${syncScriptSource}
-}
-```
-
-### Mudança 2: Remover escapes de aspas nos scripts source
-
-Os scripts `syncScriptSource` (linhas 223-248) e `actionProcessorSource` (linhas 251-341) usam `\\"` para escapar aspas, que era necessário dentro de `source="..."`. Com `source={ }`, devemos usar aspas normais.
-
-**syncScriptSource - Linha 234:**
-```typescript
-// De:
-:local body ("{\\"sync_token\\":\\"" . $token . "\\",\\"active_users_csv\\":\\"" . $users . "\\"}")
-
-// Para:
-:local body ("{\"sync_token\":\"" . $token . "\",\"active_users_csv\":\"" . $users . "\"}")
-```
-
-Na verdade, como estamos gerando o script RSC que será executado diretamente pelo MikroTik (não em um terminal), as aspas devem ser normais sem escape de barra invertida.
-
----
-
-## Correções Detalhadas
-
-### syncScriptSource (Linhas 223-248)
-
-```typescript
-const syncScriptSource = `:local token [/file get "navspot-token.txt" contents]
-:local syncUrl "${syncUrl}"
-:local users ""
-/ip hotspot active
-:foreach a in=[find] do={
-:local u [get \$a user]
-:local m [get \$a mac-address]
-:local bi [get \$a bytes-in]
-:local bo [get \$a bytes-out]
-:set users (\$users . \$u . "," . \$m . "," . \$bi . "," . \$bo . ";")
-}
-:local body ("{\\"sync_token\\":\\"" . \$token . "\\",\\"active_users_csv\\":\\"" . \$users . "\\"}")
-:do {
-:local result [/tool fetch url=\$syncUrl mode=https http-method=post http-data=\$body output=user as-value]
-:if ((\$result->"status") = "finished") do={
-:local resp (\$result->"data")
-:local start [:find \$resp "[[ "]
-:local end [:find \$resp " ]]"]
-:if ((\$start >= 0) && (\$end >= 0)) do={
-:local actions [:pick \$resp (\$start + 3) \$end]
-:global navspotActions \$actions
-/system script run navspot-action-processor
-}
-}
-} on-error={:log warning "NAVSPOT-SYNC: Falha"}
-:log info "NAVSPOT-SYNC: OK"`
-```
-
-**Nota**: Com `source={ }`, as aspas dentro do JSON (`{\\"sync_token\\"`) devem permanecer escapadas com `\\` porque é o RouterOS que vai interpretar isso como JSON literal.
-
-### Bootstrap Template (Linhas 432-433)
-
-```typescript
-# 10. SYNC SCRIPT v6.5 + ACTION PROCESSOR
-/system script add name="navspot-action-processor" policy=read,write,policy,test source={
-${actionProcessorSource}
-}
-/system script add name="navspot-sync" policy=read,write,policy,test source={
-${syncScriptSource}
-}
-/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
-:log info "NAVSPOT: Sync v6.5 + Action Processor configurados"
-```
-
----
-
-## Fluxo Após Correção
-
-```text
-1. Usuário importa navspot-bootstrap.rsc no MikroTik
-
-2. Seção 10 é executada:
-   /system script add name="navspot-action-processor" source={
-   :global navspotActions
-   :local rawData $navspotActions
-   ...
-   }
-   
-   /system script add name="navspot-sync" source={
-   :local token [/file get "navspot-token.txt" contents]
-   ...
-   }
-
-3. As aspas internas ("navspot-token.txt") são interpretadas corretamente
-   porque estão dentro de source={ } e não source="..."
-
-4. Scripts são criados sem erros de parsing
-```
-
----
-
-## Resumo
-
-| Problema | Causa | Solução |
-|----------|-------|---------|
-| Erro linha 86, coluna 42 | Aspas duplas aninhadas em `source="..."` | Usar `source={ }` com chaves |
-| Scripts não criados | RouterOS fecha o source prematuramente | Bloco multilinha evita conflitos |
+<nota importante para seu fluxo>
+- Depois que eu aplicar a correção, você precisa gerar/baixar o bootstrap novamente (para não ficar com um `.rsc` antigo em cache/arquivo local).
 
