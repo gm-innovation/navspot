@@ -60,7 +60,8 @@ export default function Embarcacoes() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [embarcacaoToDelete, setEmbarcacaoToDelete] = useState<EmbarcacaoWithStats | null>(null);
   const [scriptModalOpen, setScriptModalOpen] = useState(false);
-  const [currentScript, setCurrentScript] = useState("");
+  const [bootstrapScript, setBootstrapScript] = useState("");
+  const [finalizeScript, setFinalizeScript] = useState("");
   const [currentHotspotName, setCurrentHotspotName] = useState("");
   const [currentHotspotId, setCurrentHotspotId] = useState("");
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
@@ -134,7 +135,8 @@ export default function Embarcacoes() {
     
     generateScript.mutate(hotspot.id, {
       onSuccess: (data) => {
-        setCurrentScript(data.script || "# Script não gerado");
+        setBootstrapScript(data.bootstrap_script || "# Script não gerado");
+        setFinalizeScript(data.finalize_script || "# Script não gerado");
         setScriptModalOpen(true);
         setGeneratingFor(null);
       },
@@ -148,7 +150,8 @@ export default function Embarcacoes() {
     if (currentHotspotId) {
       generateScript.mutate(currentHotspotId, {
         onSuccess: (data) => {
-          setCurrentScript(data.script || "# Script não gerado");
+          setBootstrapScript(data.bootstrap_script || "# Script não gerado");
+          setFinalizeScript(data.finalize_script || "# Script não gerado");
         },
       });
     }
@@ -443,7 +446,8 @@ export default function Embarcacoes() {
       <ScriptModal
         open={scriptModalOpen}
         onOpenChange={setScriptModalOpen}
-        script={currentScript}
+        bootstrapScript={bootstrapScript}
+        finalizeScript={finalizeScript}
         hotspotName={currentHotspotName}
         onRegenerate={handleRegenerateScript}
         isRegenerating={generateScript.isPending}

@@ -62,7 +62,8 @@ export default function Hotspots() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [hotspotToDelete, setHotspotToDelete] = useState<HotspotWithDetails | null>(null);
   const [scriptModalOpen, setScriptModalOpen] = useState(false);
-  const [currentScript, setCurrentScript] = useState("");
+  const [bootstrapScript, setBootstrapScript] = useState("");
+  const [finalizeScript, setFinalizeScript] = useState("");
   const [currentHotspotName, setCurrentHotspotName] = useState("");
   const [currentHotspotId, setCurrentHotspotId] = useState("");
 
@@ -116,7 +117,8 @@ export default function Hotspots() {
     
     generateScript.mutate(hotspotId, {
       onSuccess: (data) => {
-        setCurrentScript(data.script || "# Script não gerado");
+        setBootstrapScript(data.bootstrap_script || "# Script não gerado");
+        setFinalizeScript(data.finalize_script || "# Script não gerado");
         setScriptModalOpen(true);
       },
     });
@@ -126,7 +128,8 @@ export default function Hotspots() {
     if (currentHotspotId) {
       generateScript.mutate(currentHotspotId, {
         onSuccess: (data) => {
-          setCurrentScript(data.script || "# Script não gerado");
+          setBootstrapScript(data.bootstrap_script || "# Script não gerado");
+          setFinalizeScript(data.finalize_script || "# Script não gerado");
         },
       });
     }
@@ -340,7 +343,8 @@ export default function Hotspots() {
       <ScriptModal
         open={scriptModalOpen}
         onOpenChange={setScriptModalOpen}
-        script={currentScript}
+        bootstrapScript={bootstrapScript}
+        finalizeScript={finalizeScript}
         hotspotName={currentHotspotName}
         onRegenerate={handleRegenerateScript}
         isRegenerating={generateScript.isPending}
