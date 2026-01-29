@@ -1,253 +1,273 @@
 
 
-# Correção do Bootstrap Script v6.1 - Problemas Críticos
+# NAVSPOT Bootstrap Script v6.4 - Migração em Duas Etapas (Atualizado)
 
-## Problemas Identificados no v6.0
+## Resumo das Mudanças
 
-| # | Problema | Causa | Criticidade |
-|---|----------|-------|-------------|
-| 1 | DHCP client duplicado na WAN | Adiciona sem remover o existente (defconf) | Crítico |
-| 2 | Falta de delay entre migrações | Portas migradas muito rápido, conflitos | Crítico |
-| 3 | Falta validação da interface WAN | Script falha silenciosamente se ether1 não existe | Crítico |
-| 4 | Bridge defconf fica vazia | Lixo de configuração após migração | Opcional |
-| 5 | Falta logs intermediários | Difícil debugar qual porta falhou | Opcional |
+Implementar migração segura em duas etapas com validações de integridade no script de finalização.
 
 ---
 
-## Arquivo a Modificar
+## Arquivos a Modificar
 
 | Arquivo | Ação |
 |---------|------|
-| `supabase/functions/mikrotik-script-generator/index.ts` | Modificar - adicionar correções críticas |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Modificar - gerar 2 scripts com validações |
+| `src/components/modals/ScriptModal.tsx` | Modificar - exibir 2 seções com downloads separados |
+| `src/pages/Embarcacoes.tsx` | Modificar - consumir nova resposta da API |
+| `src/hooks/useHotspots.ts` | Verificar tipo de retorno do mutate |
 
 ---
 
-## Correções a Aplicar
+## Mudanças na Edge Function
 
-### 1. Adicionar Validação Inicial da WAN (Nova Seção 0)
+### Nova Estrutura de Resposta
 
-Antes de qualquer operação, validar que a interface WAN existe:
-
-```routeros
-# 0. VALIDACAO INICIAL
-:if ([:len [/interface find name="${wanInterface}"]] = 0) do={
-  :log error "NAVSPOT: ERRO CRITICO - Interface ${wanInterface} nao existe!"
-  :error "Abortando: WAN inexistente"
+```typescript
+return {
+  success: true,
+  bootstrap_script,      // Parte 1: tudo exceto ether2
+  finalize_script,       // Parte 2: apenas ether2 com validações
+  hotspot_name,
+  version: '6.4'
 }
-:log info "NAVSPOT: Interface WAN (${wanInterface}) validada"
 ```
 
-Esta validação aborta o script imediatamente se a WAN não existir, evitando configuração parcial.
+### Script de Finalização com Validações
 
----
-
-### 2. Mover Configuração WAN para Antes da Bridge (Nova Seção 2)
-
-Ordem atual (problemática):
-```
-1. Limpeza → 2. Bridge → ... → 10. WAN
-```
-
-Nova ordem (correta):
-```
-0. Validação → 1. Limpeza → 2. WAN → 3. Identidade → 4. Bridge → ...
-```
-
-Isso garante que a WAN esteja pronta antes de qualquer outra configuração.
-
----
-
-### 3. Remover DHCP Client Existente Antes de Adicionar
-
-Código atual:
 ```routeros
-/ip dhcp-client add interface=ether1 disabled=no comment="navspot-wan"
-```
+:log info "NAVSPOT v6.4 Parte 2: Finalizando migracao da ether2..."
 
-Código corrigido:
-```routeros
-:do { /ip dhcp-client remove [find interface=${wanInterface}] } on-error={}
-/ip dhcp-client add interface=${wanInterface} disabled=no comment="navspot-wan"
-```
+# Validacoes de seguranca
+:if ([:len [/interface bridge find name="bridge1"]] = 0) do={
+  :log error "NAVSPOT: ERRO - bridge1 nao encontrada! Execute a Parte 1 primeiro."
+  :error "Abortando: bridge1 inexistente"
+}
 
-Isso previne duplicação de DHCP clients na mesma interface.
+:if ([:len [/ip address find address="192.168.88.1/24"]] = 0) do={
+  :log error "NAVSPOT: ERRO - IP 192.168.88.1/24 nao encontrado! Execute a Parte 1 primeiro."
+  :error "Abortando: IP inexistente"
+}
 
----
+:log info "NAVSPOT: Validacoes OK, prosseguindo..."
 
-### 4. Adicionar Delays e Logs nas Migrações de Portas
+# Migrar ether2 para bridge1
+:do { /interface bridge port remove [find interface=ether2] } on-error={}
+/interface bridge port add bridge=bridge1 interface=ether2 comment="navspot-lan"
+:log info "NAVSPOT: ether2 migrada com sucesso"
 
-Código atual:
-```typescript
-const portMigrationCommands = migrationOrder.map(port => 
-  `:do { /interface bridge port remove [find interface=${port}] } on-error={}
-/interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan"`
-).join('\n')
-```
-
-Código corrigido:
-```typescript
-// Última porta não precisa de delay (script termina logo após)
-const portMigrationCommands = migrationOrder.map((port, index) => {
-  const isLast = index === migrationOrder.length - 1
-  const delay = isLast ? '' : ':delay 500ms'
-  const logMessage = isLast 
-    ? `NAVSPOT: ${port} migrada - Winbox vai reconectar`
-    : `NAVSPOT: ${port} migrada`
-  
-  return `:do { /interface bridge port remove [find interface=${port}] } on-error={}
-/interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan"
-:log info "${logMessage}"${delay ? '\n' + delay : ''}`
-}).join('\n')
-```
-
----
-
-### 5. Adicionar Limpeza Final da Bridge Defconf
-
-Nova seção após migração de portas:
-```routeros
-# 12. LIMPEZA FINAL (remover bridge defconf vazia)
+# Remover bridge antiga
+:delay 2s
 :do { /interface bridge remove [find name="bridge"] } on-error={}
 :log info "NAVSPOT: Bridge defconf removida"
+
+# Finalizacao
+:log info "=========================================="
+:log info "NAVSPOT v6.4: INSTALACAO 100% CONCLUIDA!"
+:log info "Todas as portas (ether2-5) estao na bridge1"
+:log info "Hotspot ativo em 192.168.88.1"
+:log info "Sync rodando a cada ${syncIntervalMinutes} minuto(s)"
+:log info "=========================================="
+```
+
+### Lógica de Migração Parcial (Bootstrap)
+
+Excluir ether2 da migração automática:
+
+```typescript
+// Portas para migrar na Parte 1 (excluir ether2 e WAN)
+const partialPorts = lanPorts.filter(p => p !== 'ether2')
+const partialMigrationOrder = [...partialPorts].sort((a, b) => b.localeCompare(a)) // 5, 4, 3
+```
+
+Mensagem de pausa no final do bootstrap:
+
+```routeros
+# 12. PAUSA PARA TROCA DE CABO
+:log warning "=========================================="
+:log warning "NAVSPOT: MIGRACAO PARCIAL CONCLUIDA"
+:log warning "ACAO NECESSARIA:"
+:log warning "1. Desconecte o cabo da ether2"
+:log warning "2. Conecte na ether3, ether4 ou ether5"
+:log warning "3. Reconecte o Winbox em 192.168.88.1"
+:log warning "4. Rode: /import navspot-finalize-ether2.rsc"
+:log warning "=========================================="
 ```
 
 ---
 
-## Nova Estrutura do Script v6.1
+## Mudanças no ScriptModal
+
+### Nova Interface de Props
+
+```typescript
+interface ScriptModalProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  bootstrapScript: string;      // Parte 1
+  finalizeScript: string;       // Parte 2
+  hotspotName: string;
+  onRegenerate?: () => void;
+  isRegenerating?: boolean;
+}
+```
+
+### Layout com Duas Seções
+
+1. **Seção "Parte 1: Bootstrap"**
+   - Alert com instruções de upload e execução
+   - Textarea com script bootstrap
+   - Botões: Copiar + Download navspot-bootstrap.rsc
+
+2. **Separador visual + Checklist de troca de cabo**
+
+3. **Seção "Parte 2: Finalização"**
+   - Alert com instruções pós-troca
+   - Textarea com script de finalização
+   - Botões: Copiar + Download navspot-finalize-ether2.rsc
+
+### Downloads Separados
+
+```typescript
+const handleDownloadBootstrap = () => {
+  const blob = new Blob([bootstrapScript], { type: "text/plain" });
+  downloadFile(blob, "navspot-bootstrap.rsc");
+};
+
+const handleDownloadFinalize = () => {
+  const blob = new Blob([finalizeScript], { type: "text/plain" });
+  downloadFile(blob, "navspot-finalize-ether2.rsc");
+};
+```
+
+---
+
+## Mudanças na Página Embarcacoes.tsx
+
+### Estados Adicionais
+
+```typescript
+const [bootstrapScript, setBootstrapScript] = useState("");
+const [finalizeScript, setFinalizeScript] = useState("");
+```
+
+### Consumir Nova Resposta
+
+```typescript
+generateScript.mutate(hotspot.id, {
+  onSuccess: (data) => {
+    setBootstrapScript(data.bootstrap_script || "");
+    setFinalizeScript(data.finalize_script || "");
+    setScriptModalOpen(true);
+  },
+});
+```
+
+### Atualizar Props do Modal
+
+```tsx
+<ScriptModal
+  open={scriptModalOpen}
+  onOpenChange={setScriptModalOpen}
+  bootstrapScript={bootstrapScript}
+  finalizeScript={finalizeScript}
+  hotspotName={selectedEmbarcacao?.hotspot?.nome || ""}
+  onRegenerate={() => generateScript.mutate(selectedHotspotId)}
+  isRegenerating={generateScript.isPending}
+/>
+```
+
+---
+
+## Fluxo de Instalação Completo
 
 ```text
-# 0. VALIDACAO INICIAL
-  - Verificar se interface WAN existe
-  - Abortar se não existir
+PARTE 1: BOOTSTRAP
+──────────────────
+1. Técnico conectado na ether2 via MAC/Winbox
+2. Upload de navspot-bootstrap.rsc
+3. Terminal: /import navspot-bootstrap.rsc
+4. Script configura tudo + migra ether5, ether4, ether3
+5. Script PARA e exibe mensagem de ação necessária
+6. Técnico ainda conectado (ether2 não migrada)
 
-# 1. LIMPEZA INICIAL
-  - Remover configs navspot existentes
-  - Delay 2s
+TROCA DE CABO
+─────────────
+7. Técnico desconecta cabo da ether2
+8. Conecta na ether3, 4 ou 5 (já na bridge1)
+9. Reconecta Winbox via 192.168.88.1
 
-# 2. CONFIGURAR WAN (ANTES da bridge)
-  - Remover DHCP client existente na interface
-  - Adicionar DHCP client novo
-  - Log
+PARTE 2: FINALIZAÇÃO
+────────────────────
+10. Upload de navspot-finalize-ether2.rsc (se ainda não fez)
+11. Terminal: /import navspot-finalize-ether2.rsc
+12. Validações: bridge1 existe? IP existe?
+13. Se OK: Migra ether2 → bridge1
+14. Remove bridge defconf
+15. INSTALAÇÃO 100% CONCLUÍDA
+```
 
+---
+
+## Validações do Finalize Script
+
+| Validação | Erro se Falhar | Ação |
+|-----------|----------------|------|
+| bridge1 existe | "Execute a Parte 1 primeiro" | Aborta |
+| IP 192.168.88.1/24 existe | "Execute a Parte 1 primeiro" | Aborta |
+
+Essas validações garantem que:
+- O técnico não resetou o MikroTik acidentalmente
+- A Parte 1 foi executada corretamente
+- A infraestrutura está pronta para receber a ether2
+
+---
+
+## Estrutura do Bootstrap Script v6.4 (Parte 1)
+
+```routeros
+:log info "NAVSPOT v6.4: Iniciando instalacao..."
+
+# 0. VALIDACAO INICIAL (WAN existe)
+# 1. LIMPEZA INICIAL (fabrica + navspot)
+# 2. CONFIGURAR WAN (DHCP client)
 # 3. IDENTIDADE
-  - Set system identity
-
 # 4. CRIAR BRIDGE1 VAZIA
-  - Delay 1s
-
-# 5. CONFIGURAR REDE NA BRIDGE1
-  - IP, Pool, DHCP, DNS
-
+# 5. CONFIGURAR REDE NA BRIDGE1 (IP, Pool, DHCP, DNS)
 # 6. NAT
-  - Masquerade na WAN
-
 # 7. HOTSPOT
-  - Profile + Server
-
 # 8. WALLED GARDEN
-  - DNS, DHCP, Supabase
-
 # 9. TOKEN
-  - Criar arquivo e salvar
-
 # 10. SYNC SCRIPT + SCHEDULER
 
-# 11. MIGRACAO SEGURA DE PORTAS
-  - ether5 → log → delay 500ms
-  - ether4 → log → delay 500ms
-  - ether3 → log → delay 500ms
-  - ether2 → log (sem delay - última)
+# 11. MIGRACAO PARCIAL DE PORTAS (apenas ether3, 4, 5)
+:log info "NAVSPOT: Iniciando migracao PARCIAL de portas..."
+[migrar ether5 → delay 2s]
+[migrar ether4 → delay 2s]
+[migrar ether3 → delay 2s]
 
-# 12. LIMPEZA FINAL
-  - Remover bridge defconf
+# 12. PAUSA PARA TROCA DE CABO
+:log warning "=========================================="
+:log warning "NAVSPOT: MIGRACAO PARCIAL CONCLUIDA"
+:log warning "ACAO NECESSARIA: [instruções]"
+:log warning "=========================================="
 
-# 13. FINALIZACAO
-  - Logs finais
+# 13. FINALIZACAO PARCIAL
+:log info "NAVSPOT v6.4 Parte 1: Bootstrap parcial concluido"
 ```
 
 ---
 
-## Mudanças Técnicas no Código
+## Comparação de Versões
 
-### Atualizar wanConfig
-
-```typescript
-// Configuração WAN com remoção prévia
-const wanConfig = wanType === 'dhcp' 
-  ? `:do { /ip dhcp-client remove [find interface=${wanInterface}] } on-error={}
-/ip dhcp-client add interface=${wanInterface} disabled=no comment="navspot-wan"
-:log info "NAVSPOT: DHCP client em ${wanInterface}"`
-  : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
-```
-
-### Atualizar portMigrationCommands
-
-```typescript
-// Gerar comandos com delays e logs individuais
-const portMigrationCommands = migrationOrder.map((port, index) => {
-  const isLast = index === migrationOrder.length - 1
-  const delay = isLast ? '' : '\n:delay 500ms'
-  const logMessage = isLast 
-    ? `NAVSPOT: ${port} migrada - Winbox vai reconectar`
-    : `NAVSPOT: ${port} migrada`
-  
-  return `:do { /interface bridge port remove [find interface=${port}] } on-error={}
-/interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan"
-:log info "${logMessage}"${delay}`
-}).join('\n\n')
-```
-
-### Atualizar Template Principal
-
-```typescript
-return `:log info "NAVSPOT v6.1: Iniciando instalacao..."
-
-# 0. VALIDACAO INICIAL
-:if ([:len [/interface find name="${wanInterface}"]] = 0) do={
-  :log error "NAVSPOT: ERRO CRITICO - Interface ${wanInterface} nao existe!"
-  :error "Abortando: WAN inexistente"
-}
-:log info "NAVSPOT: Interface WAN (${wanInterface}) validada"
-
-# 1. LIMPEZA INICIAL (remover configs antigas)
-...
-
-# 2. CONFIGURAR WAN (antes de criar bridge)
-${wanConfig}
-
-# 3. IDENTIDADE
-/system identity set name="${embarcacao.nome}"
-
-# 4. CRIAR BRIDGE1 VAZIA (sem portas ainda)
-...
-
-# 5-10. [resto igual]
-
-# 11. MIGRACAO SEGURA DE PORTAS
-:log info "NAVSPOT: Iniciando migracao de portas..."
-${portMigrationCommands}
-
-# 12. LIMPEZA FINAL (remover bridge defconf vazia)
-:do { /interface bridge remove [find name="bridge"] } on-error={}
-:log info "NAVSPOT: Bridge defconf removida"
-
-# 13. FINALIZACAO
-...`
-```
-
----
-
-## Comparação v6.0 vs v6.1
-
-| Aspecto | v6.0 (Atual) | v6.1 (Novo) |
-|---------|--------------|-------------|
-| Validação WAN | Nenhuma | Aborta se não existe |
-| Ordem da WAN | Seção 10 (após tudo) | Seção 2 (início) |
-| DHCP client | Apenas add | Remove + Add |
-| Delay entre portas | Nenhum | 500ms cada |
-| Log por porta | Apenas no final | Cada porta individualmente |
-| Bridge defconf | Permanece vazia | Removida |
-| Versão | 6.0 | 6.1 |
+| Aspecto | v6.2 | v6.4 |
+|---------|------|------|
+| Scripts gerados | 1 | 2 |
+| Migração ether2 | Automática | Manual (Parte 2) |
+| Conexão durante script | Cai no final | Mantida |
+| Validações na Parte 2 | N/A | bridge1 + IP |
+| Controle do técnico | Nenhum | Total |
+| Recuperação de erro | Difícil | Fácil |
 
 ---
 
@@ -255,10 +275,9 @@ ${portMigrationCommands}
 
 | Benefício | Descrição |
 |-----------|-----------|
-| Zero DHCP duplicado | Remove antes de adicionar |
-| WAN validada | Aborta cedo se interface não existe |
-| Migração estável | Delays previnem conflitos de switch chip |
-| Debug facilitado | Log por porta individual |
-| Config limpa | Bridge defconf removida |
-| Ordem correta | WAN antes da bridge |
+| Segurança total | Validações impedem execução em estado inconsistente |
+| Zero perda de conexão | Ether2 só migra na Parte 2 |
+| Controle total | Técnico decide quando trocar cabo |
+| Recuperável | Se Parte 2 falhar, ainda conectado para corrigir |
+| Profissional | Checklist claro para técnicos de campo |
 
