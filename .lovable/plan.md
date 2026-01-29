@@ -1,310 +1,253 @@
 
 
-# NAVSPOT Bootstrap Script v6.0 - Backwards Safe Migration
+# Correção do Bootstrap Script v6.1 - Problemas Críticos
 
-## Problema Atual (v5.3)
+## Problemas Identificados no v6.0
 
-O script atual tem duas falhas críticas:
-
-| Problema | Causa | Resultado |
-|----------|-------|-----------|
-| Portas movidas antes da rede estar pronta | Bridge1 criada e portas adicionadas antes de IP/DHCP/Hotspot | Se migração falhar, MikroTik fica sem rede |
-| Winbox cai no meio do script | ether2 migrado junto com outras portas | Script aborta antes de completar |
-| Ordem incorreta | Infraestrutura (IP, DHCP, NAT) vem DEPOIS das portas | Estado inconsistente |
-
----
-
-## Solução: v6.0 com "Backwards Safe Migration"
-
-Nova ordem de execução que garante que a rede esteja 100% funcional ANTES de mover qualquer porta.
-
-### Princípios v6.0
-
-1. **Bridge1 vazia primeiro** - Criar bridge sem portas inicialmente
-2. **Rede completa na bridge1** - IP, DHCP, Hotspot, NAT, Scripts, Token ANTES das portas
-3. **Migração reversa** - ether5 → ether4 → ether3 → ether2 (usuário conectado por ether2)
-4. **ether2 sempre por último** - Winbox só cai quando tudo está pronto
-5. **Idempotente** - Pode rodar múltiplas vezes sem duplicar
+| # | Problema | Causa | Criticidade |
+|---|----------|-------|-------------|
+| 1 | DHCP client duplicado na WAN | Adiciona sem remover o existente (defconf) | Crítico |
+| 2 | Falta de delay entre migrações | Portas migradas muito rápido, conflitos | Crítico |
+| 3 | Falta validação da interface WAN | Script falha silenciosamente se ether1 não existe | Crítico |
+| 4 | Bridge defconf fica vazia | Lixo de configuração após migração | Opcional |
+| 5 | Falta logs intermediários | Difícil debugar qual porta falhou | Opcional |
 
 ---
 
-## Arquivos a Modificar
+## Arquivo a Modificar
 
 | Arquivo | Ação |
 |---------|------|
-| `supabase/functions/mikrotik-script-generator/index.ts` | Modificar - nova ordem v6.0 |
-| `src/components/modals/ScriptModal.tsx` | Modificar - atualizar versão exibida e instrução de /import |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Modificar - adicionar correções críticas |
 
 ---
 
-## Nova Estrutura do Script v6.0
+## Correções a Aplicar
 
-```text
-# 1. LIMPEZA INICIAL
-  - Remover configurações navspot existentes
-  - Remover bridge1 (sem tocar em outras bridges)
-  - Delay 2s
+### 1. Adicionar Validação Inicial da WAN (Nova Seção 0)
 
-# 2. CRIAR BRIDGE1 VAZIA
-  - /interface bridge add name=bridge1 protocol-mode=rstp
-  - NÃO adicionar portas ainda
-  - Delay 1s
+Antes de qualquer operação, validar que a interface WAN existe:
 
-# 3. CONFIGURAR REDE NA BRIDGE1
-  - IP address (192.168.88.1/24)
-  - IP pool
-  - DHCP server network
-  - DHCP server
-  - DNS
-  - Log: "Rede IP configurada"
-
-# 4. CONFIGURAR NAT
-  - Masquerade na WAN
-  - Log: "NAT configurado"
-
-# 5. CONFIGURAR HOTSPOT
-  - Profile
-  - Server
-  - Log: "Hotspot ativo"
-
-# 6. WALLED GARDEN
-  - DNS, DHCP, Supabase
-
-# 7. TOKEN + SYNC
-  - Criar arquivo token
-  - Criar script sync
-  - Criar scheduler
-
-# 8. IDENTIDADE
-  - /system identity set name
-
-# 9. CONFIGURAR WAN (se DHCP)
-  - DHCP client na interface WAN
-
-# 10. MIGRAÇÃO SEGURA DE PORTAS (ORDEM REVERSA)
-  - ether5 → bridge1
-  - ether4 → bridge1
-  - ether3 → bridge1
-  - ether2 → bridge1 (ÚLTIMO - derruba Winbox)
-
-# 11. LOGS FINAIS
-  - "Portas migradas com sucesso"
-  - "Bridge1 ativa e funcional"
-  - "Bootstrap v6.0 concluido!"
+```routeros
+# 0. VALIDACAO INICIAL
+:if ([:len [/interface find name="${wanInterface}"]] = 0) do={
+  :log error "NAVSPOT: ERRO CRITICO - Interface ${wanInterface} nao existe!"
+  :error "Abortando: WAN inexistente"
+}
+:log info "NAVSPOT: Interface WAN (${wanInterface}) validada"
 ```
 
----
-
-## Comparação v5.3 vs v6.0
-
-| Aspecto | v5.3 (Atual) | v6.0 (Novo) |
-|---------|--------------|-------------|
-| Ordem de portas | Todas juntas (ether2-5) | Reversa (5→4→3→2) |
-| Quando rede está pronta | Depois de adicionar portas | ANTES de mover portas |
-| Winbox cai quando | No meio da config | No FINAL (tudo pronto) |
-| Risco de estado inconsistente | Alto | Zero |
-| Cada porta | Uma linha (sem remove) | Remove + Add individual |
+Esta validação aborta o script imediatamente se a WAN não existir, evitando configuração parcial.
 
 ---
 
-## Lógica de Migração de Portas
+### 2. Mover Configuração WAN para Antes da Bridge (Nova Seção 2)
 
+Ordem atual (problemática):
+```
+1. Limpeza → 2. Bridge → ... → 10. WAN
+```
+
+Nova ordem (correta):
+```
+0. Validação → 1. Limpeza → 2. WAN → 3. Identidade → 4. Bridge → ...
+```
+
+Isso garante que a WAN esteja pronta antes de qualquer outra configuração.
+
+---
+
+### 3. Remover DHCP Client Existente Antes de Adicionar
+
+Código atual:
+```routeros
+/ip dhcp-client add interface=ether1 disabled=no comment="navspot-wan"
+```
+
+Código corrigido:
+```routeros
+:do { /ip dhcp-client remove [find interface=${wanInterface}] } on-error={}
+/ip dhcp-client add interface=${wanInterface} disabled=no comment="navspot-wan"
+```
+
+Isso previne duplicação de DHCP clients na mesma interface.
+
+---
+
+### 4. Adicionar Delays e Logs nas Migrações de Portas
+
+Código atual:
 ```typescript
-// Gerar migração reversa (excluindo WAN)
-const allPorts = ['ether2', 'ether3', 'ether4', 'ether5']
-const lanPorts = allPorts.filter(p => p !== wanInterface)
-
-// Ordenar para que ether2 seja sempre o último (se estiver na lista)
-const migrationOrder = [...lanPorts].sort((a, b) => {
-  // ether2 sempre por último
-  if (a === 'ether2') return 1
-  if (b === 'ether2') return -1
-  // Restante em ordem reversa (5, 4, 3)
-  return b.localeCompare(a)
-})
-
-// Gerar comandos de migração
 const portMigrationCommands = migrationOrder.map(port => 
   `:do { /interface bridge port remove [find interface=${port}] } on-error={}
 /interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan"`
 ).join('\n')
 ```
 
-Resultado para WAN=ether1:
-```routeros
-:do { /interface bridge port remove [find interface=ether5] } on-error={}
-/interface bridge port add bridge=bridge1 interface=ether5 comment="navspot-lan"
-:do { /interface bridge port remove [find interface=ether4] } on-error={}
-/interface bridge port add bridge=bridge1 interface=ether4 comment="navspot-lan"
-:do { /interface bridge port remove [find interface=ether3] } on-error={}
-/interface bridge port add bridge=bridge1 interface=ether3 comment="navspot-lan"
-:do { /interface bridge port remove [find interface=ether2] } on-error={}
-/interface bridge port add bridge=bridge1 interface=ether2 comment="navspot-lan"
+Código corrigido:
+```typescript
+// Última porta não precisa de delay (script termina logo após)
+const portMigrationCommands = migrationOrder.map((port, index) => {
+  const isLast = index === migrationOrder.length - 1
+  const delay = isLast ? '' : ':delay 500ms'
+  const logMessage = isLast 
+    ? `NAVSPOT: ${port} migrada - Winbox vai reconectar`
+    : `NAVSPOT: ${port} migrada`
+  
+  return `:do { /interface bridge port remove [find interface=${port}] } on-error={}
+/interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan"
+:log info "${logMessage}"${delay ? '\n' + delay : ''}`
+}).join('\n')
 ```
 
 ---
 
-## Atualização do ScriptModal
+### 5. Adicionar Limpeza Final da Bridge Defconf
 
-Mudanças necessárias:
-
-| Item | Antes | Depois |
-|------|-------|--------|
-| Versão exibida | v5.2 | v6.0 |
-| Nome do arquivo | navspot-{hotspot}.rsc | navspot-bootstrap.rsc |
-| Instrução principal | Copiar no terminal | Usar /import |
-| Recomendação | Copy/paste com cuidado | Download + upload + /import |
+Nova seção após migração de portas:
+```routeros
+# 12. LIMPEZA FINAL (remover bridge defconf vazia)
+:do { /interface bridge remove [find name="bridge"] } on-error={}
+:log info "NAVSPOT: Bridge defconf removida"
+```
 
 ---
 
-## Diagrama de Execução v6.0
+## Nova Estrutura do Script v6.1
 
 ```text
-Tempo →
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-[LIMPEZA] → [BRIDGE1 VAZIA] → [IP/DHCP/DNS] → [NAT] → [HOTSPOT]
-                                    ↓
-                            Bridge1 com rede OK
-                                    ↓
-            [WALLED GARDEN] → [TOKEN] → [SYNC] → [SCHEDULER]
-                                    ↓
-                            Infraestrutura 100%
-                                    ↓
-            [MIGRAR ether5] → [MIGRAR ether4] → [MIGRAR ether3]
-                                    ↓
-                            Usuário ainda conectado
-                                    ↓
-                           [MIGRAR ether2] ← Winbox cai aqui
-                                    ↓
-                           Reconectar 192.168.88.1
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
----
-
-## Script Completo v6.0 (Exemplo)
-
-```routeros
-# NAVSPOT Bootstrap v6.0 - Backwards Safe Migration
-# Embarcacao: Nome
-# WAN: ether1 (dhcp)
-
-:log info "NAVSPOT v6.0: Iniciando instalacao..."
+# 0. VALIDACAO INICIAL
+  - Verificar se interface WAN existe
+  - Abortar se não existir
 
 # 1. LIMPEZA INICIAL
-:do { /ip hotspot remove [find name="hs-navspot"] } on-error={}
-:do { /ip hotspot profile remove [find name~"navspot"] } on-error={}
-:do { /ip dhcp-server remove [find name="dhcp-navspot"] } on-error={}
-:do { /ip dhcp-server network remove [find comment="navspot"] } on-error={}
-:do { /ip pool remove [find name="hs-pool-navspot"] } on-error={}
-:do { /ip address remove [find comment="navspot"] } on-error={}
-:do { /ip firewall nat remove [find comment="navspot-nat"] } on-error={}
-:do { /ip hotspot walled-garden remove [find comment~"navspot"] } on-error={}
-:do { /ip hotspot walled-garden ip remove [find comment~"navspot"] } on-error={}
-:do { /interface bridge port remove [find comment="navspot-lan"] } on-error={}
-:do { /interface bridge remove [find name="bridge1"] } on-error={}
-:do { /system script remove [find name="navspot-sync"] } on-error={}
-:do { /system scheduler remove [find name="navspot-sync-scheduler"] } on-error={}
-:do { /file remove "navspot-token.txt" } on-error={}
-:do { /ip dhcp-client remove [find comment="navspot-wan"] } on-error={}
-:delay 2s
-:log info "NAVSPOT: Limpeza concluida"
+  - Remover configs navspot existentes
+  - Delay 2s
 
-# 2. CRIAR BRIDGE1 VAZIA
-/interface bridge add name="bridge1" protocol-mode=rstp auto-mac=yes comment="navspot"
-:delay 1s
-:log info "NAVSPOT: Bridge1 criada (vazia)"
+# 2. CONFIGURAR WAN (ANTES da bridge)
+  - Remover DHCP client existente na interface
+  - Adicionar DHCP client novo
+  - Log
 
-# 3. CONFIGURAR REDE NA BRIDGE1
-/ip address add address=192.168.88.1/24 interface=bridge1 comment="navspot"
-/ip pool add name="hs-pool-navspot" ranges=192.168.88.10-192.168.88.254
-/ip dhcp-server network add address=192.168.88.0/24 gateway=192.168.88.1 dns-server=192.168.88.1 comment="navspot"
-/ip dhcp-server add name="dhcp-navspot" interface=bridge1 address-pool="hs-pool-navspot" disabled=no
-/ip dns set allow-remote-requests=yes servers=8.8.8.8,8.8.4.4
-:log info "NAVSPOT: Rede IP configurada"
+# 3. IDENTIDADE
+  - Set system identity
 
-# 4. NAT
-/ip firewall nat add chain=srcnat out-interface=ether1 action=masquerade comment="navspot-nat"
-:log info "NAVSPOT: NAT configurado em ether1"
+# 4. CRIAR BRIDGE1 VAZIA
+  - Delay 1s
 
-# 5. HOTSPOT
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 dns-name="embarcacao.navspot.local" html-directory=flash/hotspot login-by=http-chap,http-pap
-/ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
-:log info "NAVSPOT: Hotspot ativo"
+# 5. CONFIGURAR REDE NA BRIDGE1
+  - IP, Pool, DHCP, DNS
 
-# 6. WALLED GARDEN
-/ip hotspot walled-garden add dst-host="navspot.local" action=allow comment="navspot-system"
-/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-system"
-/ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
-/ip hotspot walled-garden ip add dst-port=53 protocol=tcp action=accept comment="navspot-dns-tcp"
-/ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
+# 6. NAT
+  - Masquerade na WAN
 
-# 7. TOKEN
-/file print file="navspot-token.txt" where name=""
-:delay 2s
-/file set "navspot-token.txt" contents="TOKEN_AQUI"
-:log info "NAVSPOT: Token salvo"
+# 7. HOTSPOT
+  - Profile + Server
 
-# 8. SYNC SCRIPT + SCHEDULER
-/system script add name="navspot-sync" policy=read,write,policy,test source="..."
-/system scheduler add name="navspot-sync-scheduler" interval=5m on-event="navspot-sync" start-time=startup
-:log info "NAVSPOT: Sync configurado"
+# 8. WALLED GARDEN
+  - DNS, DHCP, Supabase
 
-# 9. IDENTIDADE
-/system identity set name="Nome Embarcacao"
+# 9. TOKEN
+  - Criar arquivo e salvar
 
-# 10. WAN (DHCP)
-/ip dhcp-client add interface=ether1 disabled=no comment="navspot-wan"
-:log info "NAVSPOT: DHCP client em ether1"
+# 10. SYNC SCRIPT + SCHEDULER
 
-# 11. MIGRACAO SEGURA DE PORTAS (ordem reversa, ether2 por ultimo)
-:log info "NAVSPOT: Iniciando migracao de portas..."
-:do { /interface bridge port remove [find interface=ether5] } on-error={}
-/interface bridge port add bridge=bridge1 interface=ether5 comment="navspot-lan"
-:do { /interface bridge port remove [find interface=ether4] } on-error={}
-/interface bridge port add bridge=bridge1 interface=ether4 comment="navspot-lan"
-:do { /interface bridge port remove [find interface=ether3] } on-error={}
-/interface bridge port add bridge=bridge1 interface=ether3 comment="navspot-lan"
-:log info "NAVSPOT: Portas 5,4,3 migradas"
-:do { /interface bridge port remove [find interface=ether2] } on-error={}
-/interface bridge port add bridge=bridge1 interface=ether2 comment="navspot-lan"
-:log info "NAVSPOT: ether2 migrada - Winbox vai reconectar"
+# 11. MIGRACAO SEGURA DE PORTAS
+  - ether5 → log → delay 500ms
+  - ether4 → log → delay 500ms
+  - ether3 → log → delay 500ms
+  - ether2 → log (sem delay - última)
 
-# 12. FINALIZACAO
-:log info "NAVSPOT: Portas migradas com sucesso"
-:log info "NAVSPOT: Bridge1 ativa e funcional"
-:log info "NAVSPOT v6.0: Bootstrap concluido!"
-:log info "NAVSPOT: Reconecte via 192.168.88.1"
+# 12. LIMPEZA FINAL
+  - Remover bridge defconf
+
+# 13. FINALIZACAO
+  - Logs finais
 ```
 
 ---
 
-## Mudanças no ScriptModal
+## Mudanças Técnicas no Código
 
-Atualizar para:
+### Atualizar wanConfig
 
-1. Versão exibida: v6.0
-2. Nome do arquivo: `navspot-bootstrap.rsc` (fixo)
-3. Instrução principal enfatizando `/import`:
-
-```tsx
-<AlertDescription>
-  <p className="mb-2">
-    <strong>IMPORTANTE:</strong> Este script deve ser executado via{" "}
-    <code>/import</code>, não por copy/paste no terminal.
-  </p>
-  <ol>
-    <li>Clique em "Download .rsc"</li>
-    <li>No Winbox, vá em Files e faça upload do arquivo</li>
-    <li>No terminal, execute: <code>/import navspot-bootstrap.rsc</code></li>
-    <li>Aguarde 30 segundos e reconecte via 192.168.88.1</li>
-  </ol>
-</AlertDescription>
+```typescript
+// Configuração WAN com remoção prévia
+const wanConfig = wanType === 'dhcp' 
+  ? `:do { /ip dhcp-client remove [find interface=${wanInterface}] } on-error={}
+/ip dhcp-client add interface=${wanInterface} disabled=no comment="navspot-wan"
+:log info "NAVSPOT: DHCP client em ${wanInterface}"`
+  : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 ```
 
-4. Verificação pós-instalação: `NAVSPOT v6.0: Bootstrap concluido!`
+### Atualizar portMigrationCommands
+
+```typescript
+// Gerar comandos com delays e logs individuais
+const portMigrationCommands = migrationOrder.map((port, index) => {
+  const isLast = index === migrationOrder.length - 1
+  const delay = isLast ? '' : '\n:delay 500ms'
+  const logMessage = isLast 
+    ? `NAVSPOT: ${port} migrada - Winbox vai reconectar`
+    : `NAVSPOT: ${port} migrada`
+  
+  return `:do { /interface bridge port remove [find interface=${port}] } on-error={}
+/interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan"
+:log info "${logMessage}"${delay}`
+}).join('\n\n')
+```
+
+### Atualizar Template Principal
+
+```typescript
+return `:log info "NAVSPOT v6.1: Iniciando instalacao..."
+
+# 0. VALIDACAO INICIAL
+:if ([:len [/interface find name="${wanInterface}"]] = 0) do={
+  :log error "NAVSPOT: ERRO CRITICO - Interface ${wanInterface} nao existe!"
+  :error "Abortando: WAN inexistente"
+}
+:log info "NAVSPOT: Interface WAN (${wanInterface}) validada"
+
+# 1. LIMPEZA INICIAL (remover configs antigas)
+...
+
+# 2. CONFIGURAR WAN (antes de criar bridge)
+${wanConfig}
+
+# 3. IDENTIDADE
+/system identity set name="${embarcacao.nome}"
+
+# 4. CRIAR BRIDGE1 VAZIA (sem portas ainda)
+...
+
+# 5-10. [resto igual]
+
+# 11. MIGRACAO SEGURA DE PORTAS
+:log info "NAVSPOT: Iniciando migracao de portas..."
+${portMigrationCommands}
+
+# 12. LIMPEZA FINAL (remover bridge defconf vazia)
+:do { /interface bridge remove [find name="bridge"] } on-error={}
+:log info "NAVSPOT: Bridge defconf removida"
+
+# 13. FINALIZACAO
+...`
+```
+
+---
+
+## Comparação v6.0 vs v6.1
+
+| Aspecto | v6.0 (Atual) | v6.1 (Novo) |
+|---------|--------------|-------------|
+| Validação WAN | Nenhuma | Aborta se não existe |
+| Ordem da WAN | Seção 10 (após tudo) | Seção 2 (início) |
+| DHCP client | Apenas add | Remove + Add |
+| Delay entre portas | Nenhum | 500ms cada |
+| Log por porta | Apenas no final | Cada porta individualmente |
+| Bridge defconf | Permanece vazia | Removida |
+| Versão | 6.0 | 6.1 |
 
 ---
 
@@ -312,9 +255,10 @@ Atualizar para:
 
 | Benefício | Descrição |
 |-----------|-----------|
-| Rede pronta antes de migrar | IP, DHCP, NAT funcionam mesmo sem portas |
-| Winbox cai no final | Quando tudo já está configurado |
-| Reconexão garantida | Bridge1 já tem IP e DHCP rodando |
-| Idempotente | Remove antes de adicionar cada item |
-| Compatível v6/v7 | Sem variáveis, sem loops |
+| Zero DHCP duplicado | Remove antes de adicionar |
+| WAN validada | Aborta cedo se interface não existe |
+| Migração estável | Delays previnem conflitos de switch chip |
+| Debug facilitado | Log por porta individual |
+| Config limpa | Bridge defconf removida |
+| Ordem correta | WAN antes da bridge |
 
