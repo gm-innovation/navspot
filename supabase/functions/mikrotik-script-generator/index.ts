@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.3 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.2 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -109,7 +109,7 @@ Deno.serve(async (req) => {
       console.error('[script-generator] Failed to save script:', updateError)
     }
 
-    console.log(`[script-generator] Bootstrap script v6.3 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.2 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -118,7 +118,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.3'
+        version: '6.2'
       }),
       { 
         status: 200, 
@@ -167,15 +167,16 @@ function generateBootstrapScript(
     return b.localeCompare(a)
   })
 
-  // Gerar comandos com remove+add ATÔMICO (mesma linha com ponto-e-vírgula)
+  // Gerar comandos de migração com delays e logs individuais
   const portMigrationCommands = migrationOrder.map((port, index) => {
     const isLast = index === migrationOrder.length - 1
-    const delay = isLast ? '' : '\n:delay 1s'
+    const delay = isLast ? '' : '\n:delay 500ms'
     const logMessage = isLast 
       ? `NAVSPOT: ${port} migrada - Winbox vai reconectar`
       : `NAVSPOT: ${port} migrada`
     
-    return `:do { /interface bridge port remove [find interface=${port}]; /interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan" } on-error={}
+    return `:do { /interface bridge port remove [find interface=${port}] } on-error={}
+/interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan"
 :log info "${logMessage}"${delay}`
   }).join('\n\n')
 
@@ -189,8 +190,8 @@ function generateBootstrapScript(
 :log info "NAVSPOT: DHCP client em ${wanInterface}"`
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
-  // Bootstrap script v6.3 - Atomic Port Migration
-  return `:log info "NAVSPOT v6.3: Iniciando instalacao..."
+  // Bootstrap script v6.2 - Factory Default Cleanup
+  return `:log info "NAVSPOT v6.2: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -271,7 +272,7 @@ ${wanConfig}
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
 :log info "NAVSPOT: Sync configurado"
 
-# 11. MIGRACAO SEGURA DE PORTAS (comando atomico, ether2 por ultimo)
+# 11. MIGRACAO SEGURA DE PORTAS (ordem reversa, ether2 por ultimo)
 :log info "NAVSPOT: Iniciando migracao de portas..."
 ${portMigrationCommands}
 
@@ -282,7 +283,7 @@ ${portMigrationCommands}
 # 13. FINALIZACAO
 :log info "NAVSPOT: Portas migradas com sucesso"
 :log info "NAVSPOT: Bridge1 ativa e funcional"
-:log info "NAVSPOT v6.3: Bootstrap concluido!"
+:log info "NAVSPOT v6.2: Bootstrap concluido!"
 :log info "NAVSPOT: Reconecte via ${gateway}"
 `
 }
