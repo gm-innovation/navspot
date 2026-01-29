@@ -10,7 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Copy, Download, Check, RefreshCw, AlertTriangle } from "lucide-react";
+import { Copy, Download, Check, RefreshCw, AlertTriangle, Upload } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
 interface ScriptModalProps {
@@ -55,7 +55,7 @@ export function ScriptModal({
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `navspot-${hotspotName.toLowerCase().replace(/\s+/g, "-")}.rsc`;
+    a.download = "navspot-bootstrap.rsc";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -63,7 +63,7 @@ export function ScriptModal({
     
     toast({
       title: "Download iniciado",
-      description: `Arquivo navspot-${hotspotName}.rsc baixado.`,
+      description: "Arquivo navspot-bootstrap.rsc baixado.",
     });
   };
 
@@ -71,29 +71,49 @@ export function ScriptModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[700px] max-h-[90vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>Script MikroTik - {hotspotName}</DialogTitle>
+          <DialogTitle>Script MikroTik v6.0 - {hotspotName}</DialogTitle>
           <DialogDescription>
-            Copie este script e execute no terminal do seu roteador MikroTik para configurar o hotspot.
+            Execute este script via <code className="bg-muted px-1 rounded">/import</code> para configurar o hotspot de forma segura.
           </DialogDescription>
         </DialogHeader>
         
         {/* Área scrollável */}
         <div className="flex-1 overflow-y-auto space-y-4 pr-2">
+          <Alert className="bg-primary/10 border-primary/50">
+            <Upload className="h-4 w-4 text-primary" />
+            <AlertTitle className="text-primary">
+              Método Recomendado: Upload + /import
+            </AlertTitle>
+            <AlertDescription className="text-primary/80">
+              <p className="mb-2">
+                <strong>IMPORTANTE:</strong> Este script deve ser executado via{" "}
+                <code className="bg-primary/20 px-1 rounded">/import</code>, não por copy/paste no terminal.
+              </p>
+              <ol className="list-decimal list-inside space-y-1 ml-2">
+                <li>Clique em <strong>"Download .rsc"</strong> abaixo</li>
+                <li>No Winbox, vá em <strong>Files</strong> e faça upload do arquivo</li>
+                <li>Abra o <strong>Terminal</strong> e execute:</li>
+              </ol>
+              <code className="block bg-primary/20 p-2 rounded text-xs mt-2 mb-2">/import navspot-bootstrap.rsc</code>
+              <p>
+                Aguarde 30 segundos e reconecte via <code className="bg-primary/20 px-1 rounded">192.168.88.1</code>
+              </p>
+            </AlertDescription>
+          </Alert>
+
           <Alert className="bg-yellow-500/10 border-yellow-500/50">
             <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
             <AlertTitle className="text-yellow-700 dark:text-yellow-400">
-              Atenção: Você perderá a conexão por 10-15 segundos
+              Aviso: Conexão será interrompida brevemente
             </AlertTitle>
             <AlertDescription className="text-yellow-600 dark:text-yellow-300/80">
-              <p className="mb-2">Durante a instalação, a conexão com o MikroTik será interrompida. Para evitar problemas:</p>
-              <ol className="list-decimal list-inside space-y-1 ml-2">
-                <li>Cole o script inteiro no terminal do MikroTik</li>
-                <li>Feche o Winbox <strong>imediatamente</strong> após colar (não espere terminar)</li>
-                <li>Aguarde 30 segundos</li>
-                <li>Reconecte via <code className="bg-yellow-500/20 px-1 rounded">192.168.88.1</code></li>
-              </ol>
-              <p className="mt-2">
-                <strong>Alternativa segura:</strong> Use o botão "Download .rsc", faça upload via Files no Winbox, e execute: <code className="bg-yellow-500/20 px-1 rounded">/import navspot-bootstrap.rsc</code>
+              <p className="mb-2">
+                A conexão Winbox será interrompida no final do script quando a porta ether2 for migrada para a bridge.
+                Isso é <strong>normal e esperado</strong>.
+              </p>
+              <p>
+                O script v6.0 usa "Backwards Safe Migration" - toda a rede (IP, DHCP, Hotspot, NAT) 
+                já estará funcionando antes da migração, garantindo reconexão imediata.
               </p>
             </AlertDescription>
           </Alert>
@@ -110,7 +130,7 @@ export function ScriptModal({
             <h4 className="font-semibold mb-2">Verificação pós-instalação:</h4>
             <p className="text-muted-foreground mb-2">Após reconectar, execute este comando no terminal para verificar se funcionou:</p>
             <code className="block bg-muted p-2 rounded text-xs">/log print where message~"NAVSPOT"</code>
-            <p className="text-muted-foreground mt-2">Deve aparecer: <code className="bg-muted px-1 rounded">NAVSPOT v5.2: Bootstrap concluido!</code></p>
+            <p className="text-muted-foreground mt-2">Deve aparecer: <code className="bg-muted px-1 rounded">NAVSPOT v6.0: Bootstrap concluido!</code></p>
           </div>
         </div>
 
