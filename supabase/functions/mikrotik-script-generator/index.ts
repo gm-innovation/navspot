@@ -220,10 +220,125 @@ function generateBootstrapScript(
   }).join('\n\n')
 
   // v6.5: Script sync inteligente com extração de [[ ]] e chamada ao action-processor
-  const syncScriptSource = `:local token [/file get \\"navspot-token.txt\\" contents]\\r\\n:local syncUrl \\"${syncUrl}\\"\\r\\n:local users \\"\\"\\r\\n/ip hotspot active\\r\\n:foreach a in=[find] do={\\r\\n:local u [get \\$a user]\\r\\n:local m [get \\$a mac-address]\\r\\n:local bi [get \\$a bytes-in]\\r\\n:local bo [get \\$a bytes-out]\\r\\n:set users (\\$users . \\$u . \\",\\" . \\$m . \\",\\" . \\$bi . \\",\\" . \\$bo . \\";\\")\\r\\n}\\r\\n:local body (\\"{\\\\\\\"sync_token\\\\\\\":\\\\\\\"\\" . \\$token . \\"\\\\\\\",\\\\\\\"active_users_csv\\\\\\\":\\\\\\\"\\" . \\$users . \\"\\\\\\\"}\\")\\r\\n:do {\\r\\n:local result [/tool fetch url=\\$syncUrl mode=https http-method=post http-data=\\$body output=user as-value]\\r\\n:if ((\\$result->\\"status\\") = \\"finished\\") do={\\r\\n:local resp (\\$result->\\"data\\")\\r\\n:local start [:find \\$resp \\"[[ \\"]\\r\\n:local end [:find \\$resp \\" ]]\\"]\\r\\n:if (([:len \\$start] > 0) && ([:len \\$end] > 0)) do={\\r\\n:local actions [:pick \\$resp (\\$start + 3) \\$end]\\r\\n:global navspotActions \\$actions\\r\\n/system script run navspot-action-processor\\r\\n}\\r\\n}\\r\\n} on-error={:log warning \\"NAVSPOT-SYNC: Falha\\"}\\r\\n:log info \\"NAVSPOT-SYNC: OK\\"`
+  const syncScriptSource = `:local token [/file get "navspot-token.txt" contents]
+:local syncUrl "${syncUrl}"
+:local users ""
+/ip hotspot active
+:foreach a in=[find] do={
+:local u [get $a user]
+:local m [get $a mac-address]
+:local bi [get $a bytes-in]
+:local bo [get $a bytes-out]
+:set users ($users . $u . "," . $m . "," . $bi . "," . $bo . ";")
+}
+:local body ("{\\"sync_token\\":\\"" . $token . "\\",\\"active_users_csv\\":\\"" . $users . "\\"}")
+:do {
+:local result [/tool fetch url=$syncUrl mode=https http-method=post http-data=$body output=user as-value]
+:if (($result->"status") = "finished") do={
+:local resp ($result->"data")
+:local start [:find $resp "[[ "]
+:local end [:find $resp " ]]"]
+:if (($start >= 0) && ($end >= 0)) do={
+:local actions [:pick $resp ($start + 3) $end]
+:global navspotActions $actions
+/system script run navspot-action-processor
+}
+}
+} on-error={:log warning "NAVSPOT-SYNC: Falha"}
+:log info "NAVSPOT-SYNC: OK"`
 
   // v6.5: Action Processor - processa comandos separados por ; com parsing por |
-  const actionProcessorSource = `:global navspotActions\\r\\n:local rawData \\$navspotActions\\r\\n:if ([:len \\$rawData] = 0) do={:log info \\"NAVSPOT: Sem acoes\\"; :return}\\r\\n:log info \\"NAVSPOT: Processando acoes...\\"\\r\\n:local pos 0\\r\\n:while ([:find \\$rawData \\";\\\" \\$pos] >= 0) do={\\r\\n:local endPos [:find \\$rawData \\";\\\" \\$pos]\\r\\n:local line [:pick \\$rawData \\$pos \\$endPos]\\r\\n:set pos (\\$endPos + 1)\\r\\n:local p1 [:find \\$line \\"|\\"]\\r\\n:if ([:len \\$p1] > 0) do={\\r\\n:local cmd [:pick \\$line 0 \\$p1]\\r\\n:local rest [:pick \\$line (\\$p1 + 1) [:len \\$line]]\\r\\n:if (\\$cmd = \\"create_profile\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local pName [:pick \\$rest 0 \\$p2]\\r\\n:local pRate [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:if ([:len [/ip hotspot user profile find name=\\$pName]] = 0) do={\\r\\n/ip hotspot user profile add name=\\$pName rate-limit=\\$pRate shared-users=1\\r\\n:log info \\"NAVSPOT: Perfil \\$pName criado\\"\\r\\n}\\r\\n}\\r\\n:if (\\$cmd = \\"create_user\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local uName [:pick \\$rest 0 \\$p2]\\r\\n:local sub [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:local p3 [:find \\$sub \\"|\\"]\\r\\n:local uPass [:pick \\$sub 0 \\$p3]\\r\\n:local uProf [:pick \\$sub (\\$p3 + 1) [:len \\$sub]]\\r\\n:if ([:len [/ip hotspot user find name=\\$uName]] = 0) do={\\r\\n/ip hotspot user add name=\\$uName password=\\$uPass profile=\\$uProf comment=\\"navspot-sync\\"\\r\\n:log info \\"NAVSPOT: Usuario \\$uName criado\\"\\r\\n} else={\\r\\n/ip hotspot user set [find name=\\$uName] password=\\$uPass profile=\\$uProf\\r\\n:log info \\"NAVSPOT: Usuario \\$uName atualizado\\"\\r\\n}\\r\\n}\\r\\n:if (\\$cmd = \\"remove_user\\") do={\\r\\n:do {/ip hotspot user remove [find name=\\$rest]} on-error={}\\r\\n:log info \\"NAVSPOT: Usuario \\$rest removido\\"\\r\\n}\\r\\n:if (\\$cmd = \\"disable_user\\") do={\\r\\n:do {/ip hotspot user set [find name=\\$rest] disabled=yes} on-error={}\\r\\n:log info \\"NAVSPOT: Usuario \\$rest desabilitado\\"\\r\\n}\\r\\n:if (\\$cmd = \\"enable_user\\") do={\\r\\n:do {/ip hotspot user set [find name=\\$rest] disabled=no} on-error={}\\r\\n:log info \\"NAVSPOT: Usuario \\$rest habilitado\\"\\r\\n}\\r\\n:if (\\$cmd = \\"kick_session\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local kUser [:pick \\$rest 0 \\$p2]\\r\\n:local kMac [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:do {/ip hotspot active remove [find mac-address=\\$kMac]} on-error={}\\r\\n:log info \\"NAVSPOT: Sessao \\$kUser/\\$kMac encerrada\\"\\r\\n}\\r\\n:if (\\$cmd = \\"update_password\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local uName [:pick \\$rest 0 \\$p2]\\r\\n:local uPass [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:do {/ip hotspot user set [find name=\\$uName] password=\\$uPass} on-error={}\\r\\n:log info \\"NAVSPOT: Senha de \\$uName atualizada\\"\\r\\n}\\r\\n:if (\\$cmd = \\"create_whitelist_domain\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local wName [:pick \\$rest 0 \\$p2]\\r\\n:local domain [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:if ([:len [/ip hotspot walled-garden find dst-host=\\$domain]] = 0) do={\\r\\n/ip hotspot walled-garden add dst-host=\\$domain action=allow comment=\\"navspot-\\$wName\\"\\r\\n:log info \\"NAVSPOT: Whitelist \\$wName - \\$domain adicionado\\"\\r\\n}\\r\\n}\\r\\n:if (\\$cmd = \\"create_blacklist_domain\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local bName [:pick \\$rest 0 \\$p2]\\r\\n:local domain [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:log info \\"NAVSPOT: Blacklist \\$bName - \\$domain registrado (v6.6)\\"\\r\\n}\\r\\n:if (\\$cmd = \\"create_firewall_rule\\") do={\\r\\n:log info \\"NAVSPOT: Regra firewall registrada (v6.6): \\$rest\\"\\r\\n}\\r\\n:if (\\$cmd = \\"update_profile_quota\\") do={\\r\\n:local p2 [:find \\$rest \\"|\\"]\\r\\n:local pName [:pick \\$rest 0 \\$p2]\\r\\n:local quota [:pick \\$rest (\\$p2 + 1) [:len \\$rest]]\\r\\n:local quotaBytes (\\$quota * 1024 * 1024)\\r\\n:do {/ip hotspot user profile set [find name=\\$pName] limit-bytes-total=\\$quotaBytes} on-error={}\\r\\n:log info \\"NAVSPOT: Quota do perfil \\$pName atualizada para \\$quota MB\\"\\r\\n}\\r\\n}\\r\\n}`
+  const actionProcessorSource = `:global navspotActions
+:local rawData $navspotActions
+:if ([:len $rawData] = 0) do={:log info "NAVSPOT: Sem acoes"; :return}
+:log info "NAVSPOT: Processando acoes..."
+:local pos 0
+:while ([:find $rawData ";" $pos] >= 0) do={
+:local endPos [:find $rawData ";" $pos]
+:local line [:pick $rawData $pos $endPos]
+:set pos ($endPos + 1)
+:local p1 [:find $line "|"]
+:if ($p1 >= 0) do={
+:local cmd [:pick $line 0 $p1]
+:local rest [:pick $line ($p1 + 1) [:len $line]]
+:if ($cmd = "create_profile") do={
+:local p2 [:find $rest "|"]
+:local pName [:pick $rest 0 $p2]
+:local pRate [:pick $rest ($p2 + 1) [:len $rest]]
+:if ([:len [/ip hotspot user profile find name=$pName]] = 0) do={
+/ip hotspot user profile add name=$pName rate-limit=$pRate shared-users=1
+:log info "NAVSPOT: Perfil $pName criado"
+}
+}
+:if ($cmd = "create_user") do={
+:local p2 [:find $rest "|"]
+:local uName [:pick $rest 0 $p2]
+:local sub [:pick $rest ($p2 + 1) [:len $rest]]
+:local p3 [:find $sub "|"]
+:local uPass [:pick $sub 0 $p3]
+:local uProf [:pick $sub ($p3 + 1) [:len $sub]]
+:if ([:len [/ip hotspot user find name=$uName]] = 0) do={
+/ip hotspot user add name=$uName password=$uPass profile=$uProf comment="navspot-sync"
+:log info "NAVSPOT: Usuario $uName criado"
+} else={
+/ip hotspot user set [find name=$uName] password=$uPass profile=$uProf
+:log info "NAVSPOT: Usuario $uName atualizado"
+}
+}
+:if ($cmd = "remove_user") do={
+:do {/ip hotspot user remove [find name=$rest]} on-error={}
+:log info "NAVSPOT: Usuario $rest removido"
+}
+:if ($cmd = "disable_user") do={
+:do {/ip hotspot user set [find name=$rest] disabled=yes} on-error={}
+:log info "NAVSPOT: Usuario $rest desabilitado"
+}
+:if ($cmd = "enable_user") do={
+:do {/ip hotspot user set [find name=$rest] disabled=no} on-error={}
+:log info "NAVSPOT: Usuario $rest habilitado"
+}
+:if ($cmd = "kick_session") do={
+:local p2 [:find $rest "|"]
+:local kUser [:pick $rest 0 $p2]
+:local kMac [:pick $rest ($p2 + 1) [:len $rest]]
+:do {/ip hotspot active remove [find mac-address=$kMac]} on-error={}
+:log info "NAVSPOT: Sessao $kUser/$kMac encerrada"
+}
+:if ($cmd = "update_password") do={
+:local p2 [:find $rest "|"]
+:local uName [:pick $rest 0 $p2]
+:local uPass [:pick $rest ($p2 + 1) [:len $rest]]
+:do {/ip hotspot user set [find name=$uName] password=$uPass} on-error={}
+:log info "NAVSPOT: Senha de $uName atualizada"
+}
+:if ($cmd = "create_whitelist_domain") do={
+:local p2 [:find $rest "|"]
+:local wName [:pick $rest 0 $p2]
+:local domain [:pick $rest ($p2 + 1) [:len $rest]]
+:if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
+/ip hotspot walled-garden add dst-host=$domain action=allow comment="navspot-$wName"
+:log info "NAVSPOT: Whitelist $wName - $domain adicionado"
+}
+}
+:if ($cmd = "create_blacklist_domain") do={
+:local p2 [:find $rest "|"]
+:local bName [:pick $rest 0 $p2]
+:local domain [:pick $rest ($p2 + 1) [:len $rest]]
+:log info "NAVSPOT: Blacklist $bName - $domain registrado (v6.6)"
+}
+:if ($cmd = "create_firewall_rule") do={
+:log info "NAVSPOT: Regra firewall registrada (v6.6): $rest"
+}
+:if ($cmd = "update_profile_quota") do={
+:local p2 [:find $rest "|"]
+:local pName [:pick $rest 0 $p2]
+:local quota [:pick $rest ($p2 + 1) [:len $rest]]
+:local quotaBytes ($quota * 1024 * 1024)
+:do {/ip hotspot user profile set [find name=$pName] limit-bytes-total=$quotaBytes} on-error={}
+:log info "NAVSPOT: Quota do perfil $pName atualizada para $quota MB"
+}
+}
+}`
 
   // Configuração WAN com remoção prévia do DHCP client existente
   const wanConfig = wanType === 'dhcp' 
@@ -303,12 +418,15 @@ ${wanConfig}
 /ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
 /ip hotspot walled-garden ip add dst-port=53 protocol=tcp action=accept comment="navspot-dns-tcp"
 /ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
+/ip hotspot walled-garden ip add dst-port=123 protocol=udp action=accept comment="navspot-ntp"
+/ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
+:log info "NAVSPOT: Walled Garden configurado"
 
 # 9. TOKEN
-/file print file="navspot-token.txt" where name=""
-:delay 2s
-/file set "navspot-token.txt" contents="${hotspot.sync_token}"
-:log info "NAVSPOT: Token salvo"
+:do { /file remove "navspot-token.txt" } on-error={}
+:delay 1s
+/file add name="navspot-token.txt" contents="${hotspot.sync_token}"
+:log info "NAVSPOT: Token criado"
 
 # 10. SYNC SCRIPT v6.5 + ACTION PROCESSOR
 /system script add name="navspot-action-processor" policy=read,write,policy,test source="${actionProcessorSource}"
