@@ -1,221 +1,210 @@
 
-# Correção: Status de Hotspot Incorreto (Mostrando Online quando está Offline)
+
+# Script Bootstrap v5.2 - Limpeza Total de Bridges + Aviso de Desconexao
 
 ## Problema Identificado
 
-O sistema mostra "Hotspot: Online" na lista de embarcações mesmo quando o hotspot não está sincronizando. Isso acontece porque:
+Quando o script e executado via terminal do Winbox, ele:
 
-| Fluxo Atual | Resultado |
-|-------------|-----------|
-| MikroTik envia sync | Status = online, ultima_sincronizacao = agora |
-| MikroTik para de enviar | **Nada acontece** - status permanece "online" |
+1. Remove a bridge padrao (defconf) enquanto o usuario esta conectado por ela
+2. A sessao do Winbox cai
+3. O script para de executar no meio
+4. O MikroTik fica em estado inconsistente
 
-O banco de dados mostra:
-- **Status**: online
-- **Última sincronização**: 28/01/2026 às 20:56:13 (já faz tempo)
-- **Intervalo configurado**: 1 minuto
-
-O hotspot deveria estar "offline" pois não sincroniza há muito mais tempo que o intervalo configurado.
+O script v5.1 atual NAO limpa as bridges existentes antes de criar a bridge1, causando conflitos.
 
 ---
 
-## Soluções Disponíveis
+## Mudancas Necessarias
 
-Existem duas abordagens para corrigir isso:
+### 1. Frontend - Adicionar Aviso no ScriptModal
 
-### Opção A: Cálculo Dinâmico no Frontend (Recomendada)
+Antes de mostrar o script, exibir um alerta amarelo com instrucoes de seguranca:
 
-Em vez de confiar no campo `status` do banco, calcular dinamicamente se o hotspot está online baseado em:
-- `ultima_sincronizacao` (quando foi a última vez que sincronizou)
-- `sync_interval_minutes` (intervalo esperado entre sincronizações)
+| Item | Conteudo |
+|------|----------|
+| Titulo | Atencao: Voce perdera a conexao por 10-15 segundos |
+| Instrucao 1 | Cole o script inteiro no terminal do MikroTik |
+| Instrucao 2 | Feche o Winbox imediatamente apos colar (nao espere terminar) |
+| Instrucao 3 | Aguarde 30 segundos |
+| Instrucao 4 | Reconecte via 192.168.88.1 |
+| Alternativa | Salve o script como .rsc, faca upload via Files no Winbox, e execute via /import |
 
-**Regra**: Se `ultima_sincronizacao` foi há mais de 2x o `sync_interval_minutes`, considerar offline.
+### 2. Backend - Script v5.2 com Limpeza Total de Bridges
 
-**Vantagens**:
-- Implementação imediata
-- Não requer processos em background
-- Sempre mostra estado real
+Adicionar bloco de limpeza de bridges ANTES de criar a bridge1:
 
-### Opção B: Job Periódico no Backend
-
-Criar uma Edge Function que roda periodicamente (cron) para verificar hotspots e marcar como offline aqueles que não sincronizam há tempo.
-
-**Desvantagens**:
-- Requer configuração de scheduler
-- Pode haver atraso entre a detecção e a atualização
-
----
-
-## Implementação Proposta (Opção A)
-
-### 1. Criar Função de Cálculo de Status Real
-
-```typescript
-function getHotspotRealStatus(hotspot: {
-  status: string;
-  ultima_sincronizacao: string | null;
-  sync_interval_minutes: number;
-}): 'online' | 'offline' | 'alerta' {
-  if (!hotspot.ultima_sincronizacao) {
-    return 'offline';
-  }
-  
-  const lastSync = new Date(hotspot.ultima_sincronizacao).getTime();
-  const now = Date.now();
-  const diffMinutes = (now - lastSync) / (1000 * 60);
-  
-  // Se não sincronizou há mais de 2x o intervalo, está offline
-  const threshold = hotspot.sync_interval_minutes * 2;
-  
-  if (diffMinutes > threshold) {
-    return 'offline';
-  }
-  
-  // Se está no limite (entre 1x e 2x), mostrar alerta
-  if (diffMinutes > hotspot.sync_interval_minutes) {
-    return 'alerta';
-  }
-  
-  return 'online';
-}
-```
-
-### 2. Atualizar a Página Embarcacoes.tsx
-
-Modificar a função `getHotspotStatusInfo` para usar o cálculo dinâmico:
-
-```typescript
-const getHotspotStatusInfo = (embarcacaoId: string) => {
-  const hotspot = getHotspotForEmbarcacao(embarcacaoId);
-  if (!hotspot) {
-    return { status: 'sem_config', label: 'Sem config', color: '...' };
-  }
-  
-  // Calcular status real baseado na última sincronização
-  const realStatus = getHotspotRealStatus({
-    status: hotspot.status,
-    ultima_sincronizacao: hotspot.ultima_sincronizacao,
-    sync_interval_minutes: hotspot.sync_interval_minutes || 5
-  });
-  
-  switch (realStatus) {
-    case 'online':
-      return { status: 'online', label: 'Online', color: 'bg-green-...' };
-    case 'alerta':
-      return { status: 'alerta', label: 'Alerta', color: 'bg-yellow-...' };
-    case 'offline':
-      return { status: 'offline', label: 'Offline', color: 'bg-red-...' };
-  }
-};
-```
-
-### 3. Atualizar Outros Componentes
-
-Os seguintes componentes também precisam usar a mesma lógica:
-
-| Componente | Arquivo | Uso Atual |
-|------------|---------|-----------|
-| HotspotsStatusPanel | `src/components/monitoring/HotspotsStatusPanel.tsx` | Usa `hotspot.status` diretamente |
-| StatusHeader | `src/components/uptime/StatusHeader.tsx` | Usa status do banco |
-| Dashboard | `src/hooks/useDashboard.ts` | Conta hotspots por status |
-| useMonitoramento | `src/hooks/useMonitoramento.ts` | Usa status do banco |
-
-### 4. Criar Utilitário Compartilhado
-
-Criar um arquivo com a função de cálculo para reutilização:
-
-**Arquivo**: `src/utils/hotspotStatus.ts`
-
-```typescript
-export interface HotspotStatusInput {
-  status: string;
-  ultima_sincronizacao: string | null;
-  sync_interval_minutes: number;
-}
-
-export function getHotspotRealStatus(hotspot: HotspotStatusInput): 'online' | 'offline' | 'alerta' {
-  if (!hotspot.ultima_sincronizacao) {
-    return 'offline';
-  }
-  
-  const lastSync = new Date(hotspot.ultima_sincronizacao).getTime();
-  const now = Date.now();
-  const diffMinutes = (now - lastSync) / (1000 * 60);
-  
-  const threshold = (hotspot.sync_interval_minutes || 5) * 2;
-  
-  if (diffMinutes > threshold) {
-    return 'offline';
-  }
-  
-  if (diffMinutes > hotspot.sync_interval_minutes) {
-    return 'alerta';
-  }
-  
-  return 'online';
-}
+```text
+Estrutura v5.2:
+1. Cabecalho + Versao 5.2
+2. Variaveis (WANIF, WANTYPE, DNSNAME, TOKEN)
+3. Validar WAN existe
+4. PROTECAO WAN - remover de todas as bridges
+5. LIMPEZA TOTAL DE BRIDGES (NOVO - critico)
+   a) Remover TODAS as bridge ports
+   b) Remover TODAS as bridges (incluindo defconf)
+   c) Delay 3s para estabilizar
+6. Configurar DHCP client na WAN
+7. Criar bridge1 (ambiente limpo)
+8. Adicionar portas LAN
+9. IP/Pool/DHCP/DNS
+10. NAT explicito na WAN
+11. Hotspot Profile + Server
+12. Walled Garden basico
+13. Token file
+14. Script sync (inline)
+15. Scheduler
+16. Verificacao final
+17. Log final v5.2
 ```
 
 ---
 
 ## Arquivos a Modificar
 
-| Arquivo | Ação |
-|---------|------|
-| `src/utils/hotspotStatus.ts` | Criar - função utilitária |
-| `src/pages/Embarcacoes.tsx` | Modificar - usar cálculo dinâmico |
-| `src/components/monitoring/HotspotsStatusPanel.tsx` | Modificar - usar cálculo dinâmico |
-| `src/hooks/useMonitoramento.ts` | Modificar - calcular status real |
-| `src/hooks/useDashboard.ts` | Modificar - contar por status real |
+| Arquivo | Acao | Descricao |
+|---------|------|-----------|
+| `src/components/modals/ScriptModal.tsx` | Modificar | Adicionar aviso de desconexao e instrucoes de seguranca |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Modificar | Script v5.2 com limpeza total de bridges |
 
 ---
 
-## Exemplo Visual
+## Detalhes da Implementacao
 
-Antes (incorreto):
-```
-| Embarcação | Hotspot |
-|------------|---------|
-| Engenharia | Online ✓ | ← Errado! Última sync há 30min
+### ScriptModal.tsx - Novo Aviso
+
+Adicionar um componente Alert antes do textarea do script:
+
+```tsx
+<Alert className="bg-yellow-500/10 border-yellow-500/50 text-yellow-700 dark:text-yellow-400">
+  <AlertTriangle className="h-4 w-4" />
+  <AlertTitle>Atencao: Voce perdera a conexao por 10-15 segundos</AlertTitle>
+  <AlertDescription>
+    <p>Durante a instalacao, a conexao com o MikroTik sera interrompida. Para evitar problemas:</p>
+    <ol>
+      <li>Cole o script inteiro no terminal do MikroTik</li>
+      <li>Feche o Winbox imediatamente apos colar (nao espere terminar)</li>
+      <li>Aguarde 30 segundos</li>
+      <li>Reconecte via 192.168.88.1</li>
+    </ol>
+    <p><strong>Alternativa segura:</strong> Use o botao "Download .rsc", faca upload via Files no Winbox, e execute: /import navspot-bootstrap.rsc</p>
+  </AlertDescription>
+</Alert>
 ```
 
-Depois (correto):
-```
-| Embarcação | Hotspot |
-|------------|---------|
-| Engenharia | Offline | ← Correto! Não sincroniza há 30min (intervalo: 1min)
+### Script Generator - Bloco de Limpeza v5.2
+
+Novo bloco a ser inserido apos a protecao da WAN:
+
+```routeros
+# 3. LIMPEZA TOTAL DE BRIDGES (INCLUINDO defconf)
+:log warning "NAVSPOT: Removendo todas as bridges e ports existentes..."
+/interface bridge port
+:foreach bp in=[find] do={ :do { remove $bp } on-error={} }
+
+/interface bridge
+:foreach b in=[find] do={
+  :local bName [get $b name]
+  :log warning ("NAVSPOT: Removendo bridge: " . $bName)
+  :do { remove $b } on-error={}
+}
+
+:delay 3s
+:log info "NAVSPOT: Bridges limpas"
 ```
 
 ---
 
-## Lógica de Cores
+## Comparacao v5.1 vs v5.2
 
-| Estado | Condição | Cor |
-|--------|----------|-----|
-| Online | Sincronizou há menos que o intervalo | Verde |
-| Alerta | Sincronizou entre 1x e 2x o intervalo | Amarelo |
-| Offline | Sincronizou há mais que 2x o intervalo | Vermelho |
+| Aspecto | v5.1 | v5.2 |
+|---------|------|------|
+| Limpa bridge defconf | Nao | Sim (loop em todas) |
+| Limpa bridge ports | So da WAN | Todas as ports |
+| Delay apos limpeza | Nenhum | 3 segundos |
+| Aviso no frontend | Nao | Sim (alert amarelo) |
+| Instrucoes de reconexao | Basicas | Detalhadas |
+| Opcao import .rsc | Nao mencionada | Recomendada |
 
 ---
 
-## Seção Técnica
+## Estrutura Completa do Script v5.2
 
-### Hook useHotspots Precisa Retornar sync_interval_minutes
+```text
+# ============================================
+# NAVSPOT Bootstrap Script v5.2 - PRODUCAO
+# ============================================
 
-Verificar se o hook `useHotspots` já retorna `sync_interval_minutes` e `ultima_sincronizacao`. Se não, adicionar à query:
+:local WANIF "ether1"
+:local WANTYPE "dhcp"
+:local DNSNAME "{{DNS_NAME}}"
+:local TOKEN "{{SYNC_TOKEN}}"
 
-```typescript
-const { data, error } = await supabase
-  .from('hotspots')
-  .select(`
-    *,
-    embarcacoes(nome, empresas(nome))
-  `)
-  .order('nome');
+:log info "NAVSPOT v5.2: Iniciando instalacao..."
+
+# 1. VALIDACAO DA WAN
+[validar que interface existe]
+
+# 2. PROTECAO DA WAN
+[remover WAN de bridges, verificar se liberada]
+
+# 3. LIMPEZA TOTAL DE BRIDGES (NOVO)
+/interface bridge port
+:foreach bp in=[find] do={ :do { remove $bp } on-error={} }
+/interface bridge
+:foreach b in=[find] do={
+  :local bName [get $b name]
+  :log warning ("NAVSPOT: Removendo bridge: " . $bName)
+  :do { remove $b } on-error={}
+}
+:delay 3s
+
+# 4. CONFIGURAR WAN (DHCP)
+[dhcp-client na WAN]
+
+# 5. CRIAR BRIDGE1
+/interface bridge add name="bridge1" comment="navspot"
+enable [find name="bridge1"]
+:delay 2s
+
+# 6-14. [resto do script igual v5.1]
+
+# 15. VERIFICACAO FINAL
+[garantir WAN isolada]
+
+:log info "NAVSPOT v5.2: Bootstrap concluido!"
 ```
 
-O `*` já inclui todos os campos, então `sync_interval_minutes` e `ultima_sincronizacao` já estão disponíveis.
+---
 
-### Consideração sobre Relógio do Cliente
+## Secao Tecnica
 
-O cálculo depende do relógio do cliente estar correto. Em cenários corporativos, isso geralmente não é um problema, mas pode-se adicionar uma margem de tolerância se necessário.
+### Ordem de Execucao Critica
+
+A limpeza de bridges DEVE ocorrer na seguinte ordem:
+
+1. Primeiro: Remover WAN de bridges (protecao)
+2. Segundo: Remover TODAS as bridge ports (esvaziar bridges)
+3. Terceiro: Remover TODAS as bridges (eliminar defconf)
+4. Quarto: Delay 3s (aguardar kernel estabilizar)
+5. Quinto: Criar bridge1 nova (ambiente limpo)
+
+### Por que a Limpeza Total e Necessaria
+
+O MikroTik vem com uma bridge padrao chamada `defconf` ou `bridgeLocal` que:
+- Contem todas as portas ethernet (ether1-ether5)
+- E usada para acesso inicial via Winbox
+- Conflita com a bridge1 do NAVSPOT
+
+Se nao for removida:
+- As portas ficam em duas bridges ao mesmo tempo
+- O roteamento fica inconsistente
+- A WAN pode acabar na bridge do hotspot
+
+### Delay de 3 Segundos
+
+O delay apos remover bridges e necessario porque:
+- O kernel do RouterOS precisa de tempo para liberar recursos
+- Interfaces que estavam em bridges precisam ser "re-descobertas"
+- Operacoes subsequentes podem falhar se executadas muito rapido
+
