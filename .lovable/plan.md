@@ -1,210 +1,158 @@
 
 
-# Script Bootstrap v5.2 - Limpeza Total de Bridges + Aviso de Desconexao
+# Correção do Modal de Script MikroTik - Scroll e Layout
 
 ## Problema Identificado
 
-Quando o script e executado via terminal do Winbox, ele:
+O modal do script MikroTik está quebrando porque:
 
-1. Remove a bridge padrao (defconf) enquanto o usuario esta conectado por ela
-2. A sessao do Winbox cai
-3. O script para de executar no meio
-4. O MikroTik fica em estado inconsistente
+| Problema | Causa |
+|----------|-------|
+| Conteúdo cortado | `max-h-[90vh]` sem `overflow-y-auto` |
+| Botões invisíveis | Footer fica abaixo da área visível |
+| Não permite scroll | Falta configuração de overflow no container |
 
-O script v5.1 atual NAO limpa as bridges existentes antes de criar a bridge1, causando conflitos.
+O conteúdo do modal inclui:
+- Header (título + descrição)
+- Alert grande (aviso de desconexão com 5+ linhas)
+- Textarea do script (min-h-[300px])
+- Seção de verificação pós-instalação
+- Footer com 3 botões
+
+Isso ultrapassa os 90vh disponíveis em telas menores.
 
 ---
 
-## Mudancas Necessarias
+## Solução
 
-### 1. Frontend - Adicionar Aviso no ScriptModal
+Reorganizar o layout do modal para:
 
-Antes de mostrar o script, exibir um alerta amarelo com instrucoes de seguranca:
-
-| Item | Conteudo |
-|------|----------|
-| Titulo | Atencao: Voce perdera a conexao por 10-15 segundos |
-| Instrucao 1 | Cole o script inteiro no terminal do MikroTik |
-| Instrucao 2 | Feche o Winbox imediatamente apos colar (nao espere terminar) |
-| Instrucao 3 | Aguarde 30 segundos |
-| Instrucao 4 | Reconecte via 192.168.88.1 |
-| Alternativa | Salve o script como .rsc, faca upload via Files no Winbox, e execute via /import |
-
-### 2. Backend - Script v5.2 com Limpeza Total de Bridges
-
-Adicionar bloco de limpeza de bridges ANTES de criar a bridge1:
-
-```text
-Estrutura v5.2:
-1. Cabecalho + Versao 5.2
-2. Variaveis (WANIF, WANTYPE, DNSNAME, TOKEN)
-3. Validar WAN existe
-4. PROTECAO WAN - remover de todas as bridges
-5. LIMPEZA TOTAL DE BRIDGES (NOVO - critico)
-   a) Remover TODAS as bridge ports
-   b) Remover TODAS as bridges (incluindo defconf)
-   c) Delay 3s para estabilizar
-6. Configurar DHCP client na WAN
-7. Criar bridge1 (ambiente limpo)
-8. Adicionar portas LAN
-9. IP/Pool/DHCP/DNS
-10. NAT explicito na WAN
-11. Hotspot Profile + Server
-12. Walled Garden basico
-13. Token file
-14. Script sync (inline)
-15. Scheduler
-16. Verificacao final
-17. Log final v5.2
-```
+1. **Header fixo no topo** (sempre visível)
+2. **Área de conteúdo scrollável** (Alert + Script + Verificação)
+3. **Footer fixo na base** (botões sempre acessíveis)
 
 ---
 
 ## Arquivos a Modificar
 
-| Arquivo | Acao | Descricao |
-|---------|------|-----------|
-| `src/components/modals/ScriptModal.tsx` | Modificar | Adicionar aviso de desconexao e instrucoes de seguranca |
-| `supabase/functions/mikrotik-script-generator/index.ts` | Modificar | Script v5.2 com limpeza total de bridges |
+| Arquivo | Ação |
+|---------|------|
+| `src/components/modals/ScriptModal.tsx` | Modificar - adicionar scroll e reorganizar layout |
 
 ---
 
-## Detalhes da Implementacao
+## Mudanças no ScriptModal.tsx
 
-### ScriptModal.tsx - Novo Aviso
-
-Adicionar um componente Alert antes do textarea do script:
+### Estrutura Atual (Problemática)
 
 ```tsx
-<Alert className="bg-yellow-500/10 border-yellow-500/50 text-yellow-700 dark:text-yellow-400">
-  <AlertTriangle className="h-4 w-4" />
-  <AlertTitle>Atencao: Voce perdera a conexao por 10-15 segundos</AlertTitle>
-  <AlertDescription>
-    <p>Durante a instalacao, a conexao com o MikroTik sera interrompida. Para evitar problemas:</p>
-    <ol>
-      <li>Cole o script inteiro no terminal do MikroTik</li>
-      <li>Feche o Winbox imediatamente apos colar (nao espere terminar)</li>
-      <li>Aguarde 30 segundos</li>
-      <li>Reconecte via 192.168.88.1</li>
-    </ol>
-    <p><strong>Alternativa segura:</strong> Use o botao "Download .rsc", faca upload via Files no Winbox, e execute: /import navspot-bootstrap.rsc</p>
-  </AlertDescription>
-</Alert>
+<DialogContent className="sm:max-w-[700px] max-h-[90vh]">
+  <DialogHeader>...</DialogHeader>
+  <Alert>...</Alert>           // Grande
+  <Textarea>...</Textarea>     // min-h-[300px]
+  <div>Verificação...</div>    // Seção extra
+  <DialogFooter>...</DialogFooter>  // Cortado!
+</DialogContent>
 ```
 
-### Script Generator - Bloco de Limpeza v5.2
+### Estrutura Nova (Corrigida)
 
-Novo bloco a ser inserido apos a protecao da WAN:
-
-```routeros
-# 3. LIMPEZA TOTAL DE BRIDGES (INCLUINDO defconf)
-:log warning "NAVSPOT: Removendo todas as bridges e ports existentes..."
-/interface bridge port
-:foreach bp in=[find] do={ :do { remove $bp } on-error={} }
-
-/interface bridge
-:foreach b in=[find] do={
-  :local bName [get $b name]
-  :log warning ("NAVSPOT: Removendo bridge: " . $bName)
-  :do { remove $b } on-error={}
-}
-
-:delay 3s
-:log info "NAVSPOT: Bridges limpas"
+```tsx
+<DialogContent className="sm:max-w-[700px] max-h-[90vh] flex flex-col">
+  <DialogHeader>...</DialogHeader>
+  
+  {/* Área scrollável */}
+  <div className="flex-1 overflow-y-auto space-y-4 pr-2">
+    <Alert>...</Alert>
+    <Textarea>...</Textarea>
+    <div>Verificação...</div>
+  </div>
+  
+  <DialogFooter>...</DialogFooter>  {/* Sempre visível */}
+</DialogContent>
 ```
 
 ---
 
-## Comparacao v5.1 vs v5.2
+## Detalhes das Classes CSS
 
-| Aspecto | v5.1 | v5.2 |
-|---------|------|------|
-| Limpa bridge defconf | Nao | Sim (loop em todas) |
-| Limpa bridge ports | So da WAN | Todas as ports |
-| Delay apos limpeza | Nenhum | 3 segundos |
-| Aviso no frontend | Nao | Sim (alert amarelo) |
-| Instrucoes de reconexao | Basicas | Detalhadas |
-| Opcao import .rsc | Nao mencionada | Recomendada |
+| Elemento | Classes | Propósito |
+|----------|---------|-----------|
+| DialogContent | `flex flex-col` | Layout flexbox vertical |
+| Container scroll | `flex-1 overflow-y-auto` | Ocupa espaço restante e permite scroll |
+| Container scroll | `pr-2` | Padding para scrollbar não sobrepor conteúdo |
+| Container scroll | `space-y-4` | Espaçamento entre elementos internos |
+| Textarea | `max-h-[250px]` | Limitar altura para caber mais conteúdo |
 
 ---
 
-## Estrutura Completa do Script v5.2
+## Código Corrigido
+
+```tsx
+<Dialog open={open} onOpenChange={onOpenChange}>
+  <DialogContent className="sm:max-w-[700px] max-h-[90vh] flex flex-col">
+    <DialogHeader>
+      <DialogTitle>Script MikroTik - {hotspotName}</DialogTitle>
+      <DialogDescription>
+        Copie este script e execute no terminal do seu roteador MikroTik.
+      </DialogDescription>
+    </DialogHeader>
+    
+    {/* Área scrollável */}
+    <div className="flex-1 overflow-y-auto space-y-4 pr-2">
+      <Alert className="bg-yellow-500/10 border-yellow-500/50">
+        {/* ... conteúdo do alert ... */}
+      </Alert>
+
+      <div className="relative">
+        <Textarea
+          value={script}
+          readOnly
+          className="font-mono text-xs min-h-[200px] max-h-[250px] resize-none"
+        />
+      </div>
+
+      <div className="bg-muted/50 p-4 rounded-lg text-sm">
+        {/* ... verificação pós-instalação ... */}
+      </div>
+    </div>
+
+    <DialogFooter className="flex-col sm:flex-row gap-2 pt-4 border-t">
+      {/* ... botões ... */}
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+```
+
+---
+
+## Ajustes Adicionais
+
+| Elemento | Antes | Depois |
+|----------|-------|--------|
+| Textarea min-h | 300px | 200px |
+| Textarea max-h | nenhum | 250px |
+| DialogFooter | sem borda | `border-t pt-4` |
+| Container interno | nenhum | `overflow-y-auto` |
+
+---
+
+## Resultado Esperado
 
 ```text
-# ============================================
-# NAVSPOT Bootstrap Script v5.2 - PRODUCAO
-# ============================================
-
-:local WANIF "ether1"
-:local WANTYPE "dhcp"
-:local DNSNAME "{{DNS_NAME}}"
-:local TOKEN "{{SYNC_TOKEN}}"
-
-:log info "NAVSPOT v5.2: Iniciando instalacao..."
-
-# 1. VALIDACAO DA WAN
-[validar que interface existe]
-
-# 2. PROTECAO DA WAN
-[remover WAN de bridges, verificar se liberada]
-
-# 3. LIMPEZA TOTAL DE BRIDGES (NOVO)
-/interface bridge port
-:foreach bp in=[find] do={ :do { remove $bp } on-error={} }
-/interface bridge
-:foreach b in=[find] do={
-  :local bName [get $b name]
-  :log warning ("NAVSPOT: Removendo bridge: " . $bName)
-  :do { remove $b } on-error={}
-}
-:delay 3s
-
-# 4. CONFIGURAR WAN (DHCP)
-[dhcp-client na WAN]
-
-# 5. CRIAR BRIDGE1
-/interface bridge add name="bridge1" comment="navspot"
-enable [find name="bridge1"]
-:delay 2s
-
-# 6-14. [resto do script igual v5.1]
-
-# 15. VERIFICACAO FINAL
-[garantir WAN isolada]
-
-:log info "NAVSPOT v5.2: Bootstrap concluido!"
++----------------------------------+
+| Script MikroTik - Nome           | <- Header fixo
++----------------------------------+
+| ⚠️ Atenção: Você perderá...     | 
+| 1. Cole o script...              |  <- Área
+| 2. Feche o Winbox...             |     scrollável
+|                                  |
+| [Script textarea com scroll]     |
+|                                  |
+| Verificação pós-instalação:      |
+| /log print where...              |
++----------------------------------+
+| [Regenerar] [Copiar] [Download]  | <- Footer fixo
++----------------------------------+
 ```
-
----
-
-## Secao Tecnica
-
-### Ordem de Execucao Critica
-
-A limpeza de bridges DEVE ocorrer na seguinte ordem:
-
-1. Primeiro: Remover WAN de bridges (protecao)
-2. Segundo: Remover TODAS as bridge ports (esvaziar bridges)
-3. Terceiro: Remover TODAS as bridges (eliminar defconf)
-4. Quarto: Delay 3s (aguardar kernel estabilizar)
-5. Quinto: Criar bridge1 nova (ambiente limpo)
-
-### Por que a Limpeza Total e Necessaria
-
-O MikroTik vem com uma bridge padrao chamada `defconf` ou `bridgeLocal` que:
-- Contem todas as portas ethernet (ether1-ether5)
-- E usada para acesso inicial via Winbox
-- Conflita com a bridge1 do NAVSPOT
-
-Se nao for removida:
-- As portas ficam em duas bridges ao mesmo tempo
-- O roteamento fica inconsistente
-- A WAN pode acabar na bridge do hotspot
-
-### Delay de 3 Segundos
-
-O delay apos remover bridges e necessario porque:
-- O kernel do RouterOS precisa de tempo para liberar recursos
-- Interfaces que estavam em bridges precisam ser "re-descobertas"
-- Operacoes subsequentes podem falhar se executadas muito rapido
 
