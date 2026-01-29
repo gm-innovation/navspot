@@ -1,227 +1,147 @@
 
 
-# Correções Críticas NAVSPOT v6.5
+# Correção: Aspas Duplas Aninhadas no RouterOS
 
-## Problemas Identificados
+## Problema Identificado
 
-| # | Problema | Localização | Severidade |
-|---|----------|-------------|------------|
-| 1 | Token não criado corretamente | Linhas 307-311 | CRÍTICO |
-| 2 | Parsing de `\|` usando `[:len $p1] > 0` (incorreto) | Linha 226 | CRÍTICO |
-| 3 | Verificação de `[[ ]]` usando `[:len $start] > 0` (incorreto) | Linha 223 | CRÍTICO |
-| 4 | Faltam regras NTP e ICMP no Walled Garden | Linhas 300-305 | MENOR |
+Na linha 432-433 do `mikrotik-script-generator/index.ts`:
+
+```typescript
+/system script add name="navspot-action-processor" policy=read,write,policy,test source="${actionProcessorSource}"
+/system script add name="navspot-sync" policy=read,write,policy,test source="${syncScriptSource}"
+```
+
+Os scripts `syncScriptSource` e `actionProcessorSource` contêm aspas duplas internas (ex: `"navspot-token.txt"`, `"${syncUrl}"`). Quando interpolados dentro de `source="..."`, o RouterOS interpreta a primeira aspa interna como fechamento do `source=`, quebrando toda a sintaxe.
+
+**Erro na linha 86, coluna 42**: O RouterOS vê `source=":local token [/file get "` e entende que o source terminou ali.
 
 ---
 
-## Correção 1: Token (Seção 9)
+## Solução
 
-### Código Atual (Linhas 307-311)
-
-```routeros
-# 9. TOKEN
-/file print file="navspot-token.txt" where name=""
-:delay 2s
-/file set "navspot-token.txt" contents="${hotspot.sync_token}"
-:log info "NAVSPOT: Token salvo"
-```
-
-### Problema
-
-O comando `/file print file="navspot-token.txt" where name=""` não cria o arquivo corretamente. O `/file set` falha porque o arquivo não existe.
-
-### Solução
-
-Usar `/file add` que cria o arquivo e define o conteúdo em um único comando:
-
-```routeros
-# 9. TOKEN
-:do { /file remove "navspot-token.txt" } on-error={}
-:delay 1s
-/file add name="navspot-token.txt" contents="${hotspot.sync_token}"
-:log info "NAVSPOT: Token criado"
-```
+Usar a sintaxe `source={ ... }` (bloco multilinha com chaves) ao invés de `source="..."`. Com chaves, aspas internas não precisam de escape.
 
 ---
 
-## Correção 2: Parsing de `|` no Action Processor
+## Mudanças no Arquivo
 
-### Código Atual (Linha 226)
+**Arquivo**: `supabase/functions/mikrotik-script-generator/index.ts`
 
-```
-:if ([:len $p1] > 0) do={
-```
-
-### Problema
-
-O `[:find]` retorna um número (posição) ou `-1` se não encontrar. Usar `[:len $p1]` não faz sentido para números - isso tenta calcular o comprimento de um número, não verificar se é válido.
-
-### Solução
-
-Verificar se `$p1 >= 0`:
-
-```
-:if ($p1 >= 0) do={
-```
-
----
-
-## Correção 3: Extração de `[[ ]]` no Sync Script
-
-### Código Atual (Linha 223)
-
-```
-:if (([:len $start] > 0) && ([:len $end] > 0)) do={
-```
-
-### Problema
-
-Mesmo problema - `[:find]` retorna um número, não uma string. `[:len]` de um número não é a forma correta de verificar.
-
-### Solução
-
-Verificar se os valores são >= 0:
-
-```
-:if (($start >= 0) && ($end >= 0)) do={
-```
-
----
-
-## Correção 4: Walled Garden (Seção 8)
-
-### Código Atual (Linhas 300-305)
-
-```routeros
-# 8. WALLED GARDEN
-/ip hotspot walled-garden add dst-host="navspot.local" action=allow comment="navspot-system"
-/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-system"
-/ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
-/ip hotspot walled-garden ip add dst-port=53 protocol=tcp action=accept comment="navspot-dns-tcp"
-/ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
-```
-
-### Problema
-
-Faltam regras para NTP (sincronização de relógio) e ICMP (ping/diagnóstico).
-
-### Solução
-
-Adicionar regras para NTP e ICMP:
-
-```routeros
-# 8. WALLED GARDEN
-/ip hotspot walled-garden add dst-host="navspot.local" action=allow comment="navspot-system"
-/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-system"
-/ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
-/ip hotspot walled-garden ip add dst-port=53 protocol=tcp action=accept comment="navspot-dns-tcp"
-/ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
-/ip hotspot walled-garden ip add dst-port=123 protocol=udp action=accept comment="navspot-ntp"
-/ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
-:log info "NAVSPOT: Walled Garden configurado"
-```
-
----
-
-## Arquivo a Modificar
-
-| Arquivo | Ação |
-|---------|------|
-| `supabase/functions/mikrotik-script-generator/index.ts` | Corrigir 4 problemas |
-
----
-
-## Detalhes Técnicos das Mudanças
-
-### 1. Linha 223 - syncScriptSource
+### Mudança 1: Linhas 432-433 - Usar source={ } com chaves
 
 **De:**
 ```typescript
-:if (([:len \\$start] > 0) && ([:len \\$end] > 0)) do={
+/system script add name="navspot-action-processor" policy=read,write,policy,test source="${actionProcessorSource}"
+/system script add name="navspot-sync" policy=read,write,policy,test source="${syncScriptSource}"
 ```
 
 **Para:**
 ```typescript
-:if ((\\$start >= 0) && (\\$end >= 0)) do={
+/system script add name="navspot-action-processor" policy=read,write,policy,test source={
+${actionProcessorSource}
+}
+/system script add name="navspot-sync" policy=read,write,policy,test source={
+${syncScriptSource}
+}
 ```
 
-### 2. Linha 226 - actionProcessorSource
+### Mudança 2: Remover escapes de aspas nos scripts source
 
-**De:**
+Os scripts `syncScriptSource` (linhas 223-248) e `actionProcessorSource` (linhas 251-341) usam `\\"` para escapar aspas, que era necessário dentro de `source="..."`. Com `source={ }`, devemos usar aspas normais.
+
+**syncScriptSource - Linha 234:**
 ```typescript
-:if ([:len \\$p1] > 0) do={
+// De:
+:local body ("{\\"sync_token\\":\\"" . $token . "\\",\\"active_users_csv\\":\\"" . $users . "\\"}")
+
+// Para:
+:local body ("{\"sync_token\":\"" . $token . "\",\"active_users_csv\":\"" . $users . "\"}")
 ```
 
-**Para:**
+Na verdade, como estamos gerando o script RSC que será executado diretamente pelo MikroTik (não em um terminal), as aspas devem ser normais sem escape de barra invertida.
+
+---
+
+## Correções Detalhadas
+
+### syncScriptSource (Linhas 223-248)
+
 ```typescript
-:if (\\$p1 >= 0) do={
+const syncScriptSource = `:local token [/file get "navspot-token.txt" contents]
+:local syncUrl "${syncUrl}"
+:local users ""
+/ip hotspot active
+:foreach a in=[find] do={
+:local u [get \$a user]
+:local m [get \$a mac-address]
+:local bi [get \$a bytes-in]
+:local bo [get \$a bytes-out]
+:set users (\$users . \$u . "," . \$m . "," . \$bi . "," . \$bo . ";")
+}
+:local body ("{\\"sync_token\\":\\"" . \$token . "\\",\\"active_users_csv\\":\\"" . \$users . "\\"}")
+:do {
+:local result [/tool fetch url=\$syncUrl mode=https http-method=post http-data=\$body output=user as-value]
+:if ((\$result->"status") = "finished") do={
+:local resp (\$result->"data")
+:local start [:find \$resp "[[ "]
+:local end [:find \$resp " ]]"]
+:if ((\$start >= 0) && (\$end >= 0)) do={
+:local actions [:pick \$resp (\$start + 3) \$end]
+:global navspotActions \$actions
+/system script run navspot-action-processor
+}
+}
+} on-error={:log warning "NAVSPOT-SYNC: Falha"}
+:log info "NAVSPOT-SYNC: OK"`
 ```
 
-### 3. Linhas 300-311 - Template do Bootstrap
+**Nota**: Com `source={ }`, as aspas dentro do JSON (`{\\"sync_token\\"`) devem permanecer escapadas com `\\` porque é o RouterOS que vai interpretar isso como JSON literal.
 
-**De:**
+### Bootstrap Template (Linhas 432-433)
+
 ```typescript
-# 8. WALLED GARDEN
-/ip hotspot walled-garden add dst-host="navspot.local" action=allow comment="navspot-system"
-/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-system"
-/ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
-/ip hotspot walled-garden ip add dst-port=53 protocol=tcp action=accept comment="navspot-dns-tcp"
-/ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
-
-# 9. TOKEN
-/file print file="navspot-token.txt" where name=""
-:delay 2s
-/file set "navspot-token.txt" contents="${hotspot.sync_token}"
-:log info "NAVSPOT: Token salvo"
-```
-
-**Para:**
-```typescript
-# 8. WALLED GARDEN
-/ip hotspot walled-garden add dst-host="navspot.local" action=allow comment="navspot-system"
-/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-system"
-/ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
-/ip hotspot walled-garden ip add dst-port=53 protocol=tcp action=accept comment="navspot-dns-tcp"
-/ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
-/ip hotspot walled-garden ip add dst-port=123 protocol=udp action=accept comment="navspot-ntp"
-/ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
-:log info "NAVSPOT: Walled Garden configurado"
-
-# 9. TOKEN
-:do { /file remove "navspot-token.txt" } on-error={}
-:delay 1s
-/file add name="navspot-token.txt" contents="${hotspot.sync_token}"
-:log info "NAVSPOT: Token criado"
+# 10. SYNC SCRIPT v6.5 + ACTION PROCESSOR
+/system script add name="navspot-action-processor" policy=read,write,policy,test source={
+${actionProcessorSource}
+}
+/system script add name="navspot-sync" policy=read,write,policy,test source={
+${syncScriptSource}
+}
+/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
+:log info "NAVSPOT: Sync v6.5 + Action Processor configurados"
 ```
 
 ---
 
-## Resumo das Correções
+## Fluxo Após Correção
+
+```text
+1. Usuário importa navspot-bootstrap.rsc no MikroTik
+
+2. Seção 10 é executada:
+   /system script add name="navspot-action-processor" source={
+   :global navspotActions
+   :local rawData $navspotActions
+   ...
+   }
+   
+   /system script add name="navspot-sync" source={
+   :local token [/file get "navspot-token.txt" contents]
+   ...
+   }
+
+3. As aspas internas ("navspot-token.txt") são interpretadas corretamente
+   porque estão dentro de source={ } e não source="..."
+
+4. Scripts são criados sem erros de parsing
+```
+
+---
+
+## Resumo
 
 | Problema | Causa | Solução |
 |----------|-------|---------|
-| Token não criado | `/file print` não cria arquivo | Usar `/file add` |
-| Parsing `\|` quebrado | `[:len $p1]` em número | Usar `$p1 >= 0` |
-| Extração `[[ ]]` quebrada | `[:len $start]` em número | Usar `$start >= 0` |
-| Faltam NTP/ICMP | Regras incompletas | Adicionar regras |
-
----
-
-## Fluxo Após Correções
-
-```text
-1. MikroTik executa navspot-bootstrap.rsc
-   ├── Seção 8: Walled Garden com DNS, DHCP, NTP, ICMP ✓
-   └── Seção 9: Token criado com /file add ✓
-
-2. Scheduler executa navspot-sync a cada 1 min
-   ├── Envia heartbeat
-   ├── Recebe: { pending_actions_pipe: "[[ create_user|joao|123|Tripulacao; ]]" }
-   ├── Extração [[ ]] funciona com $start >= 0 ✓
-   ├── :global navspotActions = "create_user|joao|123|Tripulacao;"
-   └── Chama navspot-action-processor
-
-3. navspot-action-processor executa
-   ├── Parsing de | funciona com $p1 >= 0 ✓
-   └── Cria usuário "joao" com sucesso
-```
+| Erro linha 86, coluna 42 | Aspas duplas aninhadas em `source="..."` | Usar `source={ }` com chaves |
+| Scripts não criados | RouterOS fecha o source prematuramente | Bloco multilinha evita conflitos |
 
