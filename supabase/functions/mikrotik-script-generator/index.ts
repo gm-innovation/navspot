@@ -429,8 +429,12 @@ ${wanConfig}
 :log info "NAVSPOT: Token criado"
 
 # 10. SYNC SCRIPT v6.5 + ACTION PROCESSOR
-/system script add name="navspot-action-processor" policy=read,write,policy,test source="${actionProcessorSource}"
-/system script add name="navspot-sync" policy=read,write,policy,test source="${syncScriptSource}"
+/system script add name="navspot-action-processor" policy=read,write,policy,test source={
+${actionProcessorSource}
+}
+/system script add name="navspot-sync" policy=read,write,policy,test source={
+${syncScriptSource}
+}
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
 :log info "NAVSPOT: Sync v6.5 + Action Processor configurados"
 
