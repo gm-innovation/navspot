@@ -177,7 +177,8 @@ async function createAlertIfNotRecent(
   return data
 }
 
-// v6.9.7: Reconcile users - detect missing and auto-sync
+// v6.9.8: Reconcile users - detect missing and auto-sync
+// CRITICAL FIX: Early return if MikroTik not sending registered_users_csv
 async function reconcileUsers(
   supabase: ReturnType<typeof createClient>,
   hotspot: { id: string; embarcacao_id: string; synced_users: SyncedUserMeta[] },
@@ -185,6 +186,13 @@ async function reconcileUsers(
   registeredUsersCsv: string,
   formattedActions: PendingAction[]
 ): Promise<void> {
+  // v6.9.8: Validate if we have reliable data from MikroTik
+  if (!registeredUsersCsv || registeredUsersCsv.trim().length === 0) {
+    console.warn(`[mikrotik-sync] v6.9.8: WARNING - MikroTik not sending registered_users_csv. Script update required.`)
+    console.warn(`[mikrotik-sync] v6.9.8: Skipping user reconciliation to prevent false positives/loops`)
+    return
+  }
+  
   // Parse registered users from MikroTik (lista COMPLETA de cadastrados)
   const registeredUsersSet = new Set(
     registeredUsersCsv
@@ -192,6 +200,8 @@ async function reconcileUsers(
       .map(u => u.trim())
       .filter(u => u.length > 0)
   )
+  
+  console.log(`[mikrotik-sync] v6.9.8: Registered users from MikroTik: ${registeredUsersSet.size} (${Array.from(registeredUsersSet).slice(0, 5).join(', ')}${registeredUsersSet.size > 5 ? '...' : ''})`)
   
   // Build set of currently active (online) users
   const activeUsersSet = new Set(activeUsers.map(u => u.user))
@@ -212,7 +222,7 @@ async function reconcileUsers(
     .in('status', ['ativo', 'pendente_cadastro'])
   
   if (!tripulantes || tripulantes.length === 0) {
-    console.log('[mikrotik-sync] v6.9.7: No active tripulantes to reconcile')
+    console.log('[mikrotik-sync] v6.9.8: No active tripulantes to reconcile')
     return
   }
   
@@ -220,7 +230,7 @@ async function reconcileUsers(
   const now = new Date().toISOString()
   const nowMs = Date.now()
   
-  console.log(`[mikrotik-sync] v6.9.7: Reconciling ${tripulantes.length} tripulantes. Registered users from MikroTik: ${registeredUsersSet.size}`)
+  console.log(`[mikrotik-sync] v6.9.8: Reconciling ${tripulantes.length} tripulantes`)
   
   for (const tripulante of tripulantes) {
     const login = tripulante.login_wifi
@@ -239,7 +249,7 @@ async function reconcileUsers(
     
     // Check if user exists in MikroTik registered users
     if (registeredUsersSet.has(login)) {
-      // User EXISTS in MikroTik - reset counters
+      // User EXISTS in MikroTik - reset counters, everything is OK
       meta.miss_count = 0
       
       // Update last_seen if also active (online)
@@ -247,17 +257,14 @@ async function reconcileUsers(
         meta.last_seen = now
       }
       
-      console.log(`[mikrotik-sync] v6.9.7: User exists in MikroTik: ${login}`)
+      console.log(`[mikrotik-sync] v6.9.8: User confirmed in MikroTik: ${login}`)
       continue
     }
     
-    // User NOT in registered_users - may need to sync
-    // Only count as missing if we actually received the registered_users list
-    // (registeredUsersCsv empty + no users = MikroTik was reset)
-    if (registeredUsersCsv.length > 0 || registeredUsersSet.size === 0) {
-      meta.miss_count = (meta.miss_count || 0) + 1
-      console.log(`[mikrotik-sync] v6.9.7: User missing from MikroTik, miss_count=${meta.miss_count}: ${login}`)
-    }
+    // User NOT in registered_users - confirmed missing from MikroTik
+    // v6.9.8 FIX: Only increment if we have valid data (already validated above)
+    meta.miss_count = (meta.miss_count || 0) + 1
+    console.log(`[mikrotik-sync] v6.9.8: User confirmed missing, miss_count=${meta.miss_count}: ${login}`)
     
     // Decide if we should re-sync
     const neverSynced = !meta.last_synced_at
@@ -266,6 +273,9 @@ async function reconcileUsers(
     // Cooldown check: don't re-sync too frequently
     const lastSyncTime = meta.last_synced_at ? new Date(meta.last_synced_at).getTime() : 0
     const cooldownElapsed = (nowMs - lastSyncTime) > SYNC_COOLDOWN_MS
+    
+    // v6.9.8: Log decision factors for debugging
+    console.log(`[mikrotik-sync] v6.9.8: Decision for ${login}: neverSynced=${neverSynced}, exceeded=${exceededThreshold}, cooldown=${cooldownElapsed}`)
     
     if ((neverSynced || exceededThreshold) && cooldownElapsed) {
       // Generate create_user action
@@ -286,18 +296,18 @@ async function reconcileUsers(
         }
       })
       
-      // Update metadata
+      // Update metadata to record sync and reset counter
       meta.last_synced_at = now
       meta.miss_count = 0
       
-      console.log(`[mikrotik-sync] v6.9.7: Re-syncing user (neverSynced=${neverSynced}, exceeded=${exceededThreshold}): ${login}`)
+      console.log(`[mikrotik-sync] v6.9.8: Re-syncing user (neverSynced=${neverSynced}, exceeded=${exceededThreshold}): ${login}`)
     }
   }
   
   // Append new actions AFTER profiles (profiles come first in the array)
   if (newActionsToInject.length > 0) {
     formattedActions.push(...newActionsToInject)
-    console.log(`[mikrotik-sync] v6.9.7: Injecting ${newActionsToInject.length} user actions`)
+    console.log(`[mikrotik-sync] v6.9.8: Injecting ${newActionsToInject.length} user actions`)
   }
   
   // Persist updated metadata
@@ -307,7 +317,7 @@ async function reconcileUsers(
     .update({ synced_users: updatedSyncedUsers })
     .eq('id', hotspot.id)
   
-  console.log(`[mikrotik-sync] v6.9.7: Saved synced_users metadata for ${updatedSyncedUsers.length} users`)
+  console.log(`[mikrotik-sync] v6.9.8: Saved synced_users metadata for ${updatedSyncedUsers.length} users`)
 }
 
 Deno.serve(async (req) => {
