@@ -18,6 +18,7 @@ interface SyncPayload {
   sync_token: string
   active_users?: ActiveUser[]
   registered_users_csv?: string  // v6.9.7: Lista completa de usuários cadastrados no MikroTik
+  registered_profiles_csv?: string  // v6.9.9: Lista de perfis do MikroTik para reconciliação
   executed_actions?: string[]
   user_device_counts?: { user: string; count: number; macs: string[] }[]
 }
@@ -768,7 +769,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // v6.9.6: Ensure all company profiles are synced (only NEW profiles)
+    // v6.9.9: Ensure all company profiles are synced with MikroTik data validation
     if (embarcacao) {
       const { data: perfis } = await supabase
         .from('perfis_velocidade')
@@ -787,7 +788,18 @@ Deno.serve(async (req) => {
             .trim()
         }
 
-        // v6.9.6: Get already synced profiles for this hotspot
+        // v6.9.9: Parse registered profiles from MikroTik (source of truth)
+        const registeredProfilesCsv = payload.registered_profiles_csv || ''
+        const registeredProfilesSet = new Set(
+          registeredProfilesCsv
+            .split(',')
+            .map(p => p.trim().toLowerCase())
+            .filter(p => p.length > 0)
+        )
+        
+        console.log(`[mikrotik-sync] v6.9.9: Registered profiles from MikroTik: ${registeredProfilesSet.size} (${Array.from(registeredProfilesSet).slice(0, 5).join(', ')}${registeredProfilesSet.size > 5 ? '...' : ''})`)
+        
+        // v6.9.9: Get cached synced profiles (fallback for older scripts)
         const syncedProfiles = ((hotspot as Record<string, unknown>).synced_profiles || []) as string[]
         const newProfilesToSync: string[] = []
 
@@ -797,10 +809,23 @@ Deno.serve(async (req) => {
               .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
               .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
             
-            // v6.9.6: Skip already synced profiles
-            if (syncedProfiles.includes(slug)) {
-              console.log(`[mikrotik-sync] v6.9.6: Profile already synced, skipping: ${slug}`)
-              return null
+            // v6.9.9: Primary check - does profile exist in MikroTik?
+            // Only trust registeredProfilesSet if MikroTik sent data
+            if (registeredProfilesCsv.length > 0) {
+              if (registeredProfilesSet.has(slug)) {
+                console.log(`[mikrotik-sync] v6.9.9: Profile confirmed in MikroTik: ${slug}`)
+                return null
+              }
+              // Profile NOT in MikroTik - needs sync
+              console.log(`[mikrotik-sync] v6.9.9: Profile missing from MikroTik, will sync: ${slug}`)
+            } else {
+              // v6.9.9: Fallback - MikroTik didn't send profiles (old script)
+              // Use cached synced_profiles but log warning
+              if (syncedProfiles.includes(slug)) {
+                console.log(`[mikrotik-sync] v6.9.9: Profile in cache (no MikroTik data), skipping: ${slug}`)
+                return null
+              }
+              console.warn(`[mikrotik-sync] v6.9.9: No MikroTik profile data, will sync: ${slug}`)
             }
             
             newProfilesToSync.push(slug)
@@ -828,17 +853,17 @@ Deno.serve(async (req) => {
         // Prepend to ensure profiles exist before users
         if (profileActions.length > 0) {
           formattedActions.unshift(...profileActions)
-          console.log(`[mikrotik-sync] v6.9.6: Injecting ${profileActions.length} NEW profiles for sync`)
+          console.log(`[mikrotik-sync] v6.9.9: Injecting ${profileActions.length} profile actions for sync`)
           
-          // v6.9.6: Update synced profiles list
+          // v6.9.9: Update synced profiles list (will be validated next sync)
           const updatedSyncedProfiles = [...new Set([...syncedProfiles, ...newProfilesToSync])]
           await supabase
             .from('hotspots')
             .update({ synced_profiles: updatedSyncedProfiles })
             .eq('id', hotspot.id)
-            .then(() => console.log(`[mikrotik-sync] v6.9.6: Marked as synced: ${newProfilesToSync.join(', ')}`))
+            .then(() => console.log(`[mikrotik-sync] v6.9.9: Updated synced_profiles cache: ${newProfilesToSync.join(', ')}`))
         } else {
-          console.log(`[mikrotik-sync] v6.9.6: All profiles already synced`)
+          console.log(`[mikrotik-sync] v6.9.9: All profiles confirmed synced`)
         }
       }
     }
