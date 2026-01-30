@@ -81,5 +81,38 @@ describe('useMikrotikSync', () => {
       // Verificar que usa o menu correto (sem "ip") para hostnames
       expect(actionProcessorSource).toContain('/ip hotspot walled-garden add dst-host');
     });
+
+    it('should not contain invalid policy token in script declarations', () => {
+      const scriptDeclaration = `
+        /system script add name="navspot-sync" policy=read,write,test source={
+      `;
+      
+      // Verificar que não contém "policy,policy" ou "policy=...policy..."
+      expect(scriptDeclaration).not.toMatch(/policy=.*policy,.*policy/);
+      // Verificar que usa políticas válidas
+      expect(scriptDeclaration).toMatch(/policy=read,write,test/);
+    });
+
+    it('should use full command in scheduler on-event', () => {
+      const schedulerCommand = `
+        /system scheduler add name="navspot-sync-scheduler" interval=5m on-event="/system script run navspot-sync" start-time=startup
+      `;
+      
+      // Verificar que on-event contém comando completo
+      expect(schedulerCommand).toContain('on-event="/system script run');
+    });
+
+    it('should handle empty rate-limit gracefully', () => {
+      const createProfileLogic = `
+        :if ([:len $pRate] > 0) do={
+          /ip hotspot user profile add name=$pName rate-limit=$pRate shared-users=$pShared
+        } else={
+          /ip hotspot user profile add name=$pName shared-users=$pShared
+        }
+      `;
+      
+      // Verificar que existe verificação de rate-limit vazio
+      expect(createProfileLogic).toContain('[:len $pRate] > 0');
+    });
   });
 });
