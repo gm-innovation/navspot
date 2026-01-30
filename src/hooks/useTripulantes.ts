@@ -202,6 +202,29 @@ export function useUpdateTripulante() {
             });
           }
         }
+
+        // v6.9.7: Invalidate synced_users cache to force re-sync
+        if (updates.senha_wifi || updates.perfil_id) {
+          const login = oldData.login_wifi;
+          
+          // Get all hotspots for this embarcacao
+          const { data: hotspots } = await supabase
+            .from('hotspots')
+            .select('id, synced_users')
+            .eq('embarcacao_id', oldData.embarcacao_id);
+          
+          for (const hotspot of hotspots || []) {
+            const syncedUsers = ((hotspot.synced_users || []) as any[])
+              .filter((u: any) => u.login !== login);
+            
+            await supabase
+              .from('hotspots')
+              .update({ synced_users: syncedUsers })
+              .eq('id', hotspot.id);
+          }
+          
+          console.log(`[useTripulantes] v6.9.7: Invalidated synced_users for ${login}`);
+        }
       } catch (actionError) {
         console.error('[useTripulantes] Failed to create MikroTik action:', actionError);
       }

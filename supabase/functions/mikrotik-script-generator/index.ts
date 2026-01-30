@@ -237,11 +237,13 @@ function generateBootstrapScript(
 :delay 500ms`
   }).join('\n\n')
 
-  // v6.8: Script sync com JSON usando hex \22 para aspas + header Content-Type (compatível ROS 6.x)
+  // v6.9.7: Script sync com JSON usando hex \22 para aspas + header Content-Type + registered_users
   const syncScriptSource = `:local token [/file get "navspot-token.txt" contents]
 :local syncUrl "${syncUrl}"
 :local users ""
+:local registered ""
 :local q "\\22"
+# Coletar usuarios ativos (conectados)
 /ip hotspot active
 :foreach a in=[find] do={
 :local u [get $a user]
@@ -250,7 +252,14 @@ function generateBootstrapScript(
 :local bo [get $a bytes-out]
 :set users ($users . $u . "," . $m . "," . $bi . "," . $bo . ";")
 }
-:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q . "}")
+# v6.9.7: Coletar lista completa de usuarios cadastrados (exclui dinamicos)
+/ip hotspot user
+:foreach i in=[find where dynamic=no] do={
+:local uname [get $i name]
+:set registered ($registered . $uname . ",")
+}
+# Construir JSON com ambos os campos
+:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q . "," . $q . "registered_users_csv" . $q . ":" . $q . $registered . $q . "}")
 :do {
 :local result [/tool fetch url=$syncUrl mode=https http-method=post http-data=$body http-header-field="Content-Type: application/json" output=user as-value]
 :if (($result->"status") = "finished") do={

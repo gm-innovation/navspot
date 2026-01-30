@@ -17,6 +17,7 @@ interface ActiveUser {
 interface SyncPayload {
   sync_token: string
   active_users?: ActiveUser[]
+  registered_users_csv?: string  // v6.9.7: Lista completa de usuários cadastrados no MikroTik
   executed_actions?: string[]
   user_device_counts?: { user: string; count: number; macs: string[] }[]
 }
@@ -26,6 +27,18 @@ interface PendingAction {
   type: string
   payload: Record<string, unknown>
 }
+
+// v6.9.7: Metadata for synced users tracking
+interface SyncedUserMeta {
+  login: string
+  last_seen: string | null      // Última vez visto em active_users
+  last_synced_at: string | null // Última vez que enviamos create_user
+  miss_count: number            // Syncs consecutivos sem aparecer em registered_users
+}
+
+// v6.9.7: Constants for reconciliation
+const MISS_THRESHOLD = 2        // Syncs faltando antes de re-criar
+const SYNC_COOLDOWN_MS = 5 * 60 * 1000  // 5 min cooldown entre re-syncs
 
 interface DeviceViolation {
   user: string
@@ -164,6 +177,139 @@ async function createAlertIfNotRecent(
   return data
 }
 
+// v6.9.7: Reconcile users - detect missing and auto-sync
+async function reconcileUsers(
+  supabase: ReturnType<typeof createClient>,
+  hotspot: { id: string; embarcacao_id: string; synced_users: SyncedUserMeta[] },
+  activeUsers: ActiveUser[],
+  registeredUsersCsv: string,
+  formattedActions: PendingAction[]
+): Promise<void> {
+  // Parse registered users from MikroTik (lista COMPLETA de cadastrados)
+  const registeredUsersSet = new Set(
+    registeredUsersCsv
+      .split(',')
+      .map(u => u.trim())
+      .filter(u => u.length > 0)
+  )
+  
+  // Build set of currently active (online) users
+  const activeUsersSet = new Set(activeUsers.map(u => u.user))
+  
+  // Load synced users metadata from DB
+  const syncedUsersMap = new Map<string, SyncedUserMeta>(
+    (hotspot.synced_users || []).map(u => [u.login, { ...u }])
+  )
+  
+  // Fetch all active tripulantes for this embarcacao
+  const { data: tripulantes } = await supabase
+    .from('tripulantes')
+    .select(`
+      login_wifi, senha_wifi, perfil_id, status,
+      perfis_velocidade(nome)
+    `)
+    .eq('embarcacao_id', hotspot.embarcacao_id)
+    .in('status', ['ativo', 'pendente_cadastro'])
+  
+  if (!tripulantes || tripulantes.length === 0) {
+    console.log('[mikrotik-sync] v6.9.7: No active tripulantes to reconcile')
+    return
+  }
+  
+  const newActionsToInject: PendingAction[] = []
+  const now = new Date().toISOString()
+  const nowMs = Date.now()
+  
+  console.log(`[mikrotik-sync] v6.9.7: Reconciling ${tripulantes.length} tripulantes. Registered users from MikroTik: ${registeredUsersSet.size}`)
+  
+  for (const tripulante of tripulantes) {
+    const login = tripulante.login_wifi
+    
+    // Initialize metadata if new user
+    if (!syncedUsersMap.has(login)) {
+      syncedUsersMap.set(login, {
+        login,
+        last_seen: null,
+        last_synced_at: null,
+        miss_count: 0
+      })
+    }
+    
+    const meta = syncedUsersMap.get(login)!
+    
+    // Check if user exists in MikroTik registered users
+    if (registeredUsersSet.has(login)) {
+      // User EXISTS in MikroTik - reset counters
+      meta.miss_count = 0
+      
+      // Update last_seen if also active (online)
+      if (activeUsersSet.has(login)) {
+        meta.last_seen = now
+      }
+      
+      console.log(`[mikrotik-sync] v6.9.7: User exists in MikroTik: ${login}`)
+      continue
+    }
+    
+    // User NOT in registered_users - may need to sync
+    // Only count as missing if we actually received the registered_users list
+    // (registeredUsersCsv empty + no users = MikroTik was reset)
+    if (registeredUsersCsv.length > 0 || registeredUsersSet.size === 0) {
+      meta.miss_count = (meta.miss_count || 0) + 1
+      console.log(`[mikrotik-sync] v6.9.7: User missing from MikroTik, miss_count=${meta.miss_count}: ${login}`)
+    }
+    
+    // Decide if we should re-sync
+    const neverSynced = !meta.last_synced_at
+    const exceededThreshold = meta.miss_count >= MISS_THRESHOLD
+    
+    // Cooldown check: don't re-sync too frequently
+    const lastSyncTime = meta.last_synced_at ? new Date(meta.last_synced_at).getTime() : 0
+    const cooldownElapsed = (nowMs - lastSyncTime) > SYNC_COOLDOWN_MS
+    
+    if ((neverSynced || exceededThreshold) && cooldownElapsed) {
+      // Generate create_user action
+      const perfilNome = (tripulante.perfis_velocidade as { nome?: string } | null)?.nome || ''
+      const profileSlug = perfilNome.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'default'
+      
+      const actionId = `auto-user-${login}`
+      
+      newActionsToInject.push({
+        id: actionId,
+        type: 'create_user',
+        payload: {
+          user: login,
+          password: tripulante.senha_wifi,
+          profile: profileSlug
+        }
+      })
+      
+      // Update metadata
+      meta.last_synced_at = now
+      meta.miss_count = 0
+      
+      console.log(`[mikrotik-sync] v6.9.7: Re-syncing user (neverSynced=${neverSynced}, exceeded=${exceededThreshold}): ${login}`)
+    }
+  }
+  
+  // Append new actions AFTER profiles (profiles come first in the array)
+  if (newActionsToInject.length > 0) {
+    formattedActions.push(...newActionsToInject)
+    console.log(`[mikrotik-sync] v6.9.7: Injecting ${newActionsToInject.length} user actions`)
+  }
+  
+  // Persist updated metadata
+  const updatedSyncedUsers = Array.from(syncedUsersMap.values())
+  await supabase
+    .from('hotspots')
+    .update({ synced_users: updatedSyncedUsers })
+    .eq('id', hotspot.id)
+  
+  console.log(`[mikrotik-sync] v6.9.7: Saved synced_users metadata for ${updatedSyncedUsers.length} users`)
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders })
@@ -186,10 +332,10 @@ Deno.serve(async (req) => {
       )
     }
 
-    // v6.9.6: Include synced_profiles for tracking which profiles have been sent
+    // v6.9.7: Include synced_profiles and synced_users for tracking
     const { data: hotspot, error: hotspotError } = await supabase
       .from('hotspots')
-      .select('id, embarcacao_id, nome, status, synced_profiles')
+      .select('id, embarcacao_id, nome, status, synced_profiles, synced_users')
       .eq('sync_token', payload.sync_token)
       .single()
 
@@ -685,6 +831,21 @@ Deno.serve(async (req) => {
           console.log(`[mikrotik-sync] v6.9.6: All profiles already synced`)
         }
       }
+    }
+
+    // v6.9.7: Reconcile users - detect missing and re-sync
+    if (embarcacao) {
+      await reconcileUsers(
+        supabase,
+        {
+          id: hotspot.id,
+          embarcacao_id: hotspot.embarcacao_id,
+          synced_users: ((hotspot as Record<string, unknown>).synced_users || []) as SyncedUserMeta[]
+        },
+        payload.active_users || [],
+        payload.registered_users_csv || '',
+        formattedActions
+      )
     }
 
     // v6.9: Expand domain-based actions to individual commands
