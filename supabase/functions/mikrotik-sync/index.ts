@@ -186,9 +186,10 @@ Deno.serve(async (req) => {
       )
     }
 
+    // v6.9.6: Include synced_profiles for tracking which profiles have been sent
     const { data: hotspot, error: hotspotError } = await supabase
       .from('hotspots')
-      .select('id, embarcacao_id, nome, status')
+      .select('id, embarcacao_id, nome, status, synced_profiles')
       .eq('sync_token', payload.sync_token)
       .single()
 
@@ -611,7 +612,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // v6.9: Ensure all company profiles are synced before user actions
+    // v6.9.6: Ensure all company profiles are synced (only NEW profiles)
     if (embarcacao) {
       const { data: perfis } = await supabase
         .from('perfis_velocidade')
@@ -630,30 +631,59 @@ Deno.serve(async (req) => {
             .trim()
         }
 
-        const profileActions = perfis.map(p => {
-          const slug = p.nome.toLowerCase()
-            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-            .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
-          // v6.9.5: Normalizar rate-limit para compatibilidade RouterOS
-          const uploadRate = normalizeRateLimit(p.velocidade_upload)
-          const downloadRate = normalizeRateLimit(p.velocidade_download)
-          const rateLimit = `${uploadRate}/${downloadRate}`
-          const quota = p.limite_dados_mb || 0
-          const shared = p.max_dispositivos || 1
-          return {
-            id: `auto-profile-${slug}`,
-            type: 'add_user_profile' as const,
-            payload: {
-              name: slug,
-              rate_limit: rateLimit,
-              shared_users: shared,
-              limit_bytes: quota * 1024 * 1024
+        // v6.9.6: Get already synced profiles for this hotspot
+        const syncedProfiles = ((hotspot as Record<string, unknown>).synced_profiles || []) as string[]
+        const newProfilesToSync: string[] = []
+
+        const profileActions = perfis
+          .map(p => {
+            const slug = p.nome.toLowerCase()
+              .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+              .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
+            
+            // v6.9.6: Skip already synced profiles
+            if (syncedProfiles.includes(slug)) {
+              console.log(`[mikrotik-sync] v6.9.6: Profile already synced, skipping: ${slug}`)
+              return null
             }
-          }
-        })
+            
+            newProfilesToSync.push(slug)
+            
+            // v6.9.5: Normalizar rate-limit para compatibilidade RouterOS
+            const uploadRate = normalizeRateLimit(p.velocidade_upload)
+            const downloadRate = normalizeRateLimit(p.velocidade_download)
+            const rateLimit = `${uploadRate}/${downloadRate}`
+            const quota = p.limite_dados_mb || 0
+            const shared = p.max_dispositivos || 1
+            
+            return {
+              id: `auto-profile-${slug}`,
+              type: 'add_user_profile' as const,
+              payload: {
+                name: slug,
+                rate_limit: rateLimit,
+                shared_users: shared,
+                limit_bytes: quota * 1024 * 1024
+              }
+            }
+          })
+          .filter(Boolean) as PendingAction[]
+
         // Prepend to ensure profiles exist before users
-        formattedActions.unshift(...profileActions)
-        console.log(`[mikrotik-sync] v6.9: Injected ${profileActions.length} profiles for sync`)
+        if (profileActions.length > 0) {
+          formattedActions.unshift(...profileActions)
+          console.log(`[mikrotik-sync] v6.9.6: Injecting ${profileActions.length} NEW profiles for sync`)
+          
+          // v6.9.6: Update synced profiles list
+          const updatedSyncedProfiles = [...new Set([...syncedProfiles, ...newProfilesToSync])]
+          await supabase
+            .from('hotspots')
+            .update({ synced_profiles: updatedSyncedProfiles })
+            .eq('id', hotspot.id)
+            .then(() => console.log(`[mikrotik-sync] v6.9.6: Marked as synced: ${newProfilesToSync.join(', ')}`))
+        } else {
+          console.log(`[mikrotik-sync] v6.9.6: All profiles already synced`)
+        }
       }
     }
 
