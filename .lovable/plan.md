@@ -1,449 +1,341 @@
 
-
-# Plano v6.8: Correção Definitiva + Action Processor v2 Robusto
+# Plano v6.9: Correções Completas + Gerência Winbox/MNDP
 
 ## Resumo Executivo
 
-Este plano implementa **4 correções críticas** para compatibilidade total com RouterOS 6.x e adiciona o **Action Processor v2** com validação, idempotência, lock e auto-criação de perfis.
+Este plano implementa **5 correções críticas**:
+1. **Repetição de ações** - Auto-marcar como executadas após envio
+2. **Perfis incompletos** - Sincronizar perfis existentes da empresa
+3. **Regras não aplicadas** - Expandir domínios de listas no pipe
+4. **Blacklist funcional** - Implementar bloqueio real no Action Processor
+5. **Gerência Winbox/MNDP** - Configurar neighbor discovery e regras de firewall para acesso administrativo seguro
 
 ---
 
-## Problemas Identificados vs. Estado Atual
+## Problema 1: Ações Repetidas Infinitamente
 
-| # | Problema | Linha Atual | Estado | Correção |
-|---|----------|-------------|--------|----------|
-| 1 | Token: `/file add` não existe no ROS | 475 | ❌ Usa comando inválido | `/file print file=` + `/file set` |
-| 2 | Sync: Falta header `Content-Type` | 278 | ❌ Erro 500 do servidor | Adicionar `http-header-field` |
-| 3 | Sanity check proíbe `/file print file=` | 138-140 | ❌ Bloqueia solução | Inverter/remover check |
-| 4 | Action Processor básico demais | 292-385 | ⚠️ Funcional mas frágil | Upgrade para v2 robusto |
+**Causa:** O `mikrotik-sync` incrementa tentativas mas nunca marca como `executado`. O MikroTik não reporta IDs executados.
 
----
+**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
 
-## Correção 1: Token via `/file print file=` (CRÍTICA)
-
-**Problema:** O comando `/file add` NÃO EXISTE no RouterOS. A linha 475 usa um fallback inválido.
-
-**Linhas 469-478 - Código Atual:**
-```routeros
-# 9. TOKEN (metodo compativel com RouterOS 6.x e 7.x)
-:do { /file remove "navspot-token.txt" } on-error={}
-:delay 1s
-:do {
-/file set [find name="navspot-token.txt"] contents="${hotspot.sync_token}"
-} on-error={
-/file add name="navspot-token.txt" contents="${hotspot.sync_token}"
-}
-:delay 1s
-:log info "NAVSPOT: Token criado"
+**Linhas 614-627 - Código Atual:**
+```typescript
+if (formattedActions.length > 0) {
+  const actionIds = formattedActions
+    .filter(a => !a.id.startsWith('auto-'))
+    .map(a => a.id)
+  
+  if (actionIds.length > 0) {
+    await supabase
+      .from('acoes_pendentes')
+      .update({ tentativas: 1 })
+      .in('id', actionIds)
 ```
 
 **Código Corrigido:**
-```routeros
-# 9. TOKEN (metodo compativel com RouterOS 6.x e 7.x)
-:do { /file remove "navspot-token.txt" } on-error={}
-:delay 1s
-/file print file=navspot-token
-:delay 2s
-/file set "navspot-token.txt" contents="${hotspot.sync_token}"
-:delay 1s
-:log info "NAVSPOT: Token criado"
-```
-
-**Por que funciona:**
-- `/file print file=navspot-token` cria um arquivo vazio `navspot-token.txt`
-- `:delay 2s` permite que o sistema de arquivos finalize a escrita
-- `/file set` preenche o conteúdo diretamente por nome
-
----
-
-## Correção 2: Header Content-Type no Fetch (CRÍTICA)
-
-**Problema:** O servidor retorna erro 500 porque o MikroTik não envia `Content-Type: application/json`.
-
-**Linha 278 - Código Atual:**
-```routeros
-:local result [/tool fetch url=$syncUrl mode=https http-method=post http-data=$body output=user as-value]
-```
-
-**Código Corrigido:**
-```routeros
-:local result [/tool fetch url=$syncUrl mode=https http-method=post http-data=$body http-header-field="Content-Type: application/json" output=user as-value]
+```typescript
+// v6.9: Auto-mark as executed after 1 delivery (fire-and-forget pattern)
+if (formattedActions.length > 0) {
+  const actionIds = formattedActions
+    .filter(a => !a.id.startsWith('auto-'))
+    .map(a => a.id)
+  
+  if (actionIds.length > 0) {
+    await supabase
+      .from('acoes_pendentes')
+      .update({ 
+        status: 'executado', 
+        executed_at: new Date().toISOString() 
+      })
+      .in('id', actionIds)
 ```
 
 ---
 
-## Correção 3: Sanity Check Atualizado
+## Problema 2: Perfis Criados com Defaults
 
-**Problema:** O check (linha 138) PROÍBE `/file print file=`, mas agora precisamos usá-lo.
+**Causa:** Quando um tripulante é criado, apenas `create_user` é enviado. Se o perfil foi criado antes do hotspot ser instalado, ele nunca chegou ao roteador.
 
-**Linhas 138-140 - Código Atual:**
+**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
+
+**Adicionar após linha 611 (antes de formatar o pipe):**
+
 ```typescript
-if (bootstrapScript.includes('/file print file=')) {
-  throw new Error('Erro: /file print file= invalido em scripts MikroTik.')
-}
-```
+// v6.9: Ensure all company profiles are synced before user actions
+if (embarcacao) {
+  const { data: perfis } = await supabase
+    .from('perfis_velocidade')
+    .select('nome, velocidade_download, velocidade_upload, max_dispositivos, limite_dados_mb')
+    .eq('empresa_id', embarcacao.empresa_id)
 
-**Código Corrigido:** Inverter a lógica para exigir o padrão correto:
-```typescript
-// v6.8: /file print file= é OBRIGATÓRIO para criar arquivos no RouterOS
-if (!bootstrapScript.includes('/file print file=navspot-token')) {
-  console.warn('[script-generator] AVISO: Token deve usar /file print file= para compatibilidade ROS 6.x')
+  if (perfis && perfis.length > 0) {
+    const profileActions = perfis.map(p => {
+      const slug = p.nome.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
+      const rateLimit = `${p.velocidade_upload || '2M'}/${p.velocidade_download || '5M'}`
+      const quota = p.limite_dados_mb || 0
+      const shared = p.max_dispositivos || 1
+      return {
+        id: `auto-profile-${slug}`,
+        type: 'add_user_profile' as const,
+        payload: {
+          name: slug,
+          rate_limit: rateLimit,
+          shared_users: shared,
+          limit_bytes: quota * 1024 * 1024
+        }
+      }
+    })
+    // Prepend to ensure profiles exist before users
+    formattedActions.unshift(...profileActions)
+    console.log(`[mikrotik-sync] v6.9: Injected ${profileActions.length} profiles for sync`)
+  }
 }
 ```
 
 ---
 
-## Correção 4: Action Processor v2 (PULO DO GATO)
+## Problema 3: Domínios de Listas Não Expandidos
 
-O Action Processor atual (linhas 292-385) é básico e não possui:
-- ✖ Lock para evitar concorrência
-- ✖ Auto-criação de perfis quando o usuário referencia perfil inexistente
-- ✖ Validação de parâmetros
-- ✖ Logs detalhados
-- ✖ Limpeza correta das ações
+**Causa:** As ações `add_walled_garden` recebem `payload: { lista_id, dominios: [...] }` mas o pipe espera um domínio por comando.
 
-### Requisitos do Action Processor v2:
+**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
 
-1. **Idempotência:** Reaplicar a mesma ação não deve quebrar o sistema
-2. **Lock:** Evitar execuções simultâneas via variável global `navspotLock`
-3. **Auto-criação de perfis:** Se `create_user` referencia perfil inexistente, criar com defaults
-4. **Validação:** Verificar parâmetros antes de executar
-5. **Logs detalhados:** JSON enviado, ações aplicadas, erros
-6. **Limpeza segura:** Limpar `navspotActions` apenas após sucesso
-
-### Código do Action Processor v2:
+**Refatorar mapeamento do pipe (linhas 632-676):**
 
 ```typescript
-const actionProcessorSource = `:global navspotActions
-:global navspotLock
-:if ($navspotLock = "1") do={
-:log info "NAVSPOT-ACTION: processamento em andamento, abortando"
-:return
+// v6.9: Expand domain-based actions to individual commands
+const expandedActions: typeof formattedActions = []
+
+for (const action of formattedActions) {
+  const p = action.payload as Record<string, unknown>
+  
+  // Expand walled garden with multiple domains
+  if (action.type === 'add_walled_garden' && Array.isArray(p.dominios)) {
+    for (const domain of p.dominios as string[]) {
+      if (domain) {
+        expandedActions.push({
+          id: `${action.id}-${domain.replace(/[^a-z0-9]/gi, '')}`,
+          type: (p.tipo === 'blacklist' ? 'add_blacklist_domain' : 'add_whitelist_domain') as const,
+          payload: { list_name: String(p.lista_name || 'default'), domain }
+        })
+      }
+    }
+  } 
+  // Expand firewall filter rules
+  else if (action.type === 'add_firewall_filter' && p.regra_id) {
+    // The domains should already be in the payload if processed correctly
+    const domains = (p.dominios || []) as string[]
+    for (const domain of domains) {
+      if (domain) {
+        expandedActions.push({
+          id: `${action.id}-${domain.replace(/[^a-z0-9]/gi, '')}`,
+          type: 'add_blacklist_domain' as const,
+          payload: { list_name: String(p.lista_name || 'regra'), domain }
+        })
+      }
+    }
+  } 
+  else {
+    expandedActions.push(action)
+  }
 }
-:set navspotLock "1"
-:local rawData $navspotActions
-:if ([:len $rawData] = 0) do={
-:set navspotLock "0"
-:log info "NAVSPOT: Sem acoes pendentes"
-:return
-}
-:log info ("NAVSPOT-ACTION v2: Iniciando - " . $rawData)
-:local pos 0
-:do {
-:while ([:find $rawData ";" $pos] >= 0) do={
-:local endPos [:find $rawData ";" $pos]
-:local line [:pick $rawData $pos $endPos]
-:set pos ($endPos + 1)
-:local i 0
-:local j ([:len $line] - 1)
-:while (($i <= $j) && ([:pick $line $i] = " ")) do={:set i ($i + 1)}
-:while (($j >= $i) && ([:pick $line $j] = " ")) do={:set j ($j - 1)}
-:if ($j < $i) do={:set pos ($endPos + 1)}
-:local trimmed [:pick $line $i ($j + 1)]
-:local p1 [:find $trimmed "|"]
-:if ($p1 >= 0) do={
-:local cmd [:pick $trimmed 0 $p1]
-:local rest [:pick $trimmed ($p1 + 1) [:len $trimmed]]
-:if ($cmd = "create_profile") do={
-:local p2 [:find $rest "|"]
-:local pName [:pick $rest 0 $p2]
-:local sub [:pick $rest ($p2 + 1) [:len $rest]]
-:local p3 [:find $sub "|"]
-:local pRate ""
-:local pShared "1"
-:local pLimit "0"
-:if ($p3 >= 0) do={
-:set pRate [:pick $sub 0 $p3]
-:local sub2 [:pick $sub ($p3 + 1) [:len $sub]]
-:local p4 [:find $sub2 "|"]
-:if ($p4 >= 0) do={
-:set pShared [:pick $sub2 0 $p4]
-:set pLimit [:pick $sub2 ($p4 + 1) [:len $sub2]]
-} else={
-:set pShared $sub2
-}
-} else={
-:set pRate $sub
-}
-:if ([:len $pName] = 0) do={
-:log warning "NAVSPOT: create_profile sem nome, ignorando"
-} else={
-:local existing [/ip hotspot user profile find name=$pName]
-:if ([:len $existing] = 0) do={
-/ip hotspot user profile add name=$pName rate-limit=$pRate shared-users=$pShared
-:log info ("NAVSPOT: Perfil criado - " . $pName)
-} else={
-/ip hotspot user profile set $existing rate-limit=$pRate shared-users=$pShared
-:log info ("NAVSPOT: Perfil atualizado - " . $pName)
-}
-}
-}
-:if ($cmd = "create_user") do={
-:local p2 [:find $rest "|"]
-:local uName [:pick $rest 0 $p2]
-:local sub [:pick $rest ($p2 + 1) [:len $rest]]
-:local p3 [:find $sub "|"]
-:local uPass [:pick $sub 0 $p3]
-:local uProf [:pick $sub ($p3 + 1) [:len $sub]]
-:if ([:len $uName] = 0) do={
-:log warning "NAVSPOT: create_user sem nome, ignorando"
-} else={
-:if ([:len [/ip hotspot user profile find name=$uProf]] = 0) do={
-:log warning ("NAVSPOT: Perfil " . $uProf . " nao existe. Criando com defaults...")
-/ip hotspot user profile add name=$uProf
-}
-:local existing [/ip hotspot user find name=$uName]
-:if ([:len $existing] = 0) do={
-/ip hotspot user add name=$uName password=$uPass profile=$uProf comment="navspot-sync"
-:log info ("NAVSPOT: Usuario criado - " . $uName)
-} else={
-/ip hotspot user set $existing password=$uPass profile=$uProf
-:log info ("NAVSPOT: Usuario atualizado - " . $uName)
-}
-}
-}
-:if ($cmd = "remove_user") do={
-:if ([:len $rest] > 0) do={
-:local existing [/ip hotspot user find name=$rest]
-:if ([:len $existing] > 0) do={
-/ip hotspot user remove $existing
-:log info ("NAVSPOT: Usuario removido - " . $rest)
-} else={
-:log info ("NAVSPOT: remove_user - usuario inexistente: " . $rest)
-}
-}
-}
-:if ($cmd = "disable_user") do={
-:do { /ip hotspot user set [find name=$rest] disabled=yes } on-error={}
-:log info ("NAVSPOT: Usuario desabilitado - " . $rest)
-}
-:if ($cmd = "enable_user") do={
-:do { /ip hotspot user set [find name=$rest] disabled=no } on-error={}
-:log info ("NAVSPOT: Usuario habilitado - " . $rest)
-}
-:if ($cmd = "kick_session") do={
-:local p2 [:find $rest "|"]
-:local kUser [:pick $rest 0 $p2]
-:local kMac [:pick $rest ($p2 + 1) [:len $rest]]
-:do { /ip hotspot active remove [find mac-address=$kMac] } on-error={}
-:log info ("NAVSPOT: Sessao encerrada - " . $kUser . "/" . $kMac)
-}
-:if ($cmd = "update_password") do={
-:local p2 [:find $rest "|"]
-:local uName [:pick $rest 0 $p2]
-:local uPass [:pick $rest ($p2 + 1) [:len $rest]]
-:do { /ip hotspot user set [find name=$uName] password=$uPass } on-error={}
-:log info ("NAVSPOT: Senha atualizada - " . $uName)
-}
-:if ($cmd = "create_whitelist_domain") do={
-:local p2 [:find $rest "|"]
-:local wName [:pick $rest 0 $p2]
-:local domain [:pick $rest ($p2 + 1) [:len $rest]]
-:if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
-/ip hotspot walled-garden add dst-host=$domain action=allow comment=("navspot-" . $wName)
-:log info ("NAVSPOT: Whitelist adicionado - " . $domain)
-}
-}
+
+// Use expandedActions for pipe generation
+const pipeDelimitedActions = expandedActions.map(action => {
+  // ... existing switch logic
+}).join(';')
+```
+
+---
+
+## Problema 4: Blacklist Apenas Loga, Não Bloqueia
+
+**Causa:** O Action Processor v2 apenas registra blacklist no log, não executa bloqueio real.
+
+**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
+
+**Localizar no actionProcessorSource (aproximadamente linha 424):**
+
+**Código Atual:**
+```routeros
 :if ($cmd = "create_blacklist_domain") do={
 :local p2 [:find $rest "|"]
 :local bName [:pick $rest 0 $p2]
 :local domain [:pick $rest ($p2 + 1) [:len $rest]]
 :log info ("NAVSPOT: Blacklist registrado - " . $domain)
 }
-:if ($cmd = "update_profile_quota") do={
-:local p2 [:find $rest "|"]
-:local pName [:pick $rest 0 $p2]
-:local quota [:pick $rest ($p2 + 1) [:len $rest]]
-:local quotaBytes ($quota * 1024 * 1024)
-:foreach uId in=[/ip hotspot user find where profile=$pName] do={
-:do { /ip hotspot user set $uId limit-bytes-total=$quotaBytes } on-error={}
-}
-:log info ("NAVSPOT: Quota aplicada - " . $pName . " = " . $quota . " MB")
-}
-}
-}
-} on-error={
-:log warning "NAVSPOT-ACTION: Erro no processamento"
-:set navspotLock "0"
-:return
-}
-:set navspotActions ""
-:set navspotLock "0"
-:log info "NAVSPOT-ACTION v2: Processamento concluido"`
 ```
 
-### Melhorias do v2 vs v1:
+**Código Corrigido:**
+```routeros
+:if ($cmd = "create_blacklist_domain") do={
+:local p2 [:find $rest "|"]
+:local bName [:pick $rest 0 $p2]
+:local domain [:pick $rest ($p2 + 1) [:len $rest]]
+:if ([:len $domain] > 0) do={
+:if ([:len [/ip hotspot walled-garden ip find dst-host=$domain action=deny]] = 0) do={
+/ip hotspot walled-garden ip add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
+:log info ("NAVSPOT: Blacklist bloqueado - " . $domain)
+} else={
+:log info ("NAVSPOT: Blacklist ja existe - " . $domain)
+}
+}
+}
+```
 
-| Recurso | v1 (atual) | v2 (novo) |
-|---------|------------|-----------|
-| Lock de concorrência | ❌ | ✅ `navspotLock` |
-| Auto-criar perfil se inexistente | ❌ | ✅ cria com defaults |
-| Validação de nome vazio | ❌ | ✅ ignora e loga warning |
-| Trim de espaços | ❌ | ✅ |
-| Limpeza de ações após sucesso | Sempre | ✅ Apenas se ok |
-| Tratamento de erro global | ❌ | ✅ `on-error` limpa lock |
-| Logs detalhados | Básico | ✅ Completo |
-| Verificar existência antes de remover | ❌ | ✅ |
-| Parsing de `create_profile` com 4 params | ✅ | ✅ Melhorado |
+---
+
+## Problema 5: Gerência Winbox/MNDP Não Configurada (NOVO)
+
+**Causa:** Após a instalação, o Winbox pode não aparecer na aba Neighbors porque o Neighbor Discovery está desconfigurado, e regras de firewall podem bloquear acesso administrativo.
+
+**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
+
+**Adicionar após Seção 6 (NAT) e antes de Seção 7 (Hotspot):**
+
+### Nova Seção 6.5: Gerência Winbox/Neighbor Discovery
+
+```typescript
+// Adicionar na geração do bootstrap script, após o NAT (linha 516)
+const winboxMgmtConfig = `
+# 6.5. GERENCIA WINBOX / NEIGHBOR DISCOVERY
+# Criar lista de interfaces de gestao
+:if ([:len [/interface list find name="mgmt"]] = 0) do={
+/interface list add name="mgmt" comment="navspot-mgmt-list"
+}
+:do { /interface list member remove [find list="mgmt" interface=ether2] } on-error={}
+:do { /interface list member remove [find list="mgmt" interface=bridge1] } on-error={}
+# Adicionar ether2 (porta de gerencia principal)
+:do { /interface list member add list="mgmt" interface=ether2 } on-error={}
+# Adicionar bridge1 para discovery via hotspot (opcional, seguro pois requer auth)
+/interface list member add list="mgmt" interface=bridge1 comment="navspot-allow-discovery-on-bridge"
+
+# Configurar neighbor discovery para usar lista de gestao
+/ip neighbor discovery-settings set discover-interface-list=mgmt
+:log info "NAVSPOT: Neighbor Discovery configurado para lista mgmt"
+
+# Permitir Winbox (TCP 8291) pela porta de gestao (ether2)
+:if ([:len [/ip firewall filter find comment="navspot-allow-winbox-mgmt"]] = 0) do={
+/ip firewall filter add chain=input in-interface=ether2 protocol=tcp dst-port=8291 action=accept comment="navspot-allow-winbox-mgmt" place-before=0
+}
+
+# Permitir MNDP (UDP 5678) para aparecer em Neighbors
+:if ([:len [/ip firewall filter find comment="navspot-allow-mndp-mgmt"]] = 0) do={
+/ip firewall filter add chain=input in-interface=ether2 protocol=udp dst-port=5678 action=accept comment="navspot-allow-mndp-mgmt" place-before=0
+}
+
+:log info "NAVSPOT: Regras de firewall para Winbox/MNDP criadas"
+`
+```
+
+**Inserir na string de retorno do bootstrap:**
+
+Após:
+```routeros
+# 6. NAT
+/ip firewall nat add chain=srcnat out-interface=${wanInterface} action=masquerade comment="navspot-nat"
+:log info "NAVSPOT: NAT configurado em ${wanInterface}"
+```
+
+Adicionar:
+```routeros
+${winboxMgmtConfig}
+
+# 7. HOTSPOT (continuação...)
+```
 
 ---
 
 ## Resumo das Alterações
 
-| Arquivo | Linha(s) | Mudança |
-|---------|----------|---------|
-| `mikrotik-script-generator/index.ts` | 70 | Atualizar log para v6.8 |
-| `mikrotik-script-generator/index.ts` | 138-140 | Inverter sanity check de `/file print file=` |
-| `mikrotik-script-generator/index.ts` | 167 | Atualizar version para '6.8' |
-| `mikrotik-script-generator/index.ts` | 193, 220, 395, 488, 506 | Atualizar referências para v6.8 |
-| `mikrotik-script-generator/index.ts` | 278 | Adicionar `http-header-field="Content-Type: application/json"` |
-| `mikrotik-script-generator/index.ts` | 292-385 | Substituir Action Processor por v2 |
-| `mikrotik-script-generator/index.ts` | 469-478 | Trocar `/file add` por `/file print file=` |
-| `mikrotik-script-generator/index.ts` | 480 | Atualizar comentário para v6.8 |
+| Arquivo | Linha(s) | Mudança | Impacto |
+|---------|----------|---------|---------|
+| `mikrotik-sync/index.ts` | 614-627 | Auto-marcar como executado | Evita repetição |
+| `mikrotik-sync/index.ts` | ~612 | Injetar perfis da empresa | Perfis completos |
+| `mikrotik-sync/index.ts` | 632-676 | Expandir domínios | Listas funcionais |
+| `mikrotik-script-generator/index.ts` | ~424 | Blacklist com `action=deny` | Bloqueio real |
+| `mikrotik-script-generator/index.ts` | ~516 | Gerência Winbox/MNDP | Neighbor Discovery funcional |
 
 ---
 
-## Script Final Esperado (Seções 9-10)
+## Seções do Bootstrap Script Atualizado
 
-```routeros
-# 9. TOKEN (metodo compativel com RouterOS 6.x e 7.x)
-:do { /file remove "navspot-token.txt" } on-error={}
-:delay 1s
-/file print file=navspot-token
-:delay 2s
-/file set "navspot-token.txt" contents="HASH_DO_TOKEN"
-:delay 1s
-:log info "NAVSPOT: Token criado"
-
-# 10. SYNC SCRIPT v6.8 + ACTION PROCESSOR v2
-/system script add name="navspot-action-processor" policy=read,write,policy,test source={
-:global navspotActions
-:global navspotLock
-:if ($navspotLock = "1") do={
-:log info "NAVSPOT-ACTION: processamento em andamento, abortando"
-:return
-}
-:set navspotLock "1"
-...
-}
-
-/system script add name="navspot-sync" policy=read,write,policy,test source={
-:local token [/file get "navspot-token.txt" contents]
-:local syncUrl "https://xxx.supabase.co/functions/v1/mikrotik-sync"
-:local users ""
-:local q "\22"
-...
-:local result [/tool fetch url=$syncUrl mode=https http-method=post http-data=$body http-header-field="Content-Type: application/json" output=user as-value]
-...
-}
+```text
+# 0. VALIDACAO INICIAL
+# 1. LIMPEZA INICIAL
+# 2. CONFIGURAR WAN
+# 3. IDENTIDADE
+# 4. CRIAR BRIDGE1 VAZIA
+# 5. CONFIGURAR REDE NA BRIDGE1
+# 6. NAT
+# 6.5. GERENCIA WINBOX / NEIGHBOR DISCOVERY  ← NOVO
+# 7. HOTSPOT
+# 8. WALLED GARDEN
+# 9. TOKEN
+# 10. SYNC SCRIPT v6.9 + ACTION PROCESSOR v2
+# 11. MIGRACAO PARCIAL DE PORTAS
+# 12. PAUSA PARA TROCA DE CABO
+# 13. FINALIZACAO PARCIAL
 ```
+
+---
+
+## Notas de Segurança
+
+1. **Winbox via ether2 apenas (recomendado):** Usuários do Hotspot não conseguem acessar a interface administrativa
+2. **Neighbor Discovery na bridge1:** Permite descoberta mas requer credenciais do Winbox para conexão
+3. **Não habilitar Winbox via bridge1:** Linha está comentada por padrão - só descomentar em ambientes controlados
 
 ---
 
 ## Detalhes Técnicos
 
-### Por que `/file print file=` cria um arquivo?
+### Por que auto-marcar como executado?
 
-No RouterOS, o comando `/file print file=nome` redireciona a saída do comando para um arquivo. Como `/file print` lista os arquivos existentes, a saída é salva em `nome.txt`, criando o arquivo se não existir.
+O protocolo atual esperava `executed_actions` do MikroTik, mas:
+- Script RouterOS não implementa essa lógica
+- Adicionar aumentaria complexidade
+- "Fire and forget" é mais robusto para redes instáveis
 
-### Por que o header é necessário?
+### Por que injetar perfis em cada sync?
 
-O Deno/Supabase Edge Functions usa o header `Content-Type` para determinar como parsear o body. Sem ele, `await req.json()` pode falhar ou interpretar incorretamente o payload.
+- Garante que novos roteadores recebam perfis existentes
+- Action Processor v2 é idempotente (não duplica)
+- Custo mínimo: poucos bytes extras
 
-### Fluxo de Execução do Action Processor v2:
+### Por que usar interface-list "mgmt"?
 
-```text
-┌──────────────────────────────────────┐
-│          navspot-sync executa        │
-│   (scheduler a cada X minutos)       │
-└─────────────────┬────────────────────┘
-                  │
-                  ▼
-┌──────────────────────────────────────┐
-│ Fetch para mikrotik-sync endpoint   │
-│ Com header Content-Type: app/json   │
-└─────────────────┬────────────────────┘
-                  │
-                  ▼
-┌──────────────────────────────────────┐
-│ Recebe resposta com [[ actions ]]   │
-│ Extrai ações e salva em navspotActions│
-└─────────────────┬────────────────────┘
-                  │
-                  ▼
-┌──────────────────────────────────────┐
-│    /system script run               │
-│    navspot-action-processor         │
-└─────────────────┬────────────────────┘
-                  │
-                  ▼
-┌──────────────────────────────────────┐
-│ 1. Verifica navspotLock             │
-│    Se "1" → aborta (já em execução) │
-│ 2. Define navspotLock = "1"         │
-└─────────────────┬────────────────────┘
-                  │
-                  ▼
-┌──────────────────────────────────────┐
-│ Loop por cada ação (separadas por ;)│
-│ - Trim de espaços                   │
-│ - Split por | para extrair params   │
-└─────────────────┬────────────────────┘
-                  │
-                  ▼
-┌──────────────────────────────────────┐
-│ Para cada comando:                  │
-│ - create_profile: cria/atualiza     │
-│ - create_user: verifica perfil      │
-│   → auto-cria se inexistente        │
-│   → cria/atualiza usuário           │
-│ - remove_user: verifica existência  │
-│ - disable/enable: aplica status     │
-│ - kick_session: remove por MAC      │
-│ - update_password: atualiza         │
-│ - whitelist/blacklist: gerencia     │
-│ - update_profile_quota: loop users  │
-└─────────────────┬────────────────────┘
-                  │
-                  ▼
-┌──────────────────────────────────────┐
-│ 3. Limpa navspotActions = ""        │
-│ 4. Define navspotLock = "0"         │
-│ 5. Log: "Processamento concluido"   │
-└──────────────────────────────────────┘
-```
+- Padrão MikroTik para gerenciar grupos de interfaces
+- Neighbor Discovery só funciona com interface-list
+- Permite adicionar/remover interfaces sem editar regras
 
 ---
 
 ## Validação Pós-Implementação
 
-1. Gerar script para Engenharia Googlemarine
-2. Baixar `navspot-bootstrap.rsc`
-3. Verificar no arquivo:
-   - [ ] Seção 9 usa `/file print file=navspot-token`
-   - [ ] Linha do fetch inclui `http-header-field="Content-Type: application/json"`
-   - [ ] Action Processor tem `navspotLock`
-   - [ ] Versão é v6.8 em todos os logs
-4. Upload para MikroTik via Files
-5. Executar: `/import navspot-bootstrap.rsc`
-6. Validar:
+1. Gerar script para hotspot de teste
+2. Verificar no arquivo `navspot-bootstrap.rsc`:
+   - [ ] Seção 6.5 com criação da lista "mgmt"
+   - [ ] Regras de firewall para TCP 8291 e UDP 5678
+   - [ ] Neighbor discovery com `discover-interface-list=mgmt`
+3. Upload e executar no MikroTik
+4. Validar:
    ```
-   /file print where name~"navspot"
-   /system script print where name~"navspot"
-   /system scheduler print where name~"navspot"
+   /interface list print
+   /interface list member print
+   /ip neighbor discovery-settings print
+   /ip firewall filter print where comment~"navspot-allow"
    ```
-7. Forçar sync: `/system script run navspot-sync`
-8. Verificar logs: `/log print where message~"NAVSPOT"`
+5. Testar se Winbox aparece em Neighbors
+6. Forçar sync e verificar logs sem repetições
 
 ---
 
-## Ordenação de Ações pelo Backend
+## Versão
 
-Para garantir que perfis existam antes de usuários, o `pending_actions_pipe` deve seguir a ordem:
-
-```
-[[ create_profile|tripulacao-googlemarine|3M/3M|1|104857600; create_user|alexandre.silva|048706|tripulacao-googlemarine; ]]
-```
-
-O Action Processor v2 também inclui **auto-criação de perfil** como fallback se o backend não enviar na ordem correta.
-
+Atualizar todas as referências para **v6.9** nos logs e comentários:
+- Linha 459: `NAVSPOT v6.9: Iniciando instalacao...`
+- Linha 550: `NAVSPOT: Sync v6.9 + Action Processor v2 configurados`
+- Linha 568: `NAVSPOT v6.9 Parte 1: Bootstrap parcial concluido`
