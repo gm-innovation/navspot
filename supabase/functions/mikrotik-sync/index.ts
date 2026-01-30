@@ -623,7 +623,10 @@ Deno.serve(async (req) => {
           const slug = p.nome.toLowerCase()
             .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
             .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
-          const rateLimit = `${p.velocidade_upload || '2M'}/${p.velocidade_download || '5M'}`
+          // v6.9.1: Garantir formato maiúsculo para compatibilidade RouterOS
+          const uploadRate = String(p.velocidade_upload || '2M').toUpperCase()
+          const downloadRate = String(p.velocidade_download || '5M').toUpperCase()
+          const rateLimit = `${uploadRate}/${downloadRate}`
           const quota = p.limite_dados_mb || 0
           const shared = p.max_dispositivos || 1
           return {
@@ -722,8 +725,9 @@ Deno.serve(async (req) => {
           // Update profile is handled via create_user with updated profile
           return `create_user|${p.user || ''}||${p.profile || ''}`
         case 'add_user_profile':
-          // v6.9: Create profile with rate-limit, shared-users, and quota
-          return `create_profile|${p.name || ''}|${p.rate_limit || '2M/5M'}|${p.shared_users || 1}|${p.limit_bytes || 0}`
+          // v6.9.1: Create profile with rate-limit in uppercase, shared-users, and quota
+          const rateLimit = String(p.rate_limit || '2M/5M').toUpperCase()
+          return `create_profile|${p.name || ''}|${rateLimit}|${p.shared_users || 1}|${p.limit_bytes || 0}`
         case 'remove_user_profile':
           return `remove_profile|${p.name || ''}`
         case 'add_walled_garden':
