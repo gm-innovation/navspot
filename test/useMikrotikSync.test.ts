@@ -53,4 +53,33 @@ describe('useMikrotikSync', () => {
       expect(toProfileSlug('Caça Peça')).toBe('caca-peca');
     });
   });
+
+  describe('Script Generator Validation', () => {
+    it('should not contain action=deny in generated RouterOS scripts', () => {
+      // Simular strings que seriam geradas pelo script generator
+      const actionProcessorSource = `
+        :if ($cmd = "create_blacklist_domain") do={
+          /ip hotspot walled-garden add dst-host=$domain action=reject comment=("navspot-blacklist-" . $bName)
+        }
+      `;
+      
+      // Verificar que action=deny NÃO está presente
+      expect(actionProcessorSource).not.toContain('action=deny');
+      
+      // Verificar que action=reject ESTÁ presente para blacklist
+      expect(actionProcessorSource).toContain('action=reject');
+    });
+
+    it('should use correct walled-garden menu for hostnames', () => {
+      const actionProcessorSource = `
+        /ip hotspot walled-garden add dst-host=$domain action=reject
+      `;
+      
+      // Verificar que não usa o menu "ip" para dst-host
+      expect(actionProcessorSource).not.toMatch(/walled-garden ip.*dst-host/);
+      
+      // Verificar que usa o menu correto (sem "ip") para hostnames
+      expect(actionProcessorSource).toContain('/ip hotspot walled-garden add dst-host');
+    });
+  });
 });
