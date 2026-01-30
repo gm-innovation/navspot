@@ -540,10 +540,40 @@ Deno.serve(async (req) => {
             }
           }
 
+          // v6.9.11: Fetch active session BEFORE updating consumption to calculate delta
+          const { data: preUpdateSession } = await supabase
+            .from('sessoes_wifi')
+            .select('id, bytes_in, bytes_out')
+            .eq('tripulante_id', tripulante.id)
+            .eq('hotspot_id', hotspot.id)
+            .eq('mac_address', activeUser.mac)
+            .eq('status', 'ativa')
+            .maybeSingle()
+
+          // v6.9.11: Calculate DELTA (difference) since last sync
+          const previousBytesIn = preUpdateSession?.bytes_in || 0
+          const previousBytesOut = preUpdateSession?.bytes_out || 0
+          
+          // Detect session reset (reconnection): if current < previous, it's a new session
+          const deltaIn = activeUser.bytes_in < previousBytesIn 
+            ? activeUser.bytes_in  // New session, count all
+            : activeUser.bytes_in - previousBytesIn
+          
+          const deltaOut = activeUser.bytes_out < previousBytesOut
+            ? activeUser.bytes_out
+            : activeUser.bytes_out - previousBytesOut
+          
+          const deltaBytes = deltaIn + deltaOut
+          
+          console.log(`[mikrotik-sync] v6.9.11: Delta for ${activeUser.user}: ${deltaBytes} bytes (in: ${deltaIn}, out: ${deltaOut}, prevIn: ${previousBytesIn}, prevOut: ${previousBytesOut})`)
+
+          // v6.9.11: Variable to track if we need to kick user for quota
+          let shouldKickForQuota = false
+
           if (perfil?.limite_dados_mb) {
             const limitBytes = perfil.limite_dados_mb * 1024 * 1024
-            const totalBytes = activeUser.bytes_in + activeUser.bytes_out
-            const newTotal = tripulante.bytes_consumidos + totalBytes
+            // v6.9.11: Use delta for new total calculation
+            const newTotal = tripulante.bytes_consumidos + deltaBytes
             const percentage = (newTotal / limitBytes) * 100
 
             if (percentage >= 100) {
@@ -556,6 +586,10 @@ Deno.serve(async (req) => {
                 empresa_id: embarcacao?.empresa_id,
                 tripulante_id: tripulante.id
               }, 60)
+              
+              // v6.9.11: Mark for kick when quota >= 100%
+              shouldKickForQuota = true
+              console.log(`[mikrotik-sync] v6.9.11: User ${activeUser.user} exceeded quota (${Math.round(percentage)}%), will be kicked`)
             } else if (percentage >= 80) {
               await createAlertIfNotRecent(supabase, {
                 tipo: 'quota_warning',
@@ -569,11 +603,11 @@ Deno.serve(async (req) => {
             }
           }
 
-          const totalBytes = activeUser.bytes_in + activeUser.bytes_out
+          // v6.9.11: Update consumption with DELTA (not absolute value)
           await supabase
             .from('tripulantes')
             .update({
-              bytes_consumidos: tripulante.bytes_consumidos + totalBytes,
+              bytes_consumidos: tripulante.bytes_consumidos + deltaBytes,
               ultimo_login: new Date().toISOString()
             })
             .eq('id', tripulante.id)
@@ -638,17 +672,18 @@ Deno.serve(async (req) => {
                 tripulante_id: tripulante.id
               }, 15)
             } else {
-              // Update existing device consumption
+              // v6.9.11: Update existing device consumption with DELTA (fixed operator precedence)
               await supabase
                 .from('dispositivos_registrados')
                 .update({
-                  bytes_consumidos: (existingDevice as { bytes_consumidos?: number }).bytes_consumidos || 0 + totalBytes,
+                  bytes_consumidos: ((existingDevice as { bytes_consumidos?: number }).bytes_consumidos || 0) + deltaBytes,
                   ultimo_uso: new Date().toISOString()
                 })
                 .eq('id', existingDevice.id)
             }
           } else {
             // Auto-register new device for this tripulante
+            // v6.9.11: Use deltaBytes for new device
             await supabase
               .from('dispositivos_registrados')
               .insert({
@@ -657,7 +692,7 @@ Deno.serve(async (req) => {
                 nome: `Dispositivo de ${tripulante.nome || activeUser.user}`,
                 tipo: 'outro',
                 autorizado: true,
-                bytes_consumidos: totalBytes,
+                bytes_consumidos: deltaBytes,
                 ultimo_uso: new Date().toISOString()
               })
               .then(res => {
@@ -667,6 +702,15 @@ Deno.serve(async (req) => {
                   console.log(`[mikrotik-sync] Auto-registered device ${activeUser.mac} for ${tripulante.nome}`)
                 }
               })
+          }
+
+          // v6.9.11: Add kick action if quota exceeded
+          if (shouldKickForQuota) {
+            // This will be pushed to formattedActions later
+            blockedDevices.push({
+              mac: activeUser.mac,
+              reason: 'Quota de dados excedida'
+            })
           }
 
           // Session management
