@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.9.5 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.9.9 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -170,7 +170,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.9.5 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.9.9 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -180,7 +180,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.9.5'
+        version: '6.9.9'
       }),
       { 
         status: 200, 
@@ -237,11 +237,12 @@ function generateBootstrapScript(
 :delay 500ms`
   }).join('\n\n')
 
-  // v6.9.7: Script sync com JSON usando hex \22 para aspas + header Content-Type + registered_users
+  // v6.9.9: Script sync com JSON usando hex \22 para aspas + header Content-Type + registered_users + registered_profiles
   const syncScriptSource = `:local token [/file get "navspot-token.txt" contents]
 :local syncUrl "${syncUrl}"
 :local users ""
 :local registered ""
+:local profiles ""
 :local q "\\22"
 # Coletar usuarios ativos (conectados)
 /ip hotspot active
@@ -258,8 +259,14 @@ function generateBootstrapScript(
 :local uname [get $i name]
 :set registered ($registered . $uname . ",")
 }
-# Construir JSON com ambos os campos
-:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q . "," . $q . "registered_users_csv" . $q . ":" . $q . $registered . $q . "}")
+# v6.9.9: Coletar lista de perfis de usuario do hotspot
+/ip hotspot user profile
+:foreach p in=[find] do={
+:local pname [get $p name]
+:set profiles ($profiles . $pname . ",")
+}
+# Construir JSON com todos os campos (users, registered, profiles)
+:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q . "," . $q . "registered_users_csv" . $q . ":" . $q . $registered . $q . "," . $q . "registered_profiles_csv" . $q . ":" . $q . $profiles . $q . "}")
 :do {
 :local result [/tool fetch url=$syncUrl mode=https http-method=post http-data=$body http-header-field="Content-Type: application/json" output=user as-value]
 :if (($result->"status") = "finished") do={
