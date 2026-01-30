@@ -1,228 +1,243 @@
 
-# Plano v6.9.4: Correção Final do Walled Garden - action=deny é VÁLIDO para Hostnames
 
-## Problema Identificado
+# Plano v6.9.5: Correção de Formatação do Rate-Limit e Robustez do Sync
 
-O erro "expected deny or allow (line 270 column 68)" ocorre porque usamos `action=reject` no menu incorreto.
+## Diagnóstico Completo
 
-### Regra do RouterOS (confirmada na documentação oficial):
+Você identificou corretamente a causa raiz. O problema está no formato dos dados:
 
-| Menu | Uso | Actions Válidas |
-|------|-----|-----------------|
-| `/ip hotspot walled-garden` | Hostnames/DNS (dst-host) | `allow`, `deny` |
-| `/ip hotspot walled-garden ip` | IPs/Portas/Protocolos | `accept`, `reject` |
+```
+create_profile|tripulacao-googlemarine|3MB/3MB|1|104857600;
+```
 
-**O valor `reject` NÃO é aceito no menu `/ip hotspot walled-garden`!**
+### Problemas Identificados:
 
-### Histórico do Erro
+| Problema | Valor Atual | Valor Esperado | Motivo |
+|----------|-------------|----------------|--------|
+| Rate-limit com "B" | `3MB/3MB` | `3M/3M` | RouterOS não aceita "MB", apenas "M", "k", ou "G" |
+| Dados no banco | `3mb` | `3M` | Armazenado incorretamente com "mb" minúsculo |
+| Extração do pipe | `[[ ...]]` sem trim | Conteúdo limpo | Espaços extras podem causar falha no parsing |
 
-Na v6.9.2, trocamos `action=deny` por `action=reject` pensando que `deny` era inválido. Isso estava **ERRADO**:
-- `deny` é VÁLIDO para `/ip hotspot walled-garden` (hostnames)
-- `reject` é VÁLIDO para `/ip hotspot walled-garden ip` (IPs)
+### Origem do Erro:
+
+1. **Banco de dados**: O perfil "Tripulação Googlemarine" tem `velocidade_download: 3mb` e `velocidade_upload: 3mb`
+2. **Backend** (linha 627-629): Converte para maiúsculas → `3MB/3MB` (ainda com 'B')
+3. **MikroTik**: Rejeita `3MB` porque o sufixo válido é apenas `M` (megabit)
 
 ---
 
 ## Arquivos a Modificar
 
-| Arquivo | Linha(s) | Mudança |
-|---------|----------|---------|
-| `supabase/functions/mikrotik-script-generator/index.ts` | 410 | `action=reject` → `action=deny` |
-| `supabase/functions/mikrotik-script-generator/index.ts` | 411 | `action=reject` → `action=deny` |
-| `supabase/functions/mikrotik-script-generator/index.ts` | 148-151 | Remover sanity check que bloqueia `action=deny` |
-| `test/useMikrotikSync.test.ts` | ~67-80 | Atualizar testes para refletir a correção |
+| Arquivo | Mudança |
+|---------|---------|
+| `supabase/functions/mikrotik-sync/index.ts` | Normalizar rate-limit: remover "B" e forçar maiúsculas |
+| `supabase/functions/mikrotik-sync/index.ts` | Trim do conteúdo extraído do pipe |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Trim robusto na extração do pipe |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Ignorar linhas vazias no action processor |
+| Migração SQL | Corrigir dados existentes no banco |
 
 ---
 
-## Correção 1: Atualizar create_blacklist_domain
+## Correção 1: Normalização do Rate-Limit no Backend
+
+**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
+
+**Linhas 626-630 - Código Atual:**
+```typescript
+// v6.9.1: Garantir formato maiúsculo para compatibilidade RouterOS
+const uploadRate = String(p.velocidade_upload || '2M').toUpperCase()
+const downloadRate = String(p.velocidade_download || '5M').toUpperCase()
+const rateLimit = `${uploadRate}/${downloadRate}`
+```
+
+**Código Corrigido:**
+```typescript
+// v6.9.5: Normalizar rate-limit - remover "B" e forçar maiúsculas
+// RouterOS aceita: k (kbit), M (megabit), G (gigabit) - SEM o "B"
+function normalizeRateLimit(value: string): string {
+  return String(value || '2M')
+    .toUpperCase()
+    .replace(/MB/g, 'M')  // 3MB -> 3M
+    .replace(/KB/g, 'K')  // 512KB -> 512K
+    .replace(/GB/g, 'G')  // 1GB -> 1G
+    .trim()
+}
+const uploadRate = normalizeRateLimit(p.velocidade_upload)
+const downloadRate = normalizeRateLimit(p.velocidade_download)
+const rateLimit = `${uploadRate}/${downloadRate}`
+```
+
+**Linha 729 - Mesma correção:**
+```typescript
+// v6.9.5: Normalizar rate-limit
+const rateLimit = normalizeRateLimit(String(p.rate_limit || '2M/5M'))
+return `create_profile|${p.name || ''}|${rateLimit}|${p.shared_users || 1}|${p.limit_bytes || 0}`
+```
+
+---
+
+## Correção 2: Trim na Extração do Pipe (Backend)
+
+**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
+
+**Linha 754 - Código Atual:**
+```typescript
+// v6.9: Wrap in [[ ]] markers for RouterOS extraction
+const formattedPipe = pipeDelimitedActions ? `[[ ${pipeDelimitedActions}; ]]` : ''
+```
+
+**Código Corrigido (remover espaços dentro dos delimitadores):**
+```typescript
+// v6.9.5: Wrap em [[ ]] SEM espaços extras para extração limpa
+const formattedPipe = pipeDelimitedActions ? `[[${pipeDelimitedActions};]]` : ''
+```
+
+---
+
+## Correção 3: Extração Robusta no Script MikroTik
 
 **Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
 
-**Linhas 409-416 - Código Atual:**
+**Linhas 258-262 (syncScriptSource) - Código Atual:**
 ```routeros
-:if ([:len $domain] > 0) do={
-:if ([:len [/ip hotspot walled-garden find dst-host=$domain action=reject]] = 0) do={
-/ip hotspot walled-garden add dst-host=$domain action=reject comment=("navspot-blacklist-" . $bName)
-:log info ("NAVSPOT: Blacklist bloqueado - " . $domain)
+:local start [:find $resp "[["]
+:local end [:find $resp "]]"]
+:if (($start >= 0) && ($end > $start)) do={
+:local actions [:pick $resp ($start + 2) $end]
+:global navspotActions $actions
+```
+
+**Código Corrigido (com trim e log de debug):**
+```routeros
+:local start [:find $resp "[["]
+:local end [:find $resp "]]"]
+:if (($start >= 0) && ($end > $start)) do={
+:local raw [:pick $resp ($start + 2) $end]
+# v6.9.5: Trim de espaços no início e fim
+:local i 0
+:local j ([:len $raw] - 1)
+:while (($i <= $j) && ([:pick $raw $i ($i + 1)] = " ")) do={:set i ($i + 1)}
+:while (($j >= $i) && ([:pick $raw $j ($j + 1)] = " ")) do={:set j ($j - 1)}
+:local actions ""
+:if ($j >= $i) do={:set actions [:pick $raw $i ($j + 1)]}
+:global navspotActions $actions
+:log info ("NAVSPOT-SYNC: pending_actions_pipe extraido (" . [:len $actions] . " chars)")
+:log info ("NAVSPOT-DEBUG: raw=[" . $actions . "]")
+```
+
+---
+
+## Correção 4: Action Processor Resiliente a Linhas Vazias
+
+**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
+
+**Linha 296 (actionProcessorSource) - Adicionar verificação:**
+
+No loop do action processor, já existe verificação de linha vazia, mas precisa ser mais robusta. A linha atual:
+```routeros
+:if ($j < $i) do={:set pos ($endPos + 1)}
+```
+
+**Código Corrigido (skip completo se vazio):**
+```routeros
+:if ($j < $i) do={
+# v6.9.5: Linha vazia ou só espaços, pular completamente
+:set pos ($endPos + 1)
 } else={
-:log info ("NAVSPOT: Blacklist ja existe - " . $domain)
-}
-}
+# ... resto do processamento apenas se não for vazio
 ```
 
-**Código Corrigido:**
-```routeros
-:if ([:len $domain] > 0) do={
-:if ([:len [/ip hotspot walled-garden find dst-host=$domain action=deny]] = 0) do={
-/ip hotspot walled-garden add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
-:log info ("NAVSPOT: Blacklist bloqueado - " . $domain)
-} else={
-:log info ("NAVSPOT: Blacklist ja existe - " . $domain)
-}
-}
+A estrutura atual já faz isso implicitamente, mas podemos melhorar com um `:continue` ou garantindo que `$p1` não seja buscado em string vazia.
+
+---
+
+## Correção 5: Migração SQL para Corrigir Dados Existentes
+
+Executar no banco de dados para corrigir perfis existentes:
+
+```sql
+-- v6.9.5: Normalizar velocidades - remover "b" do sufixo
+UPDATE perfis_velocidade
+SET 
+  velocidade_download = UPPER(REPLACE(REPLACE(velocidade_download, 'mb', 'M'), 'kb', 'K')),
+  velocidade_upload = UPPER(REPLACE(REPLACE(velocidade_upload, 'mb', 'M'), 'kb', 'K'))
+WHERE 
+  velocidade_download ILIKE '%mb%' 
+  OR velocidade_download ILIKE '%kb%'
+  OR velocidade_upload ILIKE '%mb%'
+  OR velocidade_upload ILIKE '%kb%';
+
+-- Verificar resultado
+SELECT nome, velocidade_download, velocidade_upload FROM perfis_velocidade;
 ```
 
 ---
 
-## Correção 2: Remover Sanity Check Incorreto
+## Correção 6: Atualizar Versão para v6.9.5
 
 **Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
 
-**Linhas 148-151 - Código Atual:**
-```typescript
-// v6.9.3: Verificar action=deny (inválido)
-if (bootstrapScript.includes('action=deny')) {
-  throw new Error('Erro critico: action=deny invalido. Use action=reject')
-}
-```
-
-**Código Corrigido:**
-```typescript
-// v6.9.4: action=deny é VÁLIDO para /ip hotspot walled-garden (hostnames)
-// action=reject é VÁLIDO para /ip hotspot walled-garden ip (IPs)
-// Verificar apenas que não há mistura incorreta
-if (bootstrapScript.includes('walled-garden ip') && bootstrapScript.includes('action=deny')) {
-  console.warn('[script-generator] AVISO: action=deny no menu ip pode estar incorreto. Use action=reject para IPs.')
-}
-if (bootstrapScript.match(/walled-garden add.*action=reject/) && !bootstrapScript.match(/walled-garden ip add.*action=reject/)) {
-  console.warn('[script-generator] AVISO: action=reject no menu de hostnames pode estar incorreto. Use action=deny.')
-}
-```
+Buscar e substituir todas as ocorrências de "v6.9.4" por "v6.9.5".
 
 ---
 
-## Correção 3: Atualizar Testes
+## Estrutura Final do Pipeline v6.9.5
 
-**Arquivo:** `test/useMikrotikSync.test.ts`
-
-Remover ou atualizar o teste que verifica ausência de `action=deny`:
-
-**Código Atual (linhas 67-80):**
-```typescript
-it('should not contain action=deny in generated RouterOS scripts', () => {
-  const actionProcessorSource = `
-    :if ($cmd = "create_blacklist_domain") do={
-      /ip hotspot walled-garden add dst-host=$domain action=reject comment=("navspot-blacklist-" . $bName)
-    }
-  `;
-  
-  expect(actionProcessorSource).not.toContain('action=deny');
-  expect(actionProcessorSource).toContain('action=reject');
-});
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ BANCO DE DADOS (perfis_velocidade)                           │
+│ velocidade_download: "3M" (normalizado)                      │
+│ velocidade_upload: "3M" (normalizado)                        │
+└──────────────────────┬───────────────────────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────────────────────┐
+│ MIKROTIK-SYNC (Backend)                                      │
+│ normalizeRateLimit("3M") → "3M"                              │
+│ rateLimit = "3M/3M"                                          │
+│ pending_actions_pipe = "[[create_profile|...|3M/3M|...;]]"   │
+└──────────────────────┬───────────────────────────────────────┘
+                       ▼
+┌──────────────────────────────────────────────────────────────┐
+│ MIKROTIK (RouterOS)                                          │
+│ Extração: [:pick $resp ($start + 2) $end] → trim             │
+│ Parsing: "create_profile|name|3M/3M|1|0"                     │
+│ Execução: /ip hotspot user profile add rate-limit=3M/3M      │
+└──────────────────────────────────────────────────────────────┘
 ```
-
-**Código Corrigido:**
-```typescript
-it('should use correct action values for walled-garden menus', () => {
-  // Para /ip hotspot walled-garden (hostnames): action=allow ou action=deny
-  const hostnameBlacklist = `
-    /ip hotspot walled-garden add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
-  `;
-  
-  // Para /ip hotspot walled-garden ip (IPs): action=accept ou action=reject
-  const ipWhitelist = `
-    /ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
-  `;
-  
-  // Hostnames devem usar deny para bloquear
-  expect(hostnameBlacklist).toContain('action=deny');
-  expect(hostnameBlacklist).not.toContain('action=reject');
-  
-  // IPs devem usar accept/reject
-  expect(ipWhitelist).toContain('action=accept');
-  expect(ipWhitelist).not.toContain('action=allow');
-});
-
-it('should use correct walled-garden menu for hostnames', () => {
-  const actionProcessorSource = `
-    /ip hotspot walled-garden add dst-host=$domain action=deny
-  `;
-  
-  // Verificar que usa o menu correto (sem "ip") para hostnames
-  expect(actionProcessorSource).toContain('/ip hotspot walled-garden add dst-host');
-  // Verificar que NÃO usa o menu "ip" para dst-host
-  expect(actionProcessorSource).not.toMatch(/walled-garden ip.*dst-host/);
-});
-```
-
----
-
-## Correção 4: Atualizar Versão para v6.9.4
-
-**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
-
-Buscar e substituir todas as ocorrências de "v6.9.3" por "v6.9.4".
-
----
-
-## Referência Definitiva RouterOS Walled Garden
-
-### Para PERMITIR hostnames (whitelist):
-```routeros
-/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-system"
-```
-
-### Para BLOQUEAR hostnames (blacklist):
-```routeros
-/ip hotspot walled-garden add dst-host="*.facebook.com" action=deny comment="navspot-blacklist-facebook"
-```
-
-### Para PERMITIR IPs/portas (whitelist):
-```routeros
-/ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
-```
-
-### Para BLOQUEAR IPs/portas (blacklist):
-```routeros
-/ip hotspot walled-garden ip add dst-address=192.168.1.100 action=reject comment="blocked-ip"
-```
-
----
-
-## Validação Pós-Implementação
-
-1. Gerar script para hotspot de teste
-2. Verificar no arquivo .rsc:
-   - [ ] Blacklist de hostnames usa `/ip hotspot walled-garden add ... action=deny`
-   - [ ] Whitelist de hostnames usa `/ip hotspot walled-garden add ... action=allow`
-   - [ ] Whitelist de IPs/portas usa `/ip hotspot walled-garden ip add ... action=accept`
-   - [ ] Versão v6.9.4 nos logs
-3. Importar no MikroTik: `/import navspot-bootstrap.rsc`
-4. Confirmar que o import completa **SEM ERROS**
-5. Validar regras criadas:
-   ```
-   /ip hotspot walled-garden print where comment~"navspot"
-   /ip hotspot walled-garden ip print where comment~"navspot"
-   ```
 
 ---
 
 ## Resumo das Correções
 
-| Problema | v6.9.3 (Errado) | v6.9.4 (Correto) |
-|----------|-----------------|------------------|
-| Blacklist hostnames | `action=reject` | `action=deny` |
-| Sanity check | Bloqueava `action=deny` | Permite `action=deny` em walled-garden |
-| Testes | Esperavam `action=reject` | Esperam `action=deny` para hostnames |
+| Problema | Antes | Depois |
+|----------|-------|--------|
+| Rate-limit | `3MB/3MB` | `3M/3M` |
+| Dados no banco | `3mb` | `3M` (via SQL) |
+| Pipe delimitadores | `[[ ... ]]` (com espaços) | `[[...]]` (sem espaços) |
+| Extração RouterOS | Sem trim | Com trim de espaços |
+| Linhas vazias | Pode falhar | Skip robusto |
 
 ---
 
-## Detalhes Técnicos
+## Validação Pós-Implementação
 
-### Por que a confusão aconteceu?
-
-O RouterOS usa terminologia inconsistente entre menus:
-
-| Conceito | `/ip hotspot walled-garden` | `/ip hotspot walled-garden ip` | `/ip firewall filter` |
-|----------|-----------------------------|---------------------------------|----------------------|
-| Permitir | `allow` | `accept` | `accept` |
-| Bloquear | `deny` | `reject` | `drop` ou `reject` |
-
-Essa inconsistência levou à correção errada na v6.9.2 que trocou `deny` por `reject`.
+1. Executar migração SQL para corrigir dados existentes
+2. Regenerar script para hotspot de teste
+3. Verificar logs do MikroTik:
+   ```
+   /log print where topics~"script"
+   ```
+4. Confirmar que não há erros de sintaxe no rate-limit
+5. Testar criação de perfil via sync:
+   ```
+   /ip hotspot user profile print where name~"tripulacao"
+   ```
 
 ---
 
 ## Impacto
 
-- **Criticidade:** Crítica (impede instalação do script)
-- **Risco:** Baixo (reversão da correção incorreta)
+- **Criticidade:** Alta (impede sincronização de perfis)
+- **Risco:** Baixo (normalização de dados + robustez)
 - **Compatibilidade:** RouterOS 6.x e 7.x
+
