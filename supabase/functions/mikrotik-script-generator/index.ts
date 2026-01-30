@@ -474,9 +474,10 @@ ${wanConfig}
 } on-error={
 /file add name="navspot-token.txt" contents="${hotspot.sync_token}"
 }
+:delay 1s
 :log info "NAVSPOT: Token criado"
 
-# 10. SYNC SCRIPT v6.5 + ACTION PROCESSOR
+# 10. SYNC SCRIPT v6.7 + ACTION PROCESSOR
 /system script add name="navspot-action-processor" policy=read,write,policy,test source={
 ${actionProcessorSource}
 }
