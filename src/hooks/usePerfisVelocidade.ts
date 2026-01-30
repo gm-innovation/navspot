@@ -167,14 +167,52 @@ export function useUpdatePerfilVelocidade() {
 
       if (error) throw error;
 
+      // v6.9.6: Invalidate synced_profiles cache for all hotspots in the empresa
+      // This forces re-sync of the updated profile
+      const oldSlug = toProfileSlug(oldData.nome);
+      const newSlug = toProfileSlug(data.nome);
+      
+      // Get all hotspots for this empresa via embarcacoes
+      const { data: embarcacoes } = await supabase
+        .from('embarcacoes')
+        .select('id')
+        .eq('empresa_id', oldData.empresa_id);
+      
+      if (embarcacoes && embarcacoes.length > 0) {
+        const embarcacaoIds = embarcacoes.map(e => e.id);
+        
+        // Remove both old and new slugs from synced_profiles to force re-sync
+        const { data: hotspots } = await supabase
+          .from('hotspots')
+          .select('id, synced_profiles')
+          .in('embarcacao_id', embarcacaoIds);
+        
+        if (hotspots) {
+          for (const hotspot of hotspots) {
+            const syncedProfiles = (hotspot.synced_profiles || []) as string[];
+            const updatedProfiles = syncedProfiles.filter(
+              slug => slug !== oldSlug && slug !== newSlug
+            );
+            
+            if (updatedProfiles.length !== syncedProfiles.length) {
+              await supabase
+                .from('hotspots')
+                .update({ synced_profiles: updatedProfiles })
+                .eq('id', hotspot.id);
+              console.log(`[usePerfisVelocidade] v6.9.6: Invalidated profile cache for hotspot ${hotspot.id}`);
+            }
+          }
+        }
+      }
+
       // Create MikroTik action to update profile config
       try {
         await createMikrotikActionForEmpresa({
           empresaId: oldData.empresa_id,
           tipo: 'update_profile_config',
           payload: {
-            name: toProfileSlug(data.nome),
-            oldName: toProfileSlug(oldData.nome), // In case name changed
+            name: newSlug,
+            oldName: oldSlug, // In case name changed
             rateLimit: `${data.velocidade_upload}/${data.velocidade_download}`,
             sharedUsers: data.max_dispositivos,
             limitBytes: data.limite_dados_mb ? data.limite_dados_mb * 1024 * 1024 : 0,
@@ -226,13 +264,45 @@ export function useDeletePerfilVelocidade() {
 
       if (error) throw error;
 
-      // Create MikroTik action to remove profile
+      // v6.9.6: Remove deleted profile from synced_profiles of all hotspots
       if (perfil) {
+        const slug = toProfileSlug(perfil.nome);
+        
+        const { data: embarcacoes } = await supabase
+          .from('embarcacoes')
+          .select('id')
+          .eq('empresa_id', perfil.empresa_id);
+        
+        if (embarcacoes && embarcacoes.length > 0) {
+          const embarcacaoIds = embarcacoes.map(e => e.id);
+          
+          const { data: hotspots } = await supabase
+            .from('hotspots')
+            .select('id, synced_profiles')
+            .in('embarcacao_id', embarcacaoIds);
+          
+          if (hotspots) {
+            for (const hotspot of hotspots) {
+              const syncedProfiles = (hotspot.synced_profiles || []) as string[];
+              const updatedProfiles = syncedProfiles.filter(s => s !== slug);
+              
+              if (updatedProfiles.length !== syncedProfiles.length) {
+                await supabase
+                  .from('hotspots')
+                  .update({ synced_profiles: updatedProfiles })
+                  .eq('id', hotspot.id);
+                console.log(`[usePerfisVelocidade] v6.9.6: Removed deleted profile from hotspot ${hotspot.id}`);
+              }
+            }
+          }
+        }
+
+        // Create MikroTik action to remove profile
         try {
           await createMikrotikActionForEmpresa({
             empresaId: perfil.empresa_id,
             tipo: 'remove_user_profile',
-            payload: { name: toProfileSlug(perfil.nome) },
+            payload: { name: slug },
           });
         } catch (actionError) {
           console.error('[usePerfisVelocidade] Failed to create MikroTik action:', actionError);
