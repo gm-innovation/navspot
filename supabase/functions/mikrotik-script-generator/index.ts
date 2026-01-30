@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.8 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.9 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -155,7 +155,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.8 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.9 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -165,7 +165,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.8'
+        version: '6.9'
       }),
       { 
         status: 200, 
@@ -191,7 +191,7 @@ function generateFinalizeScript(hotspot: Hotspot): string {
   const networkBase = networkParts[0].replace(/\.\d+$/, '')
   const gateway = `${networkBase}.1`
 
-  return `:log info "NAVSPOT v6.8 Parte 2: Finalizando migracao da ether2..."
+  return `:log info "NAVSPOT v6.9 Parte 2: Finalizando migracao da ether2..."
 
 # Validacoes de seguranca
 :if ([:len [/interface bridge find name="bridge1"]] = 0) do={
@@ -218,11 +218,12 @@ function generateFinalizeScript(hotspot: Hotspot): string {
 
 # Finalizacao
 :log info "=========================================="
-:log info "NAVSPOT v6.8: INSTALACAO 100% CONCLUIDA!"
+:log info "NAVSPOT v6.9: INSTALACAO 100% CONCLUIDA!"
 :log info "Todas as portas (ether2-5) estao na bridge1"
 :log info "Hotspot ativo em ${gateway}"
 :log info "Sync inteligente rodando a cada ${syncIntervalMinutes} minuto(s)"
 :log info "Action Processor v2 ativo para comandos em tempo real"
+:log info "Gerencia Winbox/MNDP configurada na lista mgmt"
 :log info "=========================================="
 `
 }
@@ -425,7 +426,14 @@ function generateBootstrapScript(
 :local p2 [:find $rest "|"]
 :local bName [:pick $rest 0 $p2]
 :local domain [:pick $rest ($p2 + 1) [:len $rest]]
-:log info ("NAVSPOT: Blacklist registrado - " . $domain)
+:if ([:len $domain] > 0) do={
+:if ([:len [/ip hotspot walled-garden ip find dst-host=$domain action=deny]] = 0) do={
+/ip hotspot walled-garden ip add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
+:log info ("NAVSPOT: Blacklist bloqueado - " . $domain)
+} else={
+:log info ("NAVSPOT: Blacklist ja existe - " . $domain)
+}
+}
 }
 :if ($cmd = "update_profile_quota") do={
 :local p2 [:find $rest "|"]
@@ -455,8 +463,8 @@ function generateBootstrapScript(
 :log info "NAVSPOT: DHCP client em ${wanInterface}"`
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
-  // Bootstrap script v6.8 - Token via /file print file= + Sync com header Content-Type
-  return `:log info "NAVSPOT v6.8: Iniciando instalacao..."
+  // Bootstrap script v6.9 - Token via /file print file= + Sync com header Content-Type + Winbox/MNDP mgmt
+  return `:log info "NAVSPOT v6.9: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -515,6 +523,34 @@ ${wanConfig}
 /ip firewall nat add chain=srcnat out-interface=${wanInterface} action=masquerade comment="navspot-nat"
 :log info "NAVSPOT: NAT configurado em ${wanInterface}"
 
+# 6.5. GERENCIA WINBOX / NEIGHBOR DISCOVERY
+# Criar lista de interfaces de gestao
+:if ([:len [/interface list find name="mgmt"]] = 0) do={
+/interface list add name="mgmt" comment="navspot-mgmt-list"
+}
+:do { /interface list member remove [find list="mgmt" interface=ether2] } on-error={}
+:do { /interface list member remove [find list="mgmt" interface=bridge1] } on-error={}
+# Adicionar ether2 (porta de gerencia principal)
+:do { /interface list member add list="mgmt" interface=ether2 } on-error={}
+# Adicionar bridge1 para discovery via hotspot (opcional, seguro pois requer auth)
+/interface list member add list="mgmt" interface=bridge1 comment="navspot-allow-discovery-on-bridge"
+
+# Configurar neighbor discovery para usar lista de gestao
+/ip neighbor discovery-settings set discover-interface-list=mgmt
+:log info "NAVSPOT: Neighbor Discovery configurado para lista mgmt"
+
+# Permitir Winbox (TCP 8291) pela porta de gestao (ether2)
+:if ([:len [/ip firewall filter find comment="navspot-allow-winbox-mgmt"]] = 0) do={
+/ip firewall filter add chain=input in-interface=ether2 protocol=tcp dst-port=8291 action=accept comment="navspot-allow-winbox-mgmt" place-before=0
+}
+
+# Permitir MNDP (UDP 5678) para aparecer em Neighbors
+:if ([:len [/ip firewall filter find comment="navspot-allow-mndp-mgmt"]] = 0) do={
+/ip firewall filter add chain=input in-interface=ether2 protocol=udp dst-port=5678 action=accept comment="navspot-allow-mndp-mgmt" place-before=0
+}
+
+:log info "NAVSPOT: Regras de firewall para Winbox/MNDP criadas"
+
 # 7. HOTSPOT (login-by=http-pap para compatibilidade com senhas do sistema)
 /ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=flash/hotspot login-by=http-pap
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
@@ -547,7 +583,7 @@ ${actionProcessorSource}
 ${syncScriptSource}
 }
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
-:log info "NAVSPOT: Sync v6.8 + Action Processor v2 configurados"
+:log info "NAVSPOT: Sync v6.9 + Action Processor v2 configurados"
 
 # 11. MIGRACAO PARCIAL DE PORTAS (apenas ether3, 4, 5 - NAO migra ether2)
 :log info "NAVSPOT: Iniciando migracao PARCIAL de portas (ether3, 4, 5)..."
@@ -565,7 +601,7 @@ ${partialMigrationCommands}
 :log warning "=========================================="
 
 # 13. FINALIZACAO PARCIAL
-:log info "NAVSPOT v6.8 Parte 1: Bootstrap parcial concluido"
+:log info "NAVSPOT v6.9 Parte 1: Bootstrap parcial concluido"
 :log info "NAVSPOT: Aguardando troca de cabo para finalizar ether2"
 `
 }
