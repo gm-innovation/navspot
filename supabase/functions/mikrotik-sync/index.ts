@@ -611,25 +611,95 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Increment attempt count for returned actions
-    if (formattedActions.length > 0) {
-      const actionIds = formattedActions
+    // v6.9: Ensure all company profiles are synced before user actions
+    if (embarcacao) {
+      const { data: perfis } = await supabase
+        .from('perfis_velocidade')
+        .select('nome, velocidade_download, velocidade_upload, max_dispositivos, limite_dados_mb')
+        .eq('empresa_id', embarcacao.empresa_id)
+
+      if (perfis && perfis.length > 0) {
+        const profileActions = perfis.map(p => {
+          const slug = p.nome.toLowerCase()
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
+          const rateLimit = `${p.velocidade_upload || '2M'}/${p.velocidade_download || '5M'}`
+          const quota = p.limite_dados_mb || 0
+          const shared = p.max_dispositivos || 1
+          return {
+            id: `auto-profile-${slug}`,
+            type: 'add_user_profile' as const,
+            payload: {
+              name: slug,
+              rate_limit: rateLimit,
+              shared_users: shared,
+              limit_bytes: quota * 1024 * 1024
+            }
+          }
+        })
+        // Prepend to ensure profiles exist before users
+        formattedActions.unshift(...profileActions)
+        console.log(`[mikrotik-sync] v6.9: Injected ${profileActions.length} profiles for sync`)
+      }
+    }
+
+    // v6.9: Expand domain-based actions to individual commands
+    const expandedActions: typeof formattedActions = []
+
+    for (const action of formattedActions) {
+      const p = action.payload as Record<string, unknown>
+      
+      // Expand walled garden with multiple domains
+      if (action.type === 'add_walled_garden' && Array.isArray(p.dominios)) {
+        for (const domain of p.dominios as string[]) {
+          if (domain) {
+            expandedActions.push({
+              id: `${action.id}-${domain.replace(/[^a-z0-9]/gi, '')}`,
+              type: (p.tipo === 'blacklist' ? 'add_blacklist_domain' : 'add_whitelist_domain') as string,
+              payload: { list_name: String(p.lista_name || 'default'), domain }
+            })
+          }
+        }
+      } 
+      // Expand firewall filter rules
+      else if (action.type === 'add_firewall_filter' && Array.isArray(p.dominios)) {
+        for (const domain of p.dominios as string[]) {
+          if (domain) {
+            expandedActions.push({
+              id: `${action.id}-${domain.replace(/[^a-z0-9]/gi, '')}`,
+              type: 'add_blacklist_domain' as string,
+              payload: { list_name: String(p.lista_name || 'regra'), domain }
+            })
+          }
+        }
+      } 
+      else {
+        expandedActions.push(action)
+      }
+    }
+
+    // v6.9: Auto-mark as executed after 1 delivery (fire-and-forget pattern)
+    if (expandedActions.length > 0) {
+      const actionIds = expandedActions
         .filter(a => !a.id.startsWith('auto-'))
         .map(a => a.id)
       
       if (actionIds.length > 0) {
         await supabase
           .from('acoes_pendentes')
-          .update({ tentativas: 1 })
+          .update({ 
+            status: 'executado', 
+            executed_at: new Date().toISOString() 
+          })
           .in('id', actionIds)
-          .then(() => console.log(`[mikrotik-sync] Incremented attempts for ${actionIds.length} actions`))
+          .then(() => console.log(`[mikrotik-sync] v6.9: Marked ${actionIds.length} actions as executed`))
       }
     }
 
-    // v6.5: Generate pipe-delimited format for RouterOS parsing
+    // v6.9: Generate pipe-delimited format for RouterOS parsing
     // Format: cmd|param1|param2;cmd2|param1|param2;
     // Wrapped in [[ ]] markers for extraction by navspot-sync script
-    const pipeDelimitedActions = formattedActions.map(action => {
+    const pipeDelimitedActions = expandedActions.map(action => {
       const p = action.payload
       
       switch (action.type) {
@@ -652,20 +722,21 @@ Deno.serve(async (req) => {
           // Update profile is handled via create_user with updated profile
           return `create_user|${p.user || ''}||${p.profile || ''}`
         case 'add_user_profile':
-          // Create profile with rate-limit format: download/upload
-          return `create_profile|${p.name || ''}|${p.rate_limit || '2M/5M'}`
+          // v6.9: Create profile with rate-limit, shared-users, and quota
+          return `create_profile|${p.name || ''}|${p.rate_limit || '2M/5M'}|${p.shared_users || 1}|${p.limit_bytes || 0}`
         case 'remove_user_profile':
           return `remove_profile|${p.name || ''}`
         case 'add_walled_garden':
-          // v6.5: One domain per command for robustness
-          return `create_whitelist_domain|${p.list_name || 'default'}|${p.dst_host || ''}`
+        case 'add_whitelist_domain':
+          // v6.9: One domain per command for robustness
+          return `create_whitelist_domain|${p.list_name || 'default'}|${p.domain || p.dst_host || ''}`
         case 'remove_walled_garden':
           return `remove_whitelist_domain|${p.dst_host || ''}`
         case 'add_firewall_filter':
-          // v6.5: Blacklist as separate domain command
+        case 'add_blacklist_domain':
+          // v6.9: Blacklist as separate domain command
           return `create_blacklist_domain|${p.list_name || 'default'}|${p.domain || ''}`
         case 'add_firewall_l7':
-          // v6.5: Firewall rules just logged (v6.6 will implement)
           return `create_firewall_rule|${p.order || 0}|${p.list || ''}|${p.type || ''}|${p.profile || ''}|${p.schedule || ''}|${p.action || ''}`
         case 'update_profile_quota':
           return `update_profile_quota|${p.profile || ''}|${p.quota_mb || 0}`
@@ -675,15 +746,15 @@ Deno.serve(async (req) => {
       }
     }).join(';')
 
-    // v6.5: Wrap in [[ ]] markers for RouterOS extraction
+    // v6.9: Wrap in [[ ]] markers for RouterOS extraction
     const formattedPipe = pipeDelimitedActions ? `[[ ${pipeDelimitedActions}; ]]` : ''
 
-    console.log(`[mikrotik-sync] v6.5: Returning ${formattedActions.length} pending actions, ${firewallRules.length} firewall rules, ${blockedDevices.length} blocked devices`)
+    console.log(`[mikrotik-sync] v6.9: Returning ${expandedActions.length} pending actions, ${firewallRules.length} firewall rules, ${blockedDevices.length} blocked devices`)
 
     return new Response(
       JSON.stringify({
         success: true,
-        pending_actions: formattedActions,
+        pending_actions: expandedActions,
         pending_actions_pipe: formattedPipe,  // v6.5: [[ cmd|p1;cmd2|p1; ]]
         firewall_rules: firewallRules,
         device_violations: deviceViolations,
