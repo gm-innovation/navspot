@@ -1,44 +1,32 @@
 
-# Plano v6.9.6: Correção do Loop de Ações Repetidas
 
-## Diagnóstico Preciso
+# Plano v6.9.7: Reconciliação de Tripulantes com Lista Completa do MikroTik
 
-O problema está na lógica de injeção de perfis automáticos (linhas 614-656). Essas ações são geradas **em toda requisição de sync** e reenviadas indefinidamente porque:
+## Mudança Crítica do Plano Original
 
-1. Elas são criadas dinamicamente a partir da tabela `perfis_velocidade` a cada sync
-2. Elas têm IDs que começam com `auto-profile-*`
-3. O filtro na linha 697-698 **exclui** ações `auto-*` do update de status
-4. Mesmo que fossem marcadas, a próxima requisição geraria novas ações com os mesmos dados
+A recomendação foi aceita: **o envio da lista de usuários registrados (`registered_users`) será implementado como funcionalidade obrigatória**, não opcional. Isso elimina falsos positivos quando o navio está vazio.
 
-### Fluxo Atual (Bugado)
+## Comparação: active_users vs registered_users
 
-```text
-Sync 1:
-├── Busca ações pendentes: []
-├── Injeta: [auto-profile-tripulacao-googlemarine]
-├── Marca como executado: [] (filtrado porque começa com "auto-")
-└── Retorna: [[create_profile|tripulacao-googlemarine|3M/3M|1|0;]]
+| Campo | Origem | Descrição | Quando está vazio |
+|-------|--------|-----------|-------------------|
+| `active_users` | Usuários conectados agora | Lista de quem está online | Navio vazio = array vazio |
+| `registered_users` | `/ip hotspot user` | Todos os usuários cadastrados | MikroTik foi limpo |
 
-Sync 2 (1 minuto depois):
-├── Busca ações pendentes: []
-├── Injeta: [auto-profile-tripulacao-googlemarine] ← MESMO PERFIL NOVAMENTE!
-├── Marca como executado: []
-└── Retorna: [[create_profile|tripulacao-googlemarine|3M/3M|1|0;]] ← LOOP!
-```
+**Vantagem**: Com `registered_users`, o backend tem certeza absoluta de quem existe no MikroTik, independente de estarem online.
 
 ---
 
-## Solução: Tracking de Perfis Já Sincronizados
+## Arquivos a Modificar
 
-O sistema precisa saber quais perfis já foram enviados para cada hotspot. Existem duas abordagens:
-
-### Opção A: Usar Tabela de Tracking (Mais Robusta)
-
-Criar uma tabela `hotspot_synced_profiles` para rastrear quais perfis foram enviados para cada hotspot.
-
-### Opção B: Usar Campo no Hotspot (Mais Simples) ← RECOMENDADA
-
-Adicionar um campo `synced_profiles` (JSONB array) na tabela `hotspots` para armazenar os slugs dos perfis já sincronizados.
+| Arquivo | Mudança | Prioridade |
+|---------|---------|------------|
+| Migração SQL | Adicionar `synced_users JSONB` com metadados | Alta |
+| `mikrotik-script-generator/index.ts` | Adicionar coleta de `registered_users` no sync script | Alta |
+| `mikrotik-sync/index.ts` | Processar `registered_users_csv` no payload | Alta |
+| `mikrotik-sync/index.ts` | Implementar `reconcileUsers()` com reconciliação | Alta |
+| `mikrotik-sync/index.ts` | Buscar `synced_users` junto com hotspot | Alta |
+| `src/hooks/useTripulantes.ts` | Invalidar cache ao atualizar tripulante | Média |
 
 ---
 
@@ -47,209 +35,365 @@ Adicionar um campo `synced_profiles` (JSONB array) na tabela `hotspots` para arm
 ### 1. Migração SQL - Adicionar Campo de Tracking
 
 ```sql
--- Adicionar campo para rastrear perfis sincronizados
+-- v6.9.7: Adicionar tracking de usuários sincronizados com metadados
 ALTER TABLE hotspots 
-ADD COLUMN IF NOT EXISTS synced_profiles JSONB DEFAULT '[]'::jsonb;
+ADD COLUMN IF NOT EXISTS synced_users JSONB DEFAULT '[]'::jsonb;
 
--- Índice para performance (opcional)
-CREATE INDEX IF NOT EXISTS idx_hotspots_synced_profiles 
-ON hotspots USING gin(synced_profiles);
+COMMENT ON COLUMN hotspots.synced_users IS 
+'Array de objetos: [{"login": "alexandre.silva", "last_seen": "ISO8601", "last_synced_at": "ISO8601", "miss_count": 0}]';
 
-COMMENT ON COLUMN hotspots.synced_profiles IS 
-'Array de slugs de perfis já sincronizados para este hotspot. Ex: ["tripulacao-padrao", "visitante"]';
+-- Índice para performance em buscas
+CREATE INDEX IF NOT EXISTS idx_hotspots_synced_users_gin 
+ON hotspots USING gin(synced_users);
 ```
 
-### 2. Modificar mikrotik-sync/index.ts
+### 2. Script MikroTik - Coletar Lista Completa de Usuários
 
-**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
+**Arquivo**: `supabase/functions/mikrotik-script-generator/index.ts`
 
-#### 2.1 Buscar hotspot com campo de tracking (Linha ~189-193)
+**Mudança**: Modificar o `syncScriptSource` para coletar `registered_users` além de `active_users`.
 
 ```typescript
-// Linha 189-193 - Adicionar synced_profiles à query
+// Trecho atual (linhas 241-253) - ANTES
+const syncScriptSource = `:local token [/file get "navspot-token.txt" contents]
+:local syncUrl "${syncUrl}"
+:local users ""
+:local q "\\22"
+/ip hotspot active
+:foreach a in=[find] do={
+:local u [get $a user]
+:local m [get $a mac-address]
+:local bi [get $a bytes-in]
+:local bo [get $a bytes-out]
+:set users ($users . $u . "," . $m . "," . $bi . "," . $bo . ";")
+}
+:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q . "}")
+...`
+```
+
+**DEPOIS (v6.9.7)**:
+
+```typescript
+const syncScriptSource = `:local token [/file get "navspot-token.txt" contents]
+:local syncUrl "${syncUrl}"
+:local users ""
+:local registered ""
+:local q "\\22"
+# Coletar usuarios ativos (conectados)
+/ip hotspot active
+:foreach a in=[find] do={
+:local u [get $a user]
+:local m [get $a mac-address]
+:local bi [get $a bytes-in]
+:local bo [get $a bytes-out]
+:set users ($users . $u . "," . $m . "," . $bi . "," . $bo . ";")
+}
+# v6.9.7: Coletar lista completa de usuarios cadastrados (exclui dinamicos)
+/ip hotspot user
+:foreach i in=[find where dynamic=no] do={
+:local uname [get $i name]
+:set registered ($registered . $uname . ",")
+}
+# Construir JSON com ambos os campos
+:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q . "," . $q . "registered_users_csv" . $q . ":" . $q . $registered . $q . "}")
+...`
+```
+
+### 3. Backend - Interface de Payload Atualizada
+
+**Arquivo**: `supabase/functions/mikrotik-sync/index.ts`
+
+**Adicionar ao SyncPayload (linha 17-22)**:
+
+```typescript
+interface SyncPayload {
+  sync_token: string
+  active_users?: ActiveUser[]
+  registered_users_csv?: string  // v6.9.7: Lista completa de usuários cadastrados
+  executed_actions?: string[]
+  user_device_counts?: { user: string; count: number; macs: string[] }[]
+}
+```
+
+**Adicionar interface para metadados de usuários**:
+
+```typescript
+// v6.9.7: Metadata for synced users tracking
+interface SyncedUserMeta {
+  login: string
+  last_seen: string | null      // Última vez visto em active_users
+  last_synced_at: string | null // Última vez que enviamos create_user
+  miss_count: number            // Syncs consecutivos sem aparecer em registered_users
+}
+
+// Constants for reconciliation
+const MISS_THRESHOLD = 2        // Syncs faltando antes de re-criar
+const SYNC_COOLDOWN_MS = 5 * 60 * 1000  // 5 min cooldown entre re-syncs
+```
+
+### 4. Backend - Função de Reconciliação
+
+**Arquivo**: `supabase/functions/mikrotik-sync/index.ts`
+
+**Adicionar função `reconcileUsers` (inserir antes da linha 167 - Deno.serve)**:
+
+```typescript
+async function reconcileUsers(
+  supabase: ReturnType<typeof createClient>,
+  hotspot: { id: string; embarcacao_id: string; synced_users: SyncedUserMeta[] },
+  activeUsers: ActiveUser[],
+  registeredUsersCsv: string,
+  formattedActions: PendingAction[]
+): Promise<void> {
+  // Parse registered users from MikroTik (lista COMPLETA de cadastrados)
+  const registeredUsersSet = new Set(
+    registeredUsersCsv
+      .split(',')
+      .map(u => u.trim())
+      .filter(u => u.length > 0)
+  )
+  
+  // Build set of currently active (online) users
+  const activeUsersSet = new Set(activeUsers.map(u => u.user))
+  
+  // Load synced users metadata from DB
+  const syncedUsersMap = new Map<string, SyncedUserMeta>(
+    (hotspot.synced_users || []).map(u => [u.login, { ...u }])
+  )
+  
+  // Fetch all active tripulantes for this embarcacao
+  const { data: tripulantes } = await supabase
+    .from('tripulantes')
+    .select(`
+      login_wifi, senha_wifi, perfil_id, status,
+      perfis_velocidade(nome)
+    `)
+    .eq('embarcacao_id', hotspot.embarcacao_id)
+    .in('status', ['ativo', 'pendente_cadastro'])
+  
+  if (!tripulantes || tripulantes.length === 0) return
+  
+  const newActionsToInject: PendingAction[] = []
+  const now = new Date().toISOString()
+  const nowMs = Date.now()
+  
+  for (const tripulante of tripulantes) {
+    const login = tripulante.login_wifi
+    
+    // Initialize metadata if new user
+    if (!syncedUsersMap.has(login)) {
+      syncedUsersMap.set(login, {
+        login,
+        last_seen: null,
+        last_synced_at: null,
+        miss_count: 0
+      })
+    }
+    
+    const meta = syncedUsersMap.get(login)!
+    
+    // Check if user exists in MikroTik registered users
+    if (registeredUsersSet.has(login)) {
+      // User EXISTS in MikroTik - reset counters
+      meta.miss_count = 0
+      
+      // Update last_seen if also active (online)
+      if (activeUsersSet.has(login)) {
+        meta.last_seen = now
+      }
+      
+      console.log(`[mikrotik-sync] v6.9.7: User exists in MikroTik: ${login}`)
+      continue
+    }
+    
+    // User NOT in registered_users - may need to sync
+    // Only count as missing if we actually received the registered_users list
+    if (registeredUsersCsv.length > 0 || registeredUsersSet.size === 0) {
+      meta.miss_count = (meta.miss_count || 0) + 1
+      console.log(`[mikrotik-sync] v6.9.7: User missing from MikroTik, miss_count=${meta.miss_count}: ${login}`)
+    }
+    
+    // Decide if we should re-sync
+    const neverSynced = !meta.last_synced_at
+    const exceededThreshold = meta.miss_count >= MISS_THRESHOLD
+    
+    // Cooldown check: don't re-sync too frequently
+    const lastSyncTime = meta.last_synced_at ? new Date(meta.last_synced_at).getTime() : 0
+    const cooldownElapsed = (nowMs - lastSyncTime) > SYNC_COOLDOWN_MS
+    
+    if ((neverSynced || exceededThreshold) && cooldownElapsed) {
+      // Generate create_user action
+      const perfilNome = (tripulante.perfis_velocidade as any)?.nome || ''
+      const profileSlug = perfilNome.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'default'
+      
+      const actionId = `auto-user-${login}`
+      
+      newActionsToInject.push({
+        id: actionId,
+        type: 'create_user',
+        payload: {
+          user: login,
+          password: tripulante.senha_wifi,
+          profile: profileSlug
+        }
+      })
+      
+      // Update metadata
+      meta.last_synced_at = now
+      meta.miss_count = 0
+      
+      console.log(`[mikrotik-sync] v6.9.7: Re-syncing user (neverSynced=${neverSynced}, exceeded=${exceededThreshold}): ${login}`)
+    }
+  }
+  
+  // Append new actions AFTER profiles (profiles come first in the array)
+  if (newActionsToInject.length > 0) {
+    formattedActions.push(...newActionsToInject)
+    console.log(`[mikrotik-sync] v6.9.7: Injecting ${newActionsToInject.length} user actions`)
+  }
+  
+  // Persist updated metadata
+  const updatedSyncedUsers = Array.from(syncedUsersMap.values())
+  await supabase
+    .from('hotspots')
+    .update({ synced_users: updatedSyncedUsers })
+    .eq('id', hotspot.id)
+}
+```
+
+### 5. Backend - Atualizar Query e Invocar Reconciliação
+
+**Arquivo**: `supabase/functions/mikrotik-sync/index.ts`
+
+**Linha 190-194 - Adicionar synced_users à query**:
+
+```typescript
 const { data: hotspot, error: hotspotError } = await supabase
   .from('hotspots')
-  .select('id, embarcacao_id, nome, status, synced_profiles')  // ← Adicionar synced_profiles
+  .select('id, embarcacao_id, nome, status, synced_profiles, synced_users')
   .eq('sync_token', payload.sync_token)
   .single()
 ```
 
-#### 2.2 Filtrar perfis já sincronizados (Linha ~614-658)
-
-Substituir o bloco de injeção de perfis:
+**Após o processamento de profiles (linha ~688) - Invocar reconciliação**:
 
 ```typescript
-// v6.9.6: Ensure all company profiles are synced (only NEW profiles)
-if (embarcacao) {
-  const { data: perfis } = await supabase
-    .from('perfis_velocidade')
-    .select('nome, velocidade_download, velocidade_upload, max_dispositivos, limite_dados_mb')
-    .eq('empresa_id', embarcacao.empresa_id)
+// v6.9.7: Reconcile users - detect missing and re-sync
+await reconcileUsers(
+  supabase,
+  {
+    id: hotspot.id,
+    embarcacao_id: hotspot.embarcacao_id,
+    synced_users: ((hotspot as any).synced_users || []) as SyncedUserMeta[]
+  },
+  payload.active_users || [],
+  payload.registered_users_csv || '',
+  formattedActions
+)
+```
 
-  if (perfis && perfis.length > 0) {
-    // v6.9.5: Normalizar rate-limit - remover "B" e forçar maiúsculas
-    const normalizeRateLimit = (value: string | null | undefined): string => {
-      return String(value || '2M')
-        .toUpperCase()
-        .replace(/MB/g, 'M')
-        .replace(/KB/g, 'K')
-        .replace(/GB/g, 'G')
-        .trim()
-    }
+### 6. Frontend - Invalidar Cache ao Atualizar Tripulante
 
-    // v6.9.6: Obter perfis já sincronizados para este hotspot
-    const syncedProfiles = (hotspot.synced_profiles || []) as string[]
-    const newProfilesToSync: string[] = []
+**Arquivo**: `src/hooks/useTripulantes.ts`
 
-    const profileActions = perfis
-      .map(p => {
-        const slug = p.nome.toLowerCase()
-          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-          .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
-        
-        // v6.9.6: Pular perfis já sincronizados
-        if (syncedProfiles.includes(slug)) {
-          console.log(`[mikrotik-sync] v6.9.6: Perfil já sincronizado, pulando: ${slug}`)
-          return null
-        }
-        
-        newProfilesToSync.push(slug)
-        
-        const uploadRate = normalizeRateLimit(p.velocidade_upload)
-        const downloadRate = normalizeRateLimit(p.velocidade_download)
-        const rateLimit = `${uploadRate}/${downloadRate}`
-        const quota = p.limite_dados_mb || 0
-        const shared = p.max_dispositivos || 1
-        
-        return {
-          id: `auto-profile-${slug}`,
-          type: 'add_user_profile' as const,
-          payload: {
-            name: slug,
-            rate_limit: rateLimit,
-            shared_users: shared,
-            limit_bytes: quota * 1024 * 1024
-          }
-        }
-      })
-      .filter(Boolean) as PendingAction[]
+**Adicionar ao final do try block do `useUpdateTripulante` (após linha 204)**:
 
-    // Prepend to ensure profiles exist before users
-    if (profileActions.length > 0) {
-      formattedActions.unshift(...profileActions)
-      console.log(`[mikrotik-sync] v6.9.6: Injetando ${profileActions.length} NOVOS perfis para sync`)
-      
-      // v6.9.6: Atualizar lista de perfis sincronizados
-      const updatedSyncedProfiles = [...new Set([...syncedProfiles, ...newProfilesToSync])]
-      await supabase
-        .from('hotspots')
-        .update({ synced_profiles: updatedSyncedProfiles })
-        .eq('id', hotspot.id)
-        .then(() => console.log(`[mikrotik-sync] v6.9.6: Marcados como sincronizados: ${newProfilesToSync.join(', ')}`))
-    } else {
-      console.log(`[mikrotik-sync] v6.9.6: Todos os perfis já estão sincronizados`)
-    }
+```typescript
+// v6.9.7: Invalidate synced_users cache to force re-sync
+if (updates.senha_wifi || updates.perfil_id) {
+  const login = oldData.login_wifi
+  
+  // Get all hotspots for this embarcacao
+  const { data: hotspots } = await supabase
+    .from('hotspots')
+    .select('id, synced_users')
+    .eq('embarcacao_id', oldData.embarcacao_id)
+  
+  for (const hotspot of hotspots || []) {
+    const syncedUsers = ((hotspot.synced_users || []) as any[])
+      .filter((u: any) => u.login !== login)
+    
+    await supabase
+      .from('hotspots')
+      .update({ synced_users: syncedUsers })
+      .eq('id', hotspot.id)
   }
+  
+  console.log(`[useTripulantes] v6.9.7: Invalidated synced_users for ${login}`)
 }
 ```
 
-### 3. Mecanismo de Invalidação de Cache
-
-Quando um perfil é modificado (velocidade, quota, etc.), precisamos remover o slug do cache para forçar re-sincronização.
-
-**Arquivo:** `src/hooks/usePerfisVelocidade.ts`
-
-Após a mutação de update/delete de perfil, adicionar lógica para limpar o cache de todos os hotspots da empresa.
-
-**Alternativa mais simples:** Adicionar um campo `updated_at` aos perfis e comparar com `hotspot.synced_at` ao invés de usar array de slugs.
-
-### 4. Atualizar Versão
-
-Atualizar todas as referências de `v6.9.5` para `v6.9.6` no arquivo.
-
 ---
 
-## Arquivos a Modificar
-
-| Arquivo | Mudança |
-|---------|---------|
-| Migração SQL | Adicionar `synced_profiles JSONB` à tabela `hotspots` |
-| `mikrotik-sync/index.ts` | Buscar `synced_profiles` junto com hotspot |
-| `mikrotik-sync/index.ts` | Filtrar perfis já sincronizados antes de injetar |
-| `mikrotik-sync/index.ts` | Atualizar `synced_profiles` após enviar |
-| `mikrotik-sync/index.ts` | Atualizar versão para v6.9.6 |
-
----
-
-## Fluxo Corrigido
+## Fluxo de Reconciliação (com registered_users)
 
 ```text
-Sync 1:
-├── Busca hotspot.synced_profiles: []
-├── Busca perfis da empresa: [tripulacao-googlemarine]
-├── Perfis novos: [tripulacao-googlemarine] (não está em synced_profiles)
-├── Injeta: [auto-profile-tripulacao-googlemarine]
-├── Atualiza hotspot.synced_profiles: ["tripulacao-googlemarine"]
-└── Retorna: [[create_profile|tripulacao-googlemarine|3M/3M|1|0;]]
+Sync 1 (MikroTik foi limpo):
+├── MikroTik envia:
+│   ├── active_users_csv: "" (ninguém conectado)
+│   └── registered_users_csv: "" (todos os usuários foram removidos)
+├── Backend detecta: tripulante no DB mas NÃO em registered_users
+├── miss_count incrementa para 1
+└── Retorna: [[]] (aguarda threshold)
 
-Sync 2 (1 minuto depois):
-├── Busca hotspot.synced_profiles: ["tripulacao-googlemarine"]
-├── Busca perfis da empresa: [tripulacao-googlemarine]
-├── Perfis novos: [] (já está em synced_profiles) ← FILTRADO!
-├── Não injeta nada
-└── Retorna: [[]] (vazio ou outras ações reais)
+Sync 2 (continua limpo):
+├── MikroTik envia:
+│   ├── active_users_csv: ""
+│   └── registered_users_csv: ""
+├── miss_count incrementa para 2 (>= THRESHOLD)
+├── Backend injeta: create_user
+└── Retorna: [[create_user|alexandre.silva|048706|tripulacao;]]
 
-Sync 3 (admin cria novo perfil "visitante"):
-├── Busca hotspot.synced_profiles: ["tripulacao-googlemarine"]
-├── Busca perfis da empresa: [tripulacao-googlemarine, visitante]
-├── Perfis novos: [visitante] (não está em synced_profiles) ← APENAS O NOVO!
-├── Injeta: [auto-profile-visitante]
-├── Atualiza hotspot.synced_profiles: ["tripulacao-googlemarine", "visitante"]
-└── Retorna: [[create_profile|visitante|5M/5M|1|0;]]
+Sync 3 (usuário criado):
+├── MikroTik envia:
+│   ├── active_users_csv: "" (ainda não conectou)
+│   └── registered_users_csv: "alexandre.silva,"
+├── Backend detecta: tripulante EXISTE em registered_users
+├── miss_count reseta para 0
+└── Retorna: [[]] (nada a fazer)
 ```
 
 ---
 
-## Resumo das Correções
+## Comparação: Antes vs Depois
 
-| Problema | Antes | Depois |
-|----------|-------|--------|
-| Perfis reenviados | Todos a cada sync | Apenas novos |
-| Tracking | Nenhum | Campo `synced_profiles` no hotspot |
-| Loop infinito | Sim | Não |
-| Performance | Envia N perfis sempre | Envia apenas delta |
+| Cenário | Antes (active_users) | Depois (registered_users) |
+|---------|---------------------|---------------------------|
+| Navio vazio | Falso positivo (recria todos) | Não recria (lista completa) |
+| MikroTik limpo | Não detecta | Detecta e recria |
+| Usuário existe mas offline | Confunde com faltante | Reconhece que existe |
+| Performance | Depende de conexões | Depende de cadastros |
 
 ---
 
-## Considerações Adicionais
+## Resumo das Correções v6.9.7
 
-### Invalidação de Cache para Updates
+| Componente | Mudança |
+|------------|---------|
+| Script MikroTik | Adiciona coleta de `/ip hotspot user` |
+| Payload Sync | Novo campo `registered_users_csv` |
+| Backend | Nova função `reconcileUsers()` |
+| Tracking | Campo `synced_users` com metadados |
+| Lógica | miss_count baseado em registered, não active |
+| Frontend | Invalidação de cache em updates |
 
-Quando um perfil é **modificado** (não apenas criado), o sistema deve remover o slug do array `synced_profiles` para forçar re-sincronização:
+---
 
-```sql
--- Executar quando um perfil é atualizado
-UPDATE hotspots 
-SET synced_profiles = synced_profiles - 'slug-do-perfil-modificado'
-WHERE embarcacao_id IN (
-  SELECT id FROM embarcacoes WHERE empresa_id = 'uuid-da-empresa'
-);
-```
+## Riscos e Mitigações
 
-Isso pode ser implementado via trigger ou no hook de mutação do perfil.
-
-### Forçar Re-sync Completo
-
-Para forçar re-sincronização de todos os perfis de um hotspot:
-
-```sql
-UPDATE hotspots SET synced_profiles = '[]'::jsonb WHERE id = 'hotspot-id';
-```
+| Risco | Mitigação |
+|-------|-----------|
+| Payload muito grande se muitos usuários | CSV é eficiente (apenas logins separados por vírgula) |
+| Burst de ações se muitos faltantes | Cooldown de 5 min + threshold de 2 syncs |
+| MikroTik não enviou registered_users | Só incrementa miss_count se CSV foi parseado |
 
 ---
 
 ## Impacto
 
-- **Criticidade:** Alta (elimina loop infinito)
-- **Risco:** Baixo (lógica adicional, não modifica comportamento existente)
-- **Compatibilidade:** RouterOS 6.x e 7.x (sem mudanças no script)
+- **Criticidade**: Alta (resolve cenário de MikroTik limpo)
+- **Risco**: Baixo (adiciona informação, não remove)
+- **Compatibilidade**: RouterOS 6.x e 7.x
+
