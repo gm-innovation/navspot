@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.5 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.7 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -113,14 +113,22 @@ Deno.serve(async (req) => {
       console.error('[script-generator] Failed to save script:', updateError)
     }
 
-    // Sanity checks para evitar regressões
+    // v6.7: Sanity checks com throws para erros críticos
+    if (!bootstrapScript.includes('/system script add name="navspot-sync"')) {
+      throw new Error('Erro critico: navspot-sync nao foi gerado')
+    }
+
+    if (!bootstrapScript.includes('/system script add name="navspot-action-processor"')) {
+      throw new Error('Erro critico: navspot-action-processor nao foi gerado')
+    }
+
     if (bootstrapScript.includes('/ip hotspot user profile set') && 
         bootstrapScript.includes('limit-bytes-total')) {
       console.error('[script-generator] ERRO: Gerou limit-bytes-total em /ip hotspot user profile. Deve ser em /ip hotspot user.')
     }
 
     if (bootstrapScript.includes('source="')) {
-      console.error('[script-generator] ERRO: Gerou source="...". Use sempre source={...} para scripts longos.')
+      throw new Error('Erro: source=" invalido. Use source={ }.')
     }
 
     if (bootstrapScript.includes(':do {/')) {
@@ -128,20 +136,35 @@ Deno.serve(async (req) => {
     }
 
     if (bootstrapScript.includes('/file print file=')) {
-      console.error('[script-generator] ERRO: /file print file= não é válido em scripts. Use /file set ou /file add.')
+      throw new Error('Erro: /file print file= invalido em scripts MikroTik.')
     }
 
-    console.log(`[script-generator] Bootstrap script v6.5 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    // v6.7: Sanitização - garantir apenas LF (sem CRLF) e converter tabs
+    let sanitizedBootstrap = bootstrapScript
+      .replace(/\r\n/g, '\n')  // CRLF -> LF
+      .replace(/\r/g, '\n')    // CR -> LF
+      .replace(/\t/g, '  ')    // Tab -> 2 espaços
+
+    // Remover linhas vazias consecutivas (mais de 2)
+    sanitizedBootstrap = sanitizedBootstrap.replace(/\n{3,}/g, '\n\n')
+
+    let sanitizedFinalize = finalizeScript
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/\t/g, '  ')
+      .replace(/\n{3,}/g, '\n\n')
+
+    console.log(`[script-generator] Bootstrap script v6.7 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
         success: true,
-        bootstrap_script: bootstrapScript,
-        finalize_script: finalizeScript,
+        bootstrap_script: sanitizedBootstrap,
+        finalize_script: sanitizedFinalize,
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.5'
+        version: '6.7'
       }),
       { 
         status: 200, 
@@ -167,7 +190,7 @@ function generateFinalizeScript(hotspot: Hotspot): string {
   const networkBase = networkParts[0].replace(/\.\d+$/, '')
   const gateway = `${networkBase}.1`
 
-  return `:log info "NAVSPOT v6.5 Parte 2: Finalizando migracao da ether2..."
+  return `:log info "NAVSPOT v6.7 Parte 2: Finalizando migracao da ether2..."
 
 # Validacoes de seguranca
 :if ([:len [/interface bridge find name="bridge1"]] = 0) do={
@@ -194,7 +217,7 @@ function generateFinalizeScript(hotspot: Hotspot): string {
 
 # Finalizacao
 :log info "=========================================="
-:log info "NAVSPOT v6.5: INSTALACAO 100% CONCLUIDA!"
+:log info "NAVSPOT v6.7: INSTALACAO 100% CONCLUIDA!"
 :log info "Todas as portas (ether2-5) estao na bridge1"
 :log info "Hotspot ativo em ${gateway}"
 :log info "Sync inteligente rodando a cada ${syncIntervalMinutes} minuto(s)"
@@ -237,10 +260,11 @@ function generateBootstrapScript(
 :delay 2s`
   }).join('\n\n')
 
-  // v6.5: Script sync inteligente com extração de [[ ]] e chamada ao action-processor
+  // v6.7: Script sync com JSON usando hex \22 para aspas (compatível ROS 6.x)
   const syncScriptSource = `:local token [/file get "navspot-token.txt" contents]
 :local syncUrl "${syncUrl}"
 :local users ""
+:local q "\\22"
 /ip hotspot active
 :foreach a in=[find] do={
 :local u [get $a user]
@@ -249,7 +273,7 @@ function generateBootstrapScript(
 :local bo [get $a bytes-out]
 :set users ($users . $u . "," . $m . "," . $bi . "," . $bo . ";")
 }
-:local body ("{\\"sync_token\\":\\"" . $token . "\\",\\"active_users_csv\\":\\"" . $users . "\\"}")
+:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q . "}")
 :do {
 :local result [/tool fetch url=$syncUrl mode=https http-method=post http-data=$body output=user as-value]
 :if (($result->"status") = "finished") do={
@@ -367,8 +391,8 @@ function generateBootstrapScript(
 :log info "NAVSPOT: DHCP client em ${wanInterface}"`
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
-  // Bootstrap script v6.5 - Sync Inteligente com Action Processor
-  return `:log info "NAVSPOT v6.5: Iniciando instalacao..."
+  // Bootstrap script v6.7 - Sync com JSON hex-safe para ROS 6.x
+  return `:log info "NAVSPOT v6.7: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -460,7 +484,7 @@ ${actionProcessorSource}
 ${syncScriptSource}
 }
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
-:log info "NAVSPOT: Sync v6.5 + Action Processor configurados"
+:log info "NAVSPOT: Sync v6.7 + Action Processor configurados"
 
 # 11. MIGRACAO PARCIAL DE PORTAS (apenas ether3, 4, 5 - NAO migra ether2)
 :log info "NAVSPOT: Iniciando migracao PARCIAL de portas (ether3, 4, 5)..."
@@ -478,7 +502,7 @@ ${partialMigrationCommands}
 :log warning "=========================================="
 
 # 13. FINALIZACAO PARCIAL
-:log info "NAVSPOT v6.5 Parte 1: Bootstrap parcial concluido"
+:log info "NAVSPOT v6.7 Parte 1: Bootstrap parcial concluido"
 :log info "NAVSPOT: Aguardando troca de cabo para finalizar ether2"
 `
 }
