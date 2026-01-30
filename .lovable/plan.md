@@ -1,103 +1,64 @@
 
 
-# Plano v6.7: Correção Definitiva do Gerador de Scripts MikroTik
+# Correção Final v6.7: Consistência de Versão + Delay
 
-## Problema Identificado
+## Problemas Identificados
 
-O script `navspot-sync` não está sendo criado no RouterOS 6.x porque o `/import` falha silenciosamente ao processar aspas escapadas (`\\"`) dentro do bloco `source={}`.
-
----
-
-## Correções a Implementar
-
-### 1. Correção do JSON Escaping (Linha 252)
-
-**Problema:** A linha com escapes `\\"` quebra o parsing do RouterOS 6.x
-
-**De:**
-```typescript
-:local body ("{\\"sync_token\\":\\"" . $token . "\\",\\"active_users_csv\\":\\"" . $users . "\\"}")
-```
-
-**Para (usando variável $q com hex \22):**
-```typescript
-:local q "\\22"
-:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q . "}")
-```
-
-**Por que funciona:** O `\22` é o código hexadecimal para aspas duplas (`"`), que é interpretado literalmente pelo RouterOS sem ambiguidade de escape.
+1. **Linha 479**: Comentário ainda diz `v6.5` mas deveria ser `v6.7`
+2. **Linha 477**: Falta delay adicional após criação do token para garantir disponibilidade
 
 ---
 
-### 2. Sanity Checks Expandidos (Linhas 116-132)
+## Correções a Aplicar
 
-Adicionar verificações que **lançam exceção** (não apenas log):
+### Correção 1: Atualizar Comentário de Versão
 
-```typescript
-// v6.7: Verificar se scripts essenciais foram gerados
-if (!bootstrapScript.includes('/system script add name="navspot-sync"')) {
-  throw new Error('Erro critico: navspot-sync nao foi gerado')
+**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
+
+**Linha 479 - De:**
+```routeros
+# 10. SYNC SCRIPT v6.5 + ACTION PROCESSOR
+```
+
+**Para:**
+```routeros
+# 10. SYNC SCRIPT v6.7 + ACTION PROCESSOR
+```
+
+---
+
+### Correção 2: Adicionar Delay Após Token
+
+**Linhas 476-477 - De:**
+```routeros
 }
+:log info "NAVSPOT: Token criado"
+```
 
-if (!bootstrapScript.includes('/system script add name="navspot-action-processor"')) {
-  throw new Error('Erro critico: navspot-action-processor nao foi gerado')
+**Para:**
+```routeros
 }
+:delay 1s
+:log info "NAVSPOT: Token criado"
 ```
 
----
-
-### 3. Sanitização do Output (Antes do return)
-
-```typescript
-// v6.7: Sanitização - garantir apenas LF (sem CRLF) e converter tabs
-let sanitizedBootstrap = bootstrapScript
-  .replace(/\r\n/g, '\n')  // CRLF -> LF
-  .replace(/\r/g, '\n')    // CR -> LF
-  .replace(/\t/g, '  ')    // Tab -> 2 espaços
-
-// Remover linhas vazias consecutivas (mais de 2)
-sanitizedBootstrap = sanitizedBootstrap.replace(/\n{3,}/g, '\n\n')
-```
+**Motivo:** Garante que o arquivo de token esteja completamente escrito e disponível no sistema de arquivos antes de criar o script de sync que depende dele.
 
 ---
 
-### 4. Atualizar Versão para 6.7
+## Resumo das Mudanças
 
-Alterar todas as referências de `v6.5` para `v6.7` no código.
-
----
-
-## Arquivo a Modificar
-
-`supabase/functions/mikrotik-script-generator/index.ts`
-
-| Linha | Mudança |
-|-------|---------|
-| 70 | Alterar log para v6.7 |
-| 116-134 | Expandir sanity checks com throws |
-| 136-150 | Adicionar sanitização + retornar script limpo |
-| 240-266 | Substituir syncScriptSource com método $q |
-| 144 | Alterar version para '6.7' |
+| Linha | Tipo | Mudança |
+|-------|------|---------|
+| 476-477 | Ajuste | Adicionar `:delay 1s` após fallback do token |
+| 479 | Correção | Trocar `v6.5` por `v6.7` no comentário |
 
 ---
 
 ## Resultado Esperado
 
-Após a correção, o script gerado terá:
+Após as correções, o script gerado terá:
 
-1. **JSON seguro:** `"{" . $q . "sync_token" . $q ...` em vez de `"{\\"sync_token\\"\\"`
-2. **Sem CRLF:** Apenas LF (`\n`) no arquivo
-3. **Validação:** Se algum script não for gerado, a função lança erro
-4. **Versão atualizada:** `v6.7`
-
----
-
-## Validação Pós-Implementação
-
-1. Gerar script para Engenharia Googlemarine
-2. Baixar o `.rsc` e verificar:
-   - Linha do body contém `$q` ou `\22`
-   - Sem caracteres `\r` (CRLF)
-3. Importar no MikroTik 6.x: `/import navspot-bootstrap.rsc`
-4. Verificar criação: `/system script print where name~"navspot"`
+1. **Versão consistente:** Todos os comentários e logs referenciando `v6.7`
+2. **Delay de segurança:** 2 segundos totais entre criar o token e usar no script sync (1s antes + 1s depois)
 
