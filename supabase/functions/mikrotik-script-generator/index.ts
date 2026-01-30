@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.9.2 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.9.3 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -134,9 +134,20 @@ Deno.serve(async (req) => {
       console.error('[script-generator] ERRO: Gerou ":do {/". Corrigir para ":do { /".')
     }
 
-    // v6.8: /file print file= é OBRIGATÓRIO para criar arquivos no RouterOS
-    if (!bootstrapScript.includes('/file print file=navspot-token')) {
-      console.warn('[script-generator] AVISO: Token deve usar /file print file= para compatibilidade ROS 6.x')
+    // v6.9.3: Verificar políticas inválidas
+    if (bootstrapScript.includes('policy=read,write,policy,test')) {
+      throw new Error('Erro critico: policy token invalido. Use policy=read,write,test')
+    }
+
+    // v6.9.3: Verificar scheduler com comando completo
+    if (bootstrapScript.includes('on-event="navspot-sync"') && 
+        !bootstrapScript.includes('on-event="/system script run navspot-sync"')) {
+      console.warn('[script-generator] AVISO: scheduler deve usar comando completo em on-event')
+    }
+
+    // v6.9.3: Verificar action=deny (inválido)
+    if (bootstrapScript.includes('action=deny')) {
+      throw new Error('Erro critico: action=deny invalido. Use action=reject')
     }
 
     // v6.8: Sanitização - garantir apenas LF (sem CRLF) e converter tabs
@@ -154,7 +165,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.9.2 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.9.3 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -164,7 +175,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.9.1'
+        version: '6.9.3'
       }),
       { 
         status: 200, 
@@ -309,10 +320,18 @@ function generateBootstrapScript(
 } else={
 :local existing [/ip hotspot user profile find name=$pName]
 :if ([:len $existing] = 0) do={
+:if ([:len $pRate] > 0) do={
 /ip hotspot user profile add name=$pName rate-limit=$pRate shared-users=$pShared
+} else={
+/ip hotspot user profile add name=$pName shared-users=$pShared
+}
 :log info ("NAVSPOT: Perfil criado - " . $pName)
 } else={
+:if ([:len $pRate] > 0) do={
 /ip hotspot user profile set $existing rate-limit=$pRate shared-users=$pShared
+} else={
+/ip hotspot user profile set $existing shared-users=$pShared
+}
 :log info ("NAVSPOT: Perfil atualizado - " . $pName)
 }
 }
@@ -425,7 +444,7 @@ function generateBootstrapScript(
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
   // Bootstrap script v6.9.2 - Token via /file print file= + Sync com header Content-Type + Winbox/MNDP mgmt
-  return `:log info "NAVSPOT v6.9.2: Iniciando instalacao..."
+  return `:log info "NAVSPOT v6.9.3: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -527,21 +546,28 @@ ${wanConfig}
 /ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
 :log info "NAVSPOT: Walled Garden configurado"
 
-# 9. TOKEN (metodo compativel com RouterOS 6.x e 7.x via /file print file=)
+# 9. TOKEN (metodo robusto compativel com RouterOS 6.x e 7.x)
 :do { /file remove "navspot-token.txt" } on-error={}
-:delay 1s
+:delay 500ms
+:local tokenValue "${hotspot.sync_token}"
+:do {
+/file add name="navspot-token.txt" contents=$tokenValue
+:log info "NAVSPOT: Token criado via /file add"
+} on-error={
+# Fallback para builds antigas
 /file print file=navspot-token
-:delay 2s
-/file set "navspot-token.txt" contents="${hotspot.sync_token}"
 :delay 1s
-:log info "NAVSPOT: Token criado"
+/file set [find name~"navspot-token"] contents=$tokenValue
+:log info "NAVSPOT: Token criado via fallback"
+}
+:delay 500ms
 
 # 10. SYNC SCRIPT v6.9.2 + ACTION PROCESSOR v2
 :if ([:len [/system script find name="navspot-action-processor"]] > 0) do={
 /system script remove [find name="navspot-action-processor"]
 }
 :delay 100ms
-/system script add name="navspot-action-processor" policy=read,write,policy,test source={
+/system script add name="navspot-action-processor" policy=read,write,test source={
 ${actionProcessorSource}
 }
 :log info "NAVSPOT: action-processor v2 criado"
@@ -550,13 +576,13 @@ ${actionProcessorSource}
 /system script remove [find name="navspot-sync"]
 }
 :delay 100ms
-/system script add name="navspot-sync" policy=read,write,policy,test source={
+/system script add name="navspot-sync" policy=read,write,test source={
 ${syncScriptSource}
 }
 :if ([:len [/system scheduler find name="navspot-sync-scheduler"]] = 0) do={
-/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
+/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup
 }
-:log info "NAVSPOT: Sync v6.9.2 + Action Processor v2 configurados"
+:log info "NAVSPOT: Sync v6.9.3 + Action Processor v2 configurados"
 
 # 11. MIGRACAO DE PORTAS LAN (ether3, 4, 5 - ether2 permanece como gerencia)
 :log info "NAVSPOT: Migrando portas LAN para bridge1..."
@@ -565,7 +591,7 @@ ${migrationCommands}
 
 # 12. FINALIZACAO
 :log info "=========================================="
-:log info "NAVSPOT v6.9.2: INSTALACAO CONCLUIDA!"
+:log info "NAVSPOT v6.9.3: INSTALACAO CONCLUIDA!"
 :log info "Portas LAN (ether3-5) ativas no Hotspot"
 :log info "Porta de gerencia (ether2) configurada para Winbox"
 :log info "Sync rodando a cada ${syncIntervalMinutes} minuto(s)"
