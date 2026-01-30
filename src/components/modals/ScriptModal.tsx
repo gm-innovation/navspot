@@ -9,15 +9,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Separator } from "@/components/ui/separator";
-import { Copy, Download, Check, RefreshCw, AlertTriangle, Upload, CheckCircle2, ArrowRight } from "lucide-react";
+import { Copy, Download, Check, RefreshCw, Upload, CheckCircle2 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
 interface ScriptModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   bootstrapScript: string;
-  finalizeScript: string;
+  finalizeScript?: string; // v6.9.1: Optional, not used anymore
   hotspotName: string;
   onRegenerate?: () => void;
   isRegenerating?: boolean;
@@ -27,23 +26,21 @@ export function ScriptModal({
   open,
   onOpenChange,
   bootstrapScript,
-  finalizeScript,
   hotspotName,
   onRegenerate,
   isRegenerating,
 }: ScriptModalProps) {
-  const [copiedBootstrap, setCopiedBootstrap] = useState(false);
-  const [copiedFinalize, setCopiedFinalize] = useState(false);
+  const [copied, setCopied] = useState(false);
 
-  const handleCopyBootstrap = async () => {
+  const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(bootstrapScript);
-      setCopiedBootstrap(true);
+      setCopied(true);
       toast({
         title: "Script copiado!",
-        description: "O script de bootstrap foi copiado para a área de transferência.",
+        description: "O script foi copiado para a área de transferência.",
       });
-      setTimeout(() => setCopiedBootstrap(false), 2000);
+      setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       toast({
         title: "Erro ao copiar",
@@ -53,25 +50,7 @@ export function ScriptModal({
     }
   };
 
-  const handleCopyFinalize = async () => {
-    try {
-      await navigator.clipboard.writeText(finalizeScript);
-      setCopiedFinalize(true);
-      toast({
-        title: "Script copiado!",
-        description: "O script de finalização foi copiado para a área de transferência.",
-      });
-      setTimeout(() => setCopiedFinalize(false), 2000);
-    } catch (error) {
-      toast({
-        title: "Erro ao copiar",
-        description: "Não foi possível copiar o script.",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const handleDownloadBootstrap = () => {
+  const handleDownload = () => {
     const blob = new Blob([bootstrapScript], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -88,167 +67,65 @@ export function ScriptModal({
     });
   };
 
-  const handleDownloadFinalize = () => {
-    const blob = new Blob([finalizeScript], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "navspot-finalize-ether2.rsc";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    
-    toast({
-      title: "Download iniciado",
-      description: "Arquivo navspot-finalize-ether2.rsc baixado.",
-    });
-  };
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[800px] max-h-[90vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>Script MikroTik v6.4 - {hotspotName}</DialogTitle>
+          <DialogTitle>Script MikroTik v6.9.1 - {hotspotName}</DialogTitle>
           <DialogDescription>
-            Instalação em duas etapas para garantir conectividade durante a configuração.
+            Instalação completa em script único. A porta ether2 será configurada como gerência fixa (Winbox).
           </DialogDescription>
         </DialogHeader>
         
         {/* Área scrollável */}
         <div className="flex-1 overflow-y-auto space-y-6 pr-2">
           
-          {/* PARTE 1: BOOTSTRAP */}
+          {/* INSTRUÇÕES */}
+          <Alert className="bg-primary/10 border-primary/50">
+            <Upload className="h-4 w-4 text-primary" />
+            <AlertTitle className="text-primary">
+              Método de Instalação
+            </AlertTitle>
+            <AlertDescription className="text-primary/80">
+              <ol className="list-decimal list-inside space-y-1 mt-2">
+                <li>Conecte-se ao MikroTik via <strong>ether2</strong> (Winbox/MAC)</li>
+                <li>Clique em <strong>"Download Script"</strong> abaixo</li>
+                <li>No Winbox, vá em <strong>Files</strong> e faça upload do arquivo</li>
+                <li>Abra o <strong>Terminal</strong> e execute:</li>
+              </ol>
+              <code className="block bg-primary/20 p-2 rounded text-xs mt-2">/import navspot-bootstrap.rsc</code>
+            </AlertDescription>
+          </Alert>
+
+          {/* SCRIPT */}
           <div className="space-y-4">
             <div className="flex items-center gap-2">
               <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold">
-                1
+                <CheckCircle2 className="h-5 w-5" />
               </div>
-              <h3 className="text-lg font-semibold">Parte 1: Bootstrap</h3>
+              <h3 className="text-lg font-semibold">Script de Instalação</h3>
             </div>
-
-            <Alert className="bg-primary/10 border-primary/50">
-              <Upload className="h-4 w-4 text-primary" />
-              <AlertTitle className="text-primary">
-                Método: Upload + /import
-              </AlertTitle>
-              <AlertDescription className="text-primary/80">
-                <ol className="list-decimal list-inside space-y-1 mt-2">
-                  <li>Conecte-se ao MikroTik via <strong>ether2</strong> (Winbox/MAC)</li>
-                  <li>Clique em <strong>"Download Bootstrap"</strong> abaixo</li>
-                  <li>No Winbox, vá em <strong>Files</strong> e faça upload do arquivo</li>
-                  <li>Abra o <strong>Terminal</strong> e execute:</li>
-                </ol>
-                <code className="block bg-primary/20 p-2 rounded text-xs mt-2">/import navspot-bootstrap.rsc</code>
-              </AlertDescription>
-            </Alert>
 
             <div className="relative">
               <Textarea
                 value={bootstrapScript}
                 readOnly
-                className="font-mono text-xs min-h-[150px] max-h-[200px] resize-none"
+                className="font-mono text-xs min-h-[200px] max-h-[300px] resize-none"
               />
             </div>
 
             <div className="flex gap-2">
-              <Button variant="outline" onClick={handleCopyBootstrap} className="flex-1">
-                {copiedBootstrap ? (
+              <Button variant="outline" onClick={handleCopy} className="flex-1">
+                {copied ? (
                   <Check className="h-4 w-4 mr-2" />
                 ) : (
                   <Copy className="h-4 w-4 mr-2" />
                 )}
-                {copiedBootstrap ? "Copiado!" : "Copiar Bootstrap"}
+                {copied ? "Copiado!" : "Copiar Script"}
               </Button>
-              <Button onClick={handleDownloadBootstrap} className="flex-1">
+              <Button onClick={handleDownload} className="flex-1">
                 <Download className="h-4 w-4 mr-2" />
-                Download Bootstrap
-              </Button>
-            </div>
-          </div>
-
-          {/* SEPARADOR COM CHECKLIST */}
-          <div className="relative py-4">
-            <Separator />
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="bg-background px-4">
-                <ArrowRight className="h-6 w-6 text-muted-foreground" />
-              </div>
-            </div>
-          </div>
-
-          <Alert className="bg-yellow-500/10 border-yellow-500/50">
-            <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
-            <AlertTitle className="text-yellow-700 dark:text-yellow-400">
-              Ação Manual Necessária
-            </AlertTitle>
-            <AlertDescription className="text-yellow-600 dark:text-yellow-300/80">
-              <p className="mb-2">Após a Parte 1 completar, siga estes passos:</p>
-              <div className="space-y-2 mt-3">
-                <div className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                  <span>Aguarde a mensagem <strong>"ACAO NECESSARIA"</strong> no log do MikroTik</span>
-                </div>
-                <div className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                  <span><strong>Desconecte</strong> o cabo de rede da <strong>ether2</strong></span>
-                </div>
-                <div className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                  <span><strong>Conecte</strong> o cabo na <strong>ether3, ether4 ou ether5</strong></span>
-                </div>
-                <div className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                  <span><strong>Reconecte</strong> o Winbox via <code className="bg-yellow-500/20 px-1 rounded">192.168.88.1</code></span>
-                </div>
-              </div>
-            </AlertDescription>
-          </Alert>
-
-          {/* PARTE 2: FINALIZAÇÃO */}
-          <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <div className="h-8 w-8 rounded-full bg-green-500/10 flex items-center justify-center text-green-600 font-bold">
-                2
-              </div>
-              <h3 className="text-lg font-semibold">Parte 2: Finalização</h3>
-            </div>
-
-            <Alert className="bg-green-500/10 border-green-500/50">
-              <CheckCircle2 className="h-4 w-4 text-green-600" />
-              <AlertTitle className="text-green-700 dark:text-green-400">
-                Após Reconectar
-              </AlertTitle>
-              <AlertDescription className="text-green-600 dark:text-green-300/80">
-                <ol className="list-decimal list-inside space-y-1 mt-2">
-                  <li>Faça upload do arquivo <strong>navspot-finalize-ether2.rsc</strong></li>
-                  <li>No Terminal, execute:</li>
-                </ol>
-                <code className="block bg-green-500/20 p-2 rounded text-xs mt-2">/import navspot-finalize-ether2.rsc</code>
-                <p className="mt-2 text-sm">Este script migra a ether2 e conclui a instalação.</p>
-              </AlertDescription>
-            </Alert>
-
-            <div className="relative">
-              <Textarea
-                value={finalizeScript}
-                readOnly
-                className="font-mono text-xs min-h-[120px] max-h-[150px] resize-none"
-              />
-            </div>
-
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={handleCopyFinalize} className="flex-1">
-                {copiedFinalize ? (
-                  <Check className="h-4 w-4 mr-2" />
-                ) : (
-                  <Copy className="h-4 w-4 mr-2" />
-                )}
-                {copiedFinalize ? "Copiado!" : "Copiar Finalize"}
-              </Button>
-              <Button onClick={handleDownloadFinalize} variant="secondary" className="flex-1">
-                <Download className="h-4 w-4 mr-2" />
-                Download Finalize
+                Download Script
               </Button>
             </div>
           </div>
@@ -256,9 +133,18 @@ export function ScriptModal({
           {/* Verificação pós-instalação */}
           <div className="bg-muted/50 p-4 rounded-lg text-sm">
             <h4 className="font-semibold mb-2">Verificação pós-instalação:</h4>
-            <p className="text-muted-foreground mb-2">Após executar a Parte 2, verifique no terminal:</p>
+            <p className="text-muted-foreground mb-2">Após a importação, verifique no terminal:</p>
             <code className="block bg-muted p-2 rounded text-xs">/log print where message~"NAVSPOT"</code>
-            <p className="text-muted-foreground mt-2">Deve aparecer: <code className="bg-muted px-1 rounded">NAVSPOT v6.4: INSTALACAO 100% CONCLUIDA!</code></p>
+            <p className="text-muted-foreground mt-2">Deve aparecer: <code className="bg-muted px-1 rounded">NAVSPOT v6.9.1: INSTALACAO CONCLUIDA!</code></p>
+            
+            <div className="mt-4 pt-3 border-t border-border">
+              <h5 className="font-medium text-sm mb-2">Configuração de portas:</h5>
+              <ul className="text-muted-foreground text-xs space-y-1">
+                <li>• <strong>ether1:</strong> WAN (Internet)</li>
+                <li>• <strong>ether2:</strong> Gerência fixa (Winbox/MNDP)</li>
+                <li>• <strong>ether3-5:</strong> Hotspot (bridge1)</li>
+              </ul>
+            </div>
           </div>
         </div>
 
@@ -272,7 +158,7 @@ export function ScriptModal({
               className="w-full"
             >
               <RefreshCw className={`h-4 w-4 mr-2 ${isRegenerating ? 'animate-spin' : ''}`} />
-              Regenerar Scripts
+              Regenerar Script
             </Button>
           </div>
         )}

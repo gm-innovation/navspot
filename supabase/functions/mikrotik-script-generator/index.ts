@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.9 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.9.1 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -89,16 +89,15 @@ Deno.serve(async (req) => {
 
     const embarcacao = hotspot.embarcacoes as unknown as Embarcacao
 
-    // Generate v6.8 scripts (bootstrap + finalize)
+    // Generate v6.9.1 single bootstrap script (no finalize needed)
     const bootstrapScript = generateBootstrapScript(
       hotspot as unknown as Hotspot,
       embarcacao,
       Deno.env.get('SUPABASE_URL')!
     )
     
-    const finalizeScript = generateFinalizeScript(
-      hotspot as unknown as Hotspot
-    )
+    // v6.9.1: Script único - sem necessidade de navspot-finalize
+    const finalizeScript = ''
 
     // Save generated script to hotspot
     const { error: updateError } = await supabase
@@ -155,7 +154,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.9 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.9.1 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -165,7 +164,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.9'
+        version: '6.9.1'
       }),
       { 
         status: 200, 
@@ -185,47 +184,10 @@ Deno.serve(async (req) => {
   }
 })
 
-function generateFinalizeScript(hotspot: Hotspot): string {
-  const syncIntervalMinutes = hotspot.sync_interval_minutes || 5
-  const networkParts = hotspot.rede.split('/')
-  const networkBase = networkParts[0].replace(/\.\d+$/, '')
-  const gateway = `${networkBase}.1`
-
-  return `:log info "NAVSPOT v6.9 Parte 2: Finalizando migracao da ether2..."
-
-# Validacoes de seguranca
-:if ([:len [/interface bridge find name="bridge1"]] = 0) do={
-  :log error "NAVSPOT: ERRO - bridge1 nao encontrada! Execute a Parte 1 primeiro."
-  :error "Abortando: bridge1 inexistente"
-}
-
-:if ([:len [/ip address find address="${gateway}/24"]] = 0) do={
-  :log error "NAVSPOT: ERRO - IP ${gateway}/24 nao encontrado! Execute a Parte 1 primeiro."
-  :error "Abortando: IP inexistente"
-}
-
-:log info "NAVSPOT: Validacoes OK, prosseguindo..."
-
-# Migrar ether2 para bridge1
-:do { /interface bridge port remove [find interface=ether2] } on-error={}
-/interface bridge port add bridge=bridge1 interface=ether2 comment="navspot-lan"
-:log info "NAVSPOT: ether2 migrada com sucesso"
-
-# Remover bridge antiga
-:delay 2s
-:do { /interface bridge remove [find name="bridge"] } on-error={}
-:log info "NAVSPOT: Bridge defconf removida"
-
-# Finalizacao
-:log info "=========================================="
-:log info "NAVSPOT v6.9: INSTALACAO 100% CONCLUIDA!"
-:log info "Todas as portas (ether2-5) estao na bridge1"
-:log info "Hotspot ativo em ${gateway}"
-:log info "Sync inteligente rodando a cada ${syncIntervalMinutes} minuto(s)"
-:log info "Action Processor v2 ativo para comandos em tempo real"
-:log info "Gerencia Winbox/MNDP configurada na lista mgmt"
-:log info "=========================================="
-`
+function generateFinalizeScript(_hotspot: Hotspot): string {
+  // v6.9.1: Fluxo simplificado - ether2 permanece como gerência fixa
+  // Não há mais necessidade de script de finalização
+  return ''
 }
 
 function generateBootstrapScript(
@@ -246,20 +208,17 @@ function generateBootstrapScript(
   const wanType = hotspot.wan_type || 'dhcp'
   const dnsName = `${hotspotSlug}.navspot.local`
 
-  // Gerar migração de portas em ordem reversa (excluindo ether2 na Parte 1)
-  const allPorts = ['ether2', 'ether3', 'ether4', 'ether5']
-  const lanPorts = allPorts.filter(p => p !== wanInterface)
-  
-  // Portas para migrar na Parte 1: excluir ether2 e ordenar em ordem reversa (5, 4, 3)
-  const partialPorts = lanPorts.filter(p => p !== 'ether2')
-  const partialMigrationOrder = [...partialPorts].sort((a, b) => b.localeCompare(a))
+  // v6.9.1: ether2 é porta de gerência fixa - NUNCA entra na bridge
+  // Apenas ether3, 4, 5 serão portas do Hotspot
+  const allLanPorts = ['ether3', 'ether4', 'ether5'].filter(p => p !== wanInterface)
+  const migrationOrder = [...allLanPorts].sort((a, b) => b.localeCompare(a))
 
-  // Gerar comandos de migração parcial com delays
-  const partialMigrationCommands = partialMigrationOrder.map((port) => {
+  // Gerar comandos de migração com delays
+  const migrationCommands = migrationOrder.map((port) => {
     return `:do { /interface bridge port remove [find interface=${port}] } on-error={}
 /interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan"
 :log info "NAVSPOT: ${port} migrada"
-:delay 2s`
+:delay 500ms`
   }).join('\n\n')
 
   // v6.8: Script sync com JSON usando hex \22 para aspas + header Content-Type (compatível ROS 6.x)
@@ -280,11 +239,13 @@ function generateBootstrapScript(
 :local result [/tool fetch url=$syncUrl mode=https http-method=post http-data=$body http-header-field="Content-Type: application/json" output=user as-value]
 :if (($result->"status") = "finished") do={
 :local resp ($result->"data")
-:local start [:find $resp "[[ "]
-:local end [:find $resp " ]]"]
-:if (($start >= 0) && ($end >= 0)) do={
-:local actions [:pick $resp ($start + 3) $end]
+:local start [:find $resp "[["]
+:local end [:find $resp "]]"]
+:if (($start >= 0) && ($end > $start)) do={
+:local actions [:pick $resp ($start + 2) $end]
 :global navspotActions $actions
+:log info ("NAVSPOT-SYNC: pending_actions_pipe extraido (" . [:len $actions] . " chars)")
+:delay 250ms
 /system script run navspot-action-processor
 }
 }
@@ -463,8 +424,8 @@ function generateBootstrapScript(
 :log info "NAVSPOT: DHCP client em ${wanInterface}"`
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
-  // Bootstrap script v6.9 - Token via /file print file= + Sync com header Content-Type + Winbox/MNDP mgmt
-  return `:log info "NAVSPOT v6.9: Iniciando instalacao..."
+  // Bootstrap script v6.9.1 - Token via /file print file= + Sync com header Content-Type + Winbox/MNDP mgmt
+  return `:log info "NAVSPOT v6.9.1: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -575,33 +536,39 @@ ${wanConfig}
 :delay 1s
 :log info "NAVSPOT: Token criado"
 
-# 10. SYNC SCRIPT v6.8 + ACTION PROCESSOR v2
+# 10. SYNC SCRIPT v6.9.1 + ACTION PROCESSOR v2
+:if ([:len [/system script find name="navspot-action-processor"]] > 0) do={
+/system script remove [find name="navspot-action-processor"]
+}
+:delay 100ms
 /system script add name="navspot-action-processor" policy=read,write,policy,test source={
 ${actionProcessorSource}
 }
+:log info "NAVSPOT: action-processor v2 criado"
+
+:if ([:len [/system script find name="navspot-sync"]] > 0) do={
+/system script remove [find name="navspot-sync"]
+}
+:delay 100ms
 /system script add name="navspot-sync" policy=read,write,policy,test source={
 ${syncScriptSource}
 }
+:if ([:len [/system scheduler find name="navspot-sync-scheduler"]] = 0) do={
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="navspot-sync" start-time=startup
-:log info "NAVSPOT: Sync v6.9 + Action Processor v2 configurados"
+}
+:log info "NAVSPOT: Sync v6.9.1 + Action Processor v2 configurados"
 
-# 11. MIGRACAO PARCIAL DE PORTAS (apenas ether3, 4, 5 - NAO migra ether2)
-:log info "NAVSPOT: Iniciando migracao PARCIAL de portas (ether3, 4, 5)..."
+# 11. MIGRACAO DE PORTAS LAN (ether3, 4, 5 - ether2 permanece como gerencia)
+:log info "NAVSPOT: Migrando portas LAN para bridge1..."
 
-${partialMigrationCommands}
+${migrationCommands}
 
-# 12. PAUSA PARA TROCA DE CABO
-:log warning "=========================================="
-:log warning "NAVSPOT: MIGRACAO PARCIAL CONCLUIDA"
-:log warning "ACAO NECESSARIA:"
-:log warning "1. Desconecte o cabo da ether2"
-:log warning "2. Conecte na ether3, ether4 ou ether5"
-:log warning "3. Reconecte o Winbox em ${gateway}"
-:log warning "4. Rode: /import navspot-finalize-ether2.rsc"
-:log warning "=========================================="
-
-# 13. FINALIZACAO PARCIAL
-:log info "NAVSPOT v6.9 Parte 1: Bootstrap parcial concluido"
-:log info "NAVSPOT: Aguardando troca de cabo para finalizar ether2"
+# 12. FINALIZACAO
+:log info "=========================================="
+:log info "NAVSPOT v6.9.1: INSTALACAO CONCLUIDA!"
+:log info "Portas LAN (ether3-5) ativas no Hotspot"
+:log info "Porta de gerencia (ether2) configurada para Winbox"
+:log info "Sync rodando a cada ${syncIntervalMinutes} minuto(s)"
+:log info "=========================================="
 `
 }
