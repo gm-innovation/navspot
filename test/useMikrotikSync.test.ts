@@ -55,31 +55,35 @@ describe('useMikrotikSync', () => {
   });
 
   describe('Script Generator Validation', () => {
-    it('should not contain action=deny in generated RouterOS scripts', () => {
-      // Simular strings que seriam geradas pelo script generator
-      const actionProcessorSource = `
-        :if ($cmd = "create_blacklist_domain") do={
-          /ip hotspot walled-garden add dst-host=$domain action=reject comment=("navspot-blacklist-" . $bName)
-        }
+    it('should use correct action values for walled-garden menus', () => {
+      // Para /ip hotspot walled-garden (hostnames): action=allow ou action=deny
+      const hostnameBlacklist = `
+        /ip hotspot walled-garden add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
       `;
       
-      // Verificar que action=deny NÃO está presente
-      expect(actionProcessorSource).not.toContain('action=deny');
+      // Para /ip hotspot walled-garden ip (IPs): action=accept ou action=reject
+      const ipWhitelist = `
+        /ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
+      `;
       
-      // Verificar que action=reject ESTÁ presente para blacklist
-      expect(actionProcessorSource).toContain('action=reject');
+      // Hostnames devem usar deny para bloquear
+      expect(hostnameBlacklist).toContain('action=deny');
+      expect(hostnameBlacklist).not.toContain('action=reject');
+      
+      // IPs devem usar accept/reject
+      expect(ipWhitelist).toContain('action=accept');
+      expect(ipWhitelist).not.toContain('action=allow');
     });
 
     it('should use correct walled-garden menu for hostnames', () => {
       const actionProcessorSource = `
-        /ip hotspot walled-garden add dst-host=$domain action=reject
+        /ip hotspot walled-garden add dst-host=$domain action=deny
       `;
-      
-      // Verificar que não usa o menu "ip" para dst-host
-      expect(actionProcessorSource).not.toMatch(/walled-garden ip.*dst-host/);
       
       // Verificar que usa o menu correto (sem "ip") para hostnames
       expect(actionProcessorSource).toContain('/ip hotspot walled-garden add dst-host');
+      // Verificar que NÃO usa o menu "ip" para dst-host
+      expect(actionProcessorSource).not.toMatch(/walled-garden ip.*dst-host/);
     });
 
     it('should not contain invalid policy token in script declarations', () => {
