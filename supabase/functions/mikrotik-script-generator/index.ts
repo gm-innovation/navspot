@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.9.3 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.9.4 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -145,9 +145,14 @@ Deno.serve(async (req) => {
       console.warn('[script-generator] AVISO: scheduler deve usar comando completo em on-event')
     }
 
-    // v6.9.3: Verificar action=deny (inválido)
-    if (bootstrapScript.includes('action=deny')) {
-      throw new Error('Erro critico: action=deny invalido. Use action=reject')
+    // v6.9.4: action=deny é VÁLIDO para /ip hotspot walled-garden (hostnames)
+    // action=reject é VÁLIDO para /ip hotspot walled-garden ip (IPs)
+    // Verificar apenas que não há mistura incorreta
+    if (bootstrapScript.includes('walled-garden ip') && bootstrapScript.includes('walled-garden ip add') && bootstrapScript.match(/walled-garden ip add[^;]*action=deny/)) {
+      console.warn('[script-generator] AVISO: action=deny no menu ip pode estar incorreto. Use action=reject para IPs.')
+    }
+    if (bootstrapScript.match(/walled-garden add[^i][^;]*action=reject/) && !bootstrapScript.match(/walled-garden ip add/)) {
+      console.warn('[script-generator] AVISO: action=reject no menu de hostnames pode estar incorreto. Use action=deny.')
     }
 
     // v6.8: Sanitização - garantir apenas LF (sem CRLF) e converter tabs
@@ -165,7 +170,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.9.3 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.9.4 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -175,7 +180,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.9.3'
+        version: '6.9.4'
       }),
       { 
         status: 200, 
@@ -407,8 +412,8 @@ function generateBootstrapScript(
 :local bName [:pick $rest 0 $p2]
 :local domain [:pick $rest ($p2 + 1) [:len $rest]]
 :if ([:len $domain] > 0) do={
-:if ([:len [/ip hotspot walled-garden find dst-host=$domain action=reject]] = 0) do={
-/ip hotspot walled-garden add dst-host=$domain action=reject comment=("navspot-blacklist-" . $bName)
+:if ([:len [/ip hotspot walled-garden find dst-host=$domain action=deny]] = 0) do={
+/ip hotspot walled-garden add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
 :log info ("NAVSPOT: Blacklist bloqueado - " . $domain)
 } else={
 :log info ("NAVSPOT: Blacklist ja existe - " . $domain)
@@ -444,7 +449,7 @@ function generateBootstrapScript(
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
   // Bootstrap script v6.9.2 - Token via /file print file= + Sync com header Content-Type + Winbox/MNDP mgmt
-  return `:log info "NAVSPOT v6.9.3: Iniciando instalacao..."
+  return `:log info "NAVSPOT v6.9.4: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -582,7 +587,7 @@ ${syncScriptSource}
 :if ([:len [/system scheduler find name="navspot-sync-scheduler"]] = 0) do={
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup
 }
-:log info "NAVSPOT: Sync v6.9.3 + Action Processor v2 configurados"
+:log info "NAVSPOT: Sync v6.9.4 + Action Processor v2 configurados"
 
 # 11. MIGRACAO DE PORTAS LAN (ether3, 4, 5 - ether2 permanece como gerencia)
 :log info "NAVSPOT: Migrando portas LAN para bridge1..."
@@ -591,7 +596,7 @@ ${migrationCommands}
 
 # 12. FINALIZACAO
 :log info "=========================================="
-:log info "NAVSPOT v6.9.3: INSTALACAO CONCLUIDA!"
+:log info "NAVSPOT v6.9.4: INSTALACAO CONCLUIDA!"
 :log info "Portas LAN (ether3-5) ativas no Hotspot"
 :log info "Porta de gerencia (ether2) configurada para Winbox"
 :log info "Sync rodando a cada ${syncIntervalMinutes} minuto(s)"
