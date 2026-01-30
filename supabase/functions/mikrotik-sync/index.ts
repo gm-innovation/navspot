@@ -53,6 +53,35 @@ interface BlockedDevice {
   reason: string
 }
 
+// v6.9.10: Parse active_users_csv from MikroTik into ActiveUser array
+function parseActiveUsersCsv(csv: string): ActiveUser[] {
+  if (!csv || csv.trim().length === 0) {
+    return []
+  }
+  
+  const users: ActiveUser[] = []
+  
+  // Format: "user,mac,bytes_in,bytes_out;user2,mac2,bytes_in2,bytes_out2;"
+  const entries = csv.split(';').filter(e => e.trim().length > 0)
+  
+  for (const entry of entries) {
+    const parts = entry.split(',').map(p => p.trim())
+    
+    if (parts.length >= 4) {
+      users.push({
+        user: parts[0],
+        mac: parts[1],
+        uptime: '0', // MikroTik doesn't send uptime in current CSV format
+        bytes_in: parseInt(parts[2], 10) || 0,
+        bytes_out: parseInt(parts[3], 10) || 0,
+        ip: parts[4] || undefined // Optional 5th field
+      })
+    }
+  }
+  
+  return users
+}
+
 // Helper to get week number for semanal quota
 function getWeekNumber(date: Date): number {
   const startOfYear = new Date(date.getFullYear(), 0, 1)
@@ -335,6 +364,13 @@ Deno.serve(async (req) => {
     const payload: SyncPayload = await req.json()
     console.log('[mikrotik-sync] Received sync request:', JSON.stringify(payload))
 
+    // v6.9.10: Parse active_users_csv if provided as CSV string instead of array
+    if (!payload.active_users && (payload as any).active_users_csv) {
+      const csvData = (payload as any).active_users_csv as string
+      payload.active_users = parseActiveUsersCsv(csvData)
+      console.log(`[mikrotik-sync] v6.9.10: Parsed ${payload.active_users.length} active users from CSV`)
+    }
+
     if (!payload.sync_token) {
       console.error('[mikrotik-sync] Missing sync_token')
       return new Response(
@@ -438,10 +474,11 @@ Deno.serve(async (req) => {
       }
 
       for (const activeUser of payload.active_users) {
+        // v6.9.10: Include status to enable auto-activation
         const { data: tripulante } = await supabase
           .from('tripulantes')
           .select(`
-            id, bytes_consumidos, perfil_id, nome, login_wifi, quota_reset_at,
+            id, bytes_consumidos, perfil_id, nome, login_wifi, quota_reset_at, status,
             perfis_velocidade(id, nome, max_dispositivos, limite_dados_mb, quota_periodo)
           `)
           .eq('login_wifi', activeUser.user)
@@ -540,6 +577,16 @@ Deno.serve(async (req) => {
               ultimo_login: new Date().toISOString()
             })
             .eq('id', tripulante.id)
+
+          // v6.9.10: Auto-activate user on first successful login
+          if ((tripulante as any).status === 'pendente_cadastro') {
+            await supabase
+              .from('tripulantes')
+              .update({ status: 'ativo' })
+              .eq('id', tripulante.id)
+            
+            console.log(`[mikrotik-sync] v6.9.10: Auto-activated user ${tripulante.nome} on first login`)
+          }
 
           // Check for device sharing - MAC already registered to ANOTHER tripulante
           const { data: existingDevice } = await supabase
