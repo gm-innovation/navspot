@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.9.4 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.9.5 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -170,7 +170,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.9.4 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.9.5 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -180,7 +180,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.9.4'
+        version: '6.9.5'
       }),
       { 
         status: 200, 
@@ -258,9 +258,17 @@ function generateBootstrapScript(
 :local start [:find $resp "[["]
 :local end [:find $resp "]]"]
 :if (($start >= 0) && ($end > $start)) do={
-:local actions [:pick $resp ($start + 2) $end]
+:local raw [:pick $resp ($start + 2) $end]
+# v6.9.5: Trim de espacos no inicio e fim
+:local i 0
+:local j ([:len $raw] - 1)
+:while (($i <= $j) && ([:pick $raw $i ($i + 1)] = " ")) do={:set i ($i + 1)}
+:while (($j >= $i) && ([:pick $raw $j ($j + 1)] = " ")) do={:set j ($j - 1)}
+:local actions ""
+:if ($j >= $i) do={:set actions [:pick $raw $i ($j + 1)]}
 :global navspotActions $actions
 :log info ("NAVSPOT-SYNC: pending_actions_pipe extraido (" . [:len $actions] . " chars)")
+:log info ("NAVSPOT-DEBUG: raw=[" . $actions . "]")
 :delay 250ms
 /system script run navspot-action-processor
 }
@@ -448,8 +456,8 @@ function generateBootstrapScript(
 :log info "NAVSPOT: DHCP client em ${wanInterface}"`
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
-  // Bootstrap script v6.9.2 - Token via /file print file= + Sync com header Content-Type + Winbox/MNDP mgmt
-  return `:log info "NAVSPOT v6.9.4: Iniciando instalacao..."
+  // Bootstrap script v6.9.5 - Token via /file print file= + Sync com header Content-Type + Winbox/MNDP mgmt
+  return `:log info "NAVSPOT v6.9.5: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={

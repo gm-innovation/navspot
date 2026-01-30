@@ -619,13 +619,24 @@ Deno.serve(async (req) => {
         .eq('empresa_id', embarcacao.empresa_id)
 
       if (perfis && perfis.length > 0) {
+        // v6.9.5: Normalizar rate-limit - remover "B" e forçar maiúsculas
+        // RouterOS aceita: k (kbit), M (megabit), G (gigabit) - SEM o "B"
+        const normalizeRateLimit = (value: string | null | undefined): string => {
+          return String(value || '2M')
+            .toUpperCase()
+            .replace(/MB/g, 'M')  // 3MB -> 3M
+            .replace(/KB/g, 'K')  // 512KB -> 512K
+            .replace(/GB/g, 'G')  // 1GB -> 1G
+            .trim()
+        }
+
         const profileActions = perfis.map(p => {
           const slug = p.nome.toLowerCase()
             .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
             .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
-          // v6.9.1: Garantir formato maiúsculo para compatibilidade RouterOS
-          const uploadRate = String(p.velocidade_upload || '2M').toUpperCase()
-          const downloadRate = String(p.velocidade_download || '5M').toUpperCase()
+          // v6.9.5: Normalizar rate-limit para compatibilidade RouterOS
+          const uploadRate = normalizeRateLimit(p.velocidade_upload)
+          const downloadRate = normalizeRateLimit(p.velocidade_download)
           const rateLimit = `${uploadRate}/${downloadRate}`
           const quota = p.limite_dados_mb || 0
           const shared = p.max_dispositivos || 1
@@ -725,8 +736,11 @@ Deno.serve(async (req) => {
           // Update profile is handled via create_user with updated profile
           return `create_user|${p.user || ''}||${p.profile || ''}`
         case 'add_user_profile':
-          // v6.9.1: Create profile with rate-limit in uppercase, shared-users, and quota
-          const rateLimit = String(p.rate_limit || '2M/5M').toUpperCase()
+          // v6.9.5: Create profile with normalized rate-limit (remove B suffix)
+          const normalizeRate = (v: string): string => String(v || '2M/5M')
+            .toUpperCase()
+            .replace(/MB/g, 'M').replace(/KB/g, 'K').replace(/GB/g, 'G').trim()
+          const rateLimit = normalizeRate(String(p.rate_limit || '2M/5M'))
           return `create_profile|${p.name || ''}|${rateLimit}|${p.shared_users || 1}|${p.limit_bytes || 0}`
         case 'remove_user_profile':
           return `remove_profile|${p.name || ''}`
@@ -750,8 +764,8 @@ Deno.serve(async (req) => {
       }
     }).join(';')
 
-    // v6.9: Wrap in [[ ]] markers for RouterOS extraction
-    const formattedPipe = pipeDelimitedActions ? `[[ ${pipeDelimitedActions}; ]]` : ''
+    // v6.9.5: Wrap em [[ ]] SEM espaços extras para extração limpa
+    const formattedPipe = pipeDelimitedActions ? `[[${pipeDelimitedActions};]]` : ''
 
     console.log(`[mikrotik-sync] v6.9: Returning ${expandedActions.length} pending actions, ${firewallRules.length} firewall rules, ${blockedDevices.length} blocked devices`)
 
