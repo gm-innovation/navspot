@@ -9,19 +9,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Copy, Download, Check, RefreshCw, Upload, CheckCircle2, AlertTriangle, Shield } from "lucide-react";
+import { Copy, Download, Check, RefreshCw, Upload, Shield } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 
 interface ScriptModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   bootstrapScript: string;
-  finalizeScript?: string; // v6.9.1: Optional, not used anymore
+  finalizeScript?: string;
   hotspotName: string;
   onRegenerate?: () => void;
   isRegenerating?: boolean;
@@ -36,7 +31,6 @@ export function ScriptModal({
   isRegenerating,
 }: ScriptModalProps) {
   const [copied, setCopied] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const handleCopy = async () => {
     try {
@@ -44,7 +38,7 @@ export function ScriptModal({
       setCopied(true);
       toast({
         title: "Script copiado!",
-        description: "Atenção: para scripts grandes, prefira o download .rsc.",
+        description: "O script foi copiado para a área de transferência.",
         variant: "default",
       });
       setTimeout(() => setCopied(false), 2000);
@@ -104,15 +98,34 @@ export function ScriptModal({
             </AlertDescription>
           </Alert>
 
-          {/* BOTÃO PRINCIPAL - DOWNLOAD */}
-          <div className="space-y-3">
-            <Button onClick={handleDownload} className="w-full h-12 text-base">
-              <Download className="h-5 w-5 mr-2" />
-              Download Script (.rsc)
+          {/* BOTÕES - Copiar e Download lado a lado */}
+          <div className="flex gap-3">
+            <Button 
+              variant="outline" 
+              onClick={handleCopy} 
+              className="flex-1"
+            >
+              {copied ? (
+                <Check className="h-4 w-4 mr-2" />
+              ) : (
+                <Copy className="h-4 w-4 mr-2" />
+              )}
+              {copied ? "Copiado!" : "Copiar Script"}
             </Button>
-            <p className="text-xs text-muted-foreground text-center">
-              Arquivo de ~15KB • Compatível com RouterOS 6.x e 7.x
-            </p>
+            <Button onClick={handleDownload} className="flex-1">
+              <Download className="h-4 w-4 mr-2" />
+              Download (.rsc)
+            </Button>
+          </div>
+
+          {/* VISUALIZAÇÃO DO SCRIPT */}
+          <div className="space-y-2">
+            <h3 className="text-sm font-medium">Script de Instalação</h3>
+            <Textarea
+              value={bootstrapScript}
+              readOnly
+              className="font-mono text-xs min-h-[300px] resize-none"
+            />
           </div>
 
           {/* SEÇÃO DE AUTO-RECUPERAÇÃO */}
@@ -148,59 +161,6 @@ export function ScriptModal({
               </ul>
             </div>
           </div>
-
-          {/* SEÇÃO AVANÇADA - Colapsível */}
-          <Collapsible open={showAdvanced} onOpenChange={setShowAdvanced}>
-            <CollapsibleTrigger asChild>
-              <Button variant="ghost" className="w-full justify-between text-muted-foreground hover:text-foreground">
-                <span className="flex items-center gap-2">
-                  <AlertTriangle className="h-4 w-4" />
-                  Opções Avançadas (Copy/Paste)
-                </span>
-                <span className="text-xs">{showAdvanced ? "▲" : "▼"}</span>
-              </Button>
-            </CollapsibleTrigger>
-            <CollapsibleContent className="space-y-4 pt-4">
-              <Alert variant="destructive" className="bg-destructive/10">
-                <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>Não recomendado</AlertTitle>
-                <AlertDescription className="text-xs">
-                  Colar scripts grandes no terminal pode causar truncamento devido ao limite de buffer do RouterOS. Use apenas se o download não for possível.
-                </AlertDescription>
-              </Alert>
-
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center text-muted-foreground text-xs font-bold">
-                    !
-                  </div>
-                  <h3 className="text-sm font-medium text-muted-foreground">Script de Instalação</h3>
-                </div>
-
-                <div className="relative">
-                  <Textarea
-                    value={bootstrapScript}
-                    readOnly
-                    className="font-mono text-xs min-h-[150px] max-h-[200px] resize-none opacity-70"
-                  />
-                </div>
-
-                <Button 
-                  variant="outline" 
-                  onClick={handleCopy} 
-                  className="w-full text-muted-foreground"
-                  size="sm"
-                >
-                  {copied ? (
-                    <Check className="h-4 w-4 mr-2" />
-                  ) : (
-                    <Copy className="h-4 w-4 mr-2" />
-                  )}
-                  {copied ? "Copiado!" : "Copiar Script (não recomendado)"}
-                </Button>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
         </div>
 
         {/* Footer fixo com botão de regenerar */}
