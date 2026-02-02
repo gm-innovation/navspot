@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.9.9 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.9.12 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -112,13 +112,14 @@ Deno.serve(async (req) => {
       console.error('[script-generator] Failed to save script:', updateError)
     }
 
-    // v6.8: Sanity checks com throws para erros críticos
-    if (!bootstrapScript.includes('/system script add name="navspot-sync"')) {
-      throw new Error('Erro critico: navspot-sync nao foi gerado')
+    // v6.9.12: Sanity checks - now using set-or-add pattern
+    // Scripts are created via conditional set/add, not simple add
+    if (!bootstrapScript.includes('navspot-sync') || !bootstrapScript.includes('navspot-action-processor')) {
+      throw new Error('Erro critico: scripts navspot nao foram gerados')
     }
 
-    if (!bootstrapScript.includes('/system script add name="navspot-action-processor"')) {
-      throw new Error('Erro critico: navspot-action-processor nao foi gerado')
+    if (!bootstrapScript.includes('navspot-guardian')) {
+      throw new Error('Erro critico: navspot-guardian nao foi gerado')
     }
 
     if (bootstrapScript.includes('/ip hotspot user profile set') && 
@@ -170,7 +171,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.9.9 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.9.12 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -180,7 +181,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.9.9'
+        version: '6.9.12'
       }),
       { 
         status: 200, 
@@ -472,8 +473,61 @@ function generateBootstrapScript(
 :log info "NAVSPOT: DHCP client em ${wanInterface}"`
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
-  // Bootstrap script v6.9.5 - Token via /file print file= + Sync com header Content-Type + Winbox/MNDP mgmt
-  return `:log info "NAVSPOT v6.9.5: Iniciando instalacao..."
+  // v6.9.12: Recovery URL for guardian
+  const recoveryUrl = `${supabaseUrl}/functions/v1/mikrotik-recovery-download`
+
+  // v6.9.12: Guardian script source - self-healing mechanism
+  const guardianScriptSource = `:log info "NAVSPOT-GUARDIAN: Verificando integridade..."
+:local needsRepair 0
+:local missing ""
+# Verificar scripts essenciais
+:if ([:len [/system script find name="navspot-sync"]] = 0) do={
+:set needsRepair 1
+:set missing ($missing . "navspot-sync ")
+}
+:if ([:len [/system script find name="navspot-action-processor"]] = 0) do={
+:set needsRepair 1
+:set missing ($missing . "navspot-action-processor ")
+}
+:if ([:len [/system scheduler find name="navspot-sync-scheduler"]] = 0) do={
+:set needsRepair 1
+:set missing ($missing . "navspot-sync-scheduler ")
+}
+:if ($needsRepair = 1) do={
+:log warning ("NAVSPOT-GUARDIAN: Componentes faltando: " . $missing)
+# Cooldown check - evitar loops
+:global navspotLastRepair
+:local now [/system clock get time]
+:local canRepair 1
+:if ([:typeof $navspotLastRepair] != "nothing") do={
+:log info "NAVSPOT-GUARDIAN: Verificando cooldown..."
+}
+:if ($canRepair = 1) do={
+:log info "NAVSPOT-GUARDIAN: Iniciando reparo automatico..."
+:do {
+:local token [/file get "navspot-token.txt" contents]
+:local recoveryUrl "${recoveryUrl}"
+:local body ("{\\"sync_token\\":\\"" . $token . "\\"}")
+/tool fetch url=$recoveryUrl mode=https http-method=post http-data=$body http-header-field="Content-Type: application/json" dst-path="navspot-recovery.rsc"
+:delay 2s
+:if ([:len [/file find name~"navspot-recovery.rsc"]] > 0) do={
+/import navspot-recovery.rsc
+:set navspotLastRepair $now
+:log info "NAVSPOT-GUARDIAN: Reparo concluido com sucesso!"
+:do { /file remove "navspot-recovery.rsc" } on-error={}
+} else={
+:log warning "NAVSPOT-GUARDIAN: Falha ao baixar recovery"
+}
+} on-error={
+:log error "NAVSPOT-GUARDIAN: Erro no reparo automatico"
+}
+}
+} else={
+:log info "NAVSPOT-GUARDIAN: Sistema integro"
+}`
+
+  // Bootstrap script v6.9.12 - Safe Update + Guardian + Token via /file print file=
+  return `:log info "NAVSPOT v6.9.12: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -482,7 +536,8 @@ function generateBootstrapScript(
 }
 :log info "NAVSPOT: Interface WAN (${wanInterface}) validada"
 
-# 1. LIMPEZA INICIAL (remover configs padrao de fabrica + navspot)
+# 1. LIMPEZA INICIAL (configs de fabrica + rede navspot - NAO remove scripts!)
+# v6.9.12: Scripts/schedulers sao atualizados via set-or-add, nao removidos aqui
 :do { /ip address remove [find address="${gateway}/24"] } on-error={}
 :do { /ip dhcp-server remove [find name="defconf"] } on-error={}
 :do { /ip dhcp-server remove [find name="dhcp1"] } on-error={}
@@ -501,13 +556,10 @@ function generateBootstrapScript(
 :do { /ip hotspot walled-garden ip remove [find comment~"navspot"] } on-error={}
 :do { /interface bridge port remove [find comment="navspot-lan"] } on-error={}
 :do { /interface bridge remove [find name="bridge1"] } on-error={}
-:do { /system script remove [find name="navspot-sync"] } on-error={}
-:do { /system script remove [find name="navspot-action-processor"] } on-error={}
-:do { /system scheduler remove [find name="navspot-sync-scheduler"] } on-error={}
 :do { /file remove "navspot-token.txt" } on-error={}
 :do { /ip dhcp-client remove [find comment="navspot-wan"] } on-error={}
 :delay 2s
-:log info "NAVSPOT: Limpeza concluida"
+:log info "NAVSPOT: Limpeza concluida (scripts preservados)"
 
 # 2. CONFIGURAR WAN (antes de criar bridge)
 ${wanConfig}
@@ -591,39 +643,80 @@ ${wanConfig}
 }
 :delay 500ms
 
-# 10. SYNC SCRIPT v6.9.2 + ACTION PROCESSOR v2
-:if ([:len [/system script find name="navspot-action-processor"]] > 0) do={
-/system script remove [find name="navspot-action-processor"]
+# 10. GUARDIAN SCRIPT v6.9.12 (criado PRIMEIRO para auto-recuperacao)
+:local guardianExists [/system script find name="navspot-guardian"]
+:if ([:len $guardianExists] > 0) do={
+:log info "NAVSPOT: Atualizando guardian..."
+/system script set $guardianExists policy=read,write,test source={
+${guardianScriptSource}
 }
-:delay 100ms
+} else={
+:log info "NAVSPOT: Criando guardian..."
+/system script add name="navspot-guardian" policy=read,write,test source={
+${guardianScriptSource}
+}
+}
+
+# Guardian scheduler (startup + a cada 10 min)
+:local guardianSchedExists [/system scheduler find name="navspot-guardian-scheduler"]
+:if ([:len $guardianSchedExists] > 0) do={
+/system scheduler set $guardianSchedExists interval=10m on-event="/system script run navspot-guardian"
+} else={
+/system scheduler add name="navspot-guardian-scheduler" interval=10m on-event="/system script run navspot-guardian" start-time=startup
+}
+:log info "NAVSPOT: Guardian v6.9.12 ativo"
+
+# 11. ACTION PROCESSOR v2 - set-or-add pattern (nunca remove antes)
+:local apExists [/system script find name="navspot-action-processor"]
+:if ([:len $apExists] > 0) do={
+:log info "NAVSPOT: Atualizando action-processor..."
+/system script set $apExists policy=read,write,test source={
+${actionProcessorSource}
+}
+} else={
+:log info "NAVSPOT: Criando action-processor..."
 /system script add name="navspot-action-processor" policy=read,write,test source={
 ${actionProcessorSource}
 }
-:log info "NAVSPOT: action-processor v2 criado"
-
-:if ([:len [/system script find name="navspot-sync"]] > 0) do={
-/system script remove [find name="navspot-sync"]
 }
 :delay 100ms
+
+# 12. SYNC SCRIPT - set-or-add pattern (nunca remove antes)
+:local syncExists [/system script find name="navspot-sync"]
+:if ([:len $syncExists] > 0) do={
+:log info "NAVSPOT: Atualizando sync..."
+/system script set $syncExists policy=read,write,test source={
+${syncScriptSource}
+}
+} else={
+:log info "NAVSPOT: Criando sync..."
 /system script add name="navspot-sync" policy=read,write,test source={
 ${syncScriptSource}
 }
-:if ([:len [/system scheduler find name="navspot-sync-scheduler"]] = 0) do={
+}
+:delay 100ms
+
+# Scheduler - set-or-add pattern
+:local schedExists [/system scheduler find name="navspot-sync-scheduler"]
+:if ([:len $schedExists] > 0) do={
+/system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync"
+} else={
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup
 }
-:log info "NAVSPOT: Sync v6.9.4 + Action Processor v2 configurados"
+:log info "NAVSPOT: Sync v6.9.12 + Action Processor v2 configurados"
 
-# 11. MIGRACAO DE PORTAS LAN (ether3, 4, 5 - ether2 permanece como gerencia)
+# 13. MIGRACAO DE PORTAS LAN (ether3, 4, 5 - ether2 permanece como gerencia)
 :log info "NAVSPOT: Migrando portas LAN para bridge1..."
 
 ${migrationCommands}
 
-# 12. FINALIZACAO
+# 14. FINALIZACAO
 :log info "=========================================="
-:log info "NAVSPOT v6.9.4: INSTALACAO CONCLUIDA!"
+:log info "NAVSPOT v6.9.12: INSTALACAO CONCLUIDA!"
 :log info "Portas LAN (ether3-5) ativas no Hotspot"
 :log info "Porta de gerencia (ether2) configurada para Winbox"
 :log info "Sync rodando a cada ${syncIntervalMinutes} minuto(s)"
+:log info "Guardian ativo - auto-recuperacao habilitada"
 :log info "=========================================="
 `
 }

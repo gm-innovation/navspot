@@ -351,8 +351,25 @@ async function reconcileUsers(
 }
 
 Deno.serve(async (req) => {
+  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders })
+  }
+
+  // v6.9.12: Healthcheck for GET requests (avoid misleading 500 errors)
+  if (req.method === 'GET') {
+    console.log('[mikrotik-sync] GET healthcheck request')
+    return new Response(
+      JSON.stringify({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        version: '6.9.12'
+      }),
+      { 
+        status: 200, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      }
+    )
   }
 
   try {
@@ -361,7 +378,20 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    const payload: SyncPayload = await req.json()
+    // v6.9.12: Handle invalid JSON gracefully (return 400, not 500)
+    let payload: SyncPayload
+    try {
+      payload = await req.json()
+    } catch (jsonError) {
+      console.error('[mikrotik-sync] Invalid JSON body:', jsonError)
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Invalid JSON body. Expected: {"sync_token": "...", ...}' 
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
     console.log('[mikrotik-sync] Received sync request:', JSON.stringify(payload))
 
     // v6.9.10: Parse active_users_csv if provided as CSV string instead of array
