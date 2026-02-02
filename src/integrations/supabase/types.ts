@@ -1031,6 +1031,9 @@ export type Database = {
       }
       tripulantes: {
         Row: {
+          bloqueado_at: string | null
+          bloqueado_por: string | null
+          bloqueio_motivo: string | null
           bytes_consumidos: number
           cargo: string | null
           config_personalizada: Json | null
@@ -1049,6 +1052,9 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          bloqueado_at?: string | null
+          bloqueado_por?: string | null
+          bloqueio_motivo?: string | null
           bytes_consumidos?: number
           cargo?: string | null
           config_personalizada?: Json | null
@@ -1067,6 +1073,9 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          bloqueado_at?: string | null
+          bloqueado_por?: string | null
+          bloqueio_motivo?: string | null
           bytes_consumidos?: number
           cargo?: string | null
           config_personalizada?: Json | null
