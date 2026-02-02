@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useSearchParams, Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,12 +6,28 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Wifi, CheckCircle2, AlertCircle, Loader2, Ship, Shield, FileText } from "lucide-react";
+import { Wifi, CheckCircle2, AlertCircle, Loader2, Ship, Shield, Anchor } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+
+interface PortalConfig {
+  hotspot_name: string;
+  embarcacao_nome: string;
+  empresa_nome: string;
+  logo_url: string | null;
+  cor_primaria: string;
+  cor_secundaria: string;
+  cor_fundo: string;
+}
+
+const CACHE_KEY_PREFIX = "navspot_portal_config_";
+const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
 export default function CompletarCadastro() {
   const [searchParams] = useSearchParams();
   const loginFromUrl = searchParams.get("login") || "";
+  const hotspotId = searchParams.get("h") || "";
+  const macFromUrl = searchParams.get("mac") || "";
+  const gatewayFromUrl = searchParams.get("gateway") || "192.168.88.1";
 
   const [formData, setFormData] = useState({
     login: loginFromUrl,
@@ -27,6 +43,58 @@ export default function CompletarCadastro() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [redirecting, setRedirecting] = useState(false);
+  const [config, setConfig] = useState<PortalConfig | null>(null);
+  const [configLoading, setConfigLoading] = useState(!!hotspotId);
+
+  // Load portal config with caching
+  useEffect(() => {
+    if (!hotspotId) {
+      setConfigLoading(false);
+      return;
+    }
+
+    const loadConfig = async () => {
+      // Check cache first
+      const cacheKey = CACHE_KEY_PREFIX + hotspotId;
+      const cached = localStorage.getItem(cacheKey);
+      
+      if (cached) {
+        try {
+          const { data, timestamp } = JSON.parse(cached);
+          if (Date.now() - timestamp < CACHE_DURATION_MS) {
+            setConfig(data);
+            setConfigLoading(false);
+            return;
+          }
+        } catch (e) {
+          localStorage.removeItem(cacheKey);
+        }
+      }
+
+      try {
+        const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/hotspot-portal-config?h=${hotspotId}`;
+        const response = await fetch(url);
+        
+        if (response.ok) {
+          const configData = await response.json();
+          if (!configData.error) {
+            localStorage.setItem(cacheKey, JSON.stringify({
+              data: configData,
+              timestamp: Date.now(),
+            }));
+            setConfig(configData);
+          }
+        }
+      } catch (err) {
+        console.error("[CompletarCadastro] Failed to load config:", err);
+      } finally {
+        setConfigLoading(false);
+      }
+    };
+
+    loadConfig();
+  }, [hotspotId]);
 
   const handleChange = (field: string, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -85,6 +153,41 @@ export default function CompletarCadastro() {
       }
 
       setSuccess(true);
+
+      // v6.9.13: Auto-login silencioso após cadastro bem-sucedido
+      // Se temos hotspotId e gateway, fazer login automático
+      if (hotspotId && formData.login && formData.senha) {
+        setRedirecting(true);
+        try {
+          const loginResponse = await fetch(
+            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/hotspot-login`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                login: formData.login.trim(),
+                senha: formData.senha,
+                hotspot_id: hotspotId,
+                mac_address: macFromUrl,
+              }),
+            }
+          );
+
+          const loginData = await loginResponse.json();
+          
+          if (loginData.success && loginData.redirect_url) {
+            // Redirect to MikroTik for authorization
+            setTimeout(() => {
+              window.location.href = loginData.redirect_url;
+            }, 1500);
+            return;
+          }
+        } catch (loginError) {
+          console.error("[CompletarCadastro] Auto-login failed:", loginError);
+          // Continue showing success - user can login manually
+        }
+        setRedirecting(false);
+      }
     } catch (err) {
       console.error("Registration error:", err);
       setError(err instanceof Error ? err.message : "Erro ao completar cadastro");
@@ -93,24 +196,53 @@ export default function CompletarCadastro() {
     }
   };
 
+  // Loading branding config
+  if (configLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+          <p className="text-muted-foreground">Carregando...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (success) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/5 via-background to-primary/10 p-4">
+      <div 
+        className="min-h-screen flex items-center justify-center p-4"
+        style={{ backgroundColor: config?.cor_fundo || "#F8FAFC" }}
+      >
         <Card className="w-full max-w-md">
           <CardContent className="pt-6">
             <div className="text-center space-y-4">
-              <div className="mx-auto w-16 h-16 bg-green-100 dark:bg-green-900/20 rounded-full flex items-center justify-center">
-                <CheckCircle2 className="h-8 w-8 text-green-600" />
-              </div>
-              <h2 className="text-2xl font-bold text-green-600">Cadastro Completo!</h2>
-              <p className="text-muted-foreground">
-                Seu acesso WiFi foi liberado. Você já pode se conectar à rede da embarcação.
-              </p>
-              <div className="pt-4 p-4 bg-muted/50 rounded-lg">
-                <p className="text-sm font-medium">Suas credenciais:</p>
-                <p className="text-sm text-muted-foreground">Login: <span className="font-mono">{formData.login}</span></p>
-                <p className="text-sm text-muted-foreground">Senha: <span className="font-mono">••••••••</span></p>
-              </div>
+              {redirecting ? (
+                <>
+                  <div className="mx-auto w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
+                    <Loader2 className="h-8 w-8 animate-spin" style={{ color: config?.cor_primaria || "#1E3A8A" }} />
+                  </div>
+                  <h2 className="text-2xl font-bold" style={{ color: config?.cor_primaria }}>Conectando...</h2>
+                  <p className="text-muted-foreground">
+                    Aguarde enquanto liberamos seu acesso WiFi
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="mx-auto w-16 h-16 bg-green-100 dark:bg-green-900/20 rounded-full flex items-center justify-center">
+                    <CheckCircle2 className="h-8 w-8 text-green-600" />
+                  </div>
+                  <h2 className="text-2xl font-bold text-green-600">Cadastro Completo!</h2>
+                  <p className="text-muted-foreground">
+                    Seu acesso WiFi foi liberado. Você já pode se conectar à rede da embarcação.
+                  </p>
+                  <div className="pt-4 p-4 bg-muted/50 rounded-lg">
+                    <p className="text-sm font-medium">Suas credenciais:</p>
+                    <p className="text-sm text-muted-foreground">Login: <span className="font-mono">{formData.login}</span></p>
+                    <p className="text-sm text-muted-foreground">Senha: <span className="font-mono">••••••••</span></p>
+                  </div>
+                </>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -119,15 +251,43 @@ export default function CompletarCadastro() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/5 via-background to-primary/10 p-4">
+    <div 
+      className="min-h-screen flex items-center justify-center p-4"
+      style={{ backgroundColor: config?.cor_fundo || "#F8FAFC" }}
+    >
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-2">
-            <Ship className="h-6 w-6 text-primary" />
+          {/* Logo or default icon */}
+          <div className="mx-auto mb-2">
+            {config?.logo_url ? (
+              <img 
+                src={config.logo_url} 
+                alt={config.empresa_nome}
+                className="h-12 w-auto object-contain"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
+            ) : (
+              <div 
+                className="w-12 h-12 rounded-full flex items-center justify-center"
+                style={{ backgroundColor: `${config?.cor_primaria || "#1E3A8A"}20` }}
+              >
+                <Anchor 
+                  className="h-6 w-6" 
+                  style={{ color: config?.cor_primaria || "#1E3A8A" }}
+                />
+              </div>
+            )}
           </div>
-          <CardTitle className="text-2xl">Complete seu Cadastro</CardTitle>
+          <CardTitle className="text-2xl" style={{ color: config?.cor_primaria }}>
+            Complete seu Cadastro
+          </CardTitle>
           <CardDescription>
-            Preencha seus dados pessoais para ativar seu acesso WiFi
+            {config?.embarcacao_nome 
+              ? `Preencha seus dados para ativar seu acesso WiFi na ${config.embarcacao_nome}`
+              : "Preencha seus dados pessoais para ativar seu acesso WiFi"
+            }
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -279,7 +439,11 @@ export default function CompletarCadastro() {
 
             <Button 
               type="submit" 
-              className="w-full" 
+              className="w-full text-white" 
+              style={{ 
+                backgroundColor: config?.cor_primaria || undefined,
+                borderColor: config?.cor_primaria || undefined,
+              }}
               disabled={isLoading || !formData.login || !formData.senha || !formData.nome || !aceitouTermos || !aceitouPrivacidade}
             >
               {isLoading ? (

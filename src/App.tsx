@@ -22,6 +22,7 @@ import Relatorios from "./pages/Relatorios";
 import Usuarios from "./pages/Usuarios";
 import StatusServico from "./pages/StatusServico";
 import CompletarCadastro from "./pages/CompletarCadastro";
+import HotspotLogin from "./pages/HotspotLogin";
 import PoliticaPrivacidade from "./pages/PoliticaPrivacidade";
 import TermosUso from "./pages/TermosUso";
 import GestaoLGPD from "./pages/GestaoLGPD";
@@ -41,6 +42,7 @@ const App = () => (
         <BrowserRouter>
           <AuthProvider>
             <Routes>
+              <Route path="/hotspot-login" element={<HotspotLogin />} />
               <Route path="/completar-cadastro" element={<CompletarCadastro />} />
               <Route path="/privacidade" element={<PoliticaPrivacidade />} />
               <Route path="/termos" element={<TermosUso />} />

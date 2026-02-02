@@ -612,20 +612,40 @@ ${wanConfig}
 
 :log info "NAVSPOT: Regras de firewall para Winbox/MNDP criadas"
 
-# 7. HOTSPOT (login-by=http-pap para compatibilidade com senhas do sistema)
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=flash/hotspot login-by=http-pap
+# 7. HOTSPOT v6.9.13 (external portal + keepalive)
+# login-by=http-pap,http-chap para compatibilidade
+# html-directory="" para forcar portal externo
+# login-url com variaveis escaped para substituicao em runtime
+/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory="" login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m login-url="https://navspot.lovable.app/hotspot-login?h=${hotspot.id}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
-:log info "NAVSPOT: Hotspot ativo"
+:log info "NAVSPOT: Hotspot v6.9.13 com portal externo ativo"
 
-# 8. WALLED GARDEN
-/ip hotspot walled-garden add dst-host="navspot.local" action=allow comment="navspot-system"
-/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-system"
+# 8. WALLED GARDEN v6.9.13 (Portal + APIs + Captive Portal Detection)
+# Portal NAVSPOT
+/ip hotspot walled-garden add dst-host="navspot.lovable.app" action=allow comment="navspot-portal"
+/ip hotspot walled-garden add dst-host="*.lovable.app" action=allow comment="navspot-portal"
+# Backend Supabase
+/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-api"
+/ip hotspot walled-garden add dst-host="*.supabase.in" action=allow comment="navspot-api"
+# CDNs para logos
+/ip hotspot walled-garden add dst-host="*.cloudfront.net" action=allow comment="navspot-cdn"
+/ip hotspot walled-garden add dst-host="*.amazonaws.com" action=allow comment="navspot-cdn"
+# Captive Portal Detection - Android
+/ip hotspot walled-garden add dst-host="connectivitycheck.gstatic.com" action=allow comment="navspot-cpd-android"
+/ip hotspot walled-garden add dst-host="*.gstatic.com" action=allow comment="navspot-cpd-android"
+# Captive Portal Detection - Windows
+/ip hotspot walled-garden add dst-host="*.msftconnecttest.com" action=allow comment="navspot-cpd-windows"
+/ip hotspot walled-garden add dst-host="*.msftncsi.com" action=allow comment="navspot-cpd-windows"
+# Captive Portal Detection - Apple
+/ip hotspot walled-garden add dst-host="captive.apple.com" action=allow comment="navspot-cpd-apple"
+/ip hotspot walled-garden add dst-host="*.apple.com" action=allow comment="navspot-cpd-apple"
+# Protocolos de rede essenciais
 /ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
 /ip hotspot walled-garden ip add dst-port=53 protocol=tcp action=accept comment="navspot-dns-tcp"
 /ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
 /ip hotspot walled-garden ip add dst-port=123 protocol=udp action=accept comment="navspot-ntp"
 /ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
-:log info "NAVSPOT: Walled Garden configurado"
+:log info "NAVSPOT: Walled Garden v6.9.13 configurado (Portal + CPD)"
 
 # 9. TOKEN (metodo robusto compativel com RouterOS 6.x e 7.x)
 :do { /file remove "navspot-token.txt" } on-error={}

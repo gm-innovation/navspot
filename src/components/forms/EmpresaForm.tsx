@@ -44,6 +44,10 @@ export function EmpresaForm({
     telefone: "",
     endereco: "",
     status: "ativo",
+    logo_url: "",
+    cor_primaria: "#1E3A8A",
+    cor_secundaria: "#38BDF8",
+    cor_fundo: "#F8FAFC",
   });
 
   useEffect(() => {
@@ -55,6 +59,10 @@ export function EmpresaForm({
         telefone: initialData.telefone || "",
         endereco: initialData.endereco || "",
         status: initialData.status || "ativo",
+        logo_url: (initialData as any).logo_url || "",
+        cor_primaria: (initialData as any).cor_primaria || "#1E3A8A",
+        cor_secundaria: (initialData as any).cor_secundaria || "#38BDF8",
+        cor_fundo: (initialData as any).cor_fundo || "#F8FAFC",
       });
     } else {
       setFormData({
@@ -64,6 +72,10 @@ export function EmpresaForm({
         telefone: "",
         endereco: "",
         status: "ativo",
+        logo_url: "",
+        cor_primaria: "#1E3A8A",
+        cor_secundaria: "#38BDF8",
+        cor_fundo: "#F8FAFC",
       });
     }
   }, [initialData, open]);
@@ -200,6 +212,124 @@ export function EmpresaForm({
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Portal WiFi Branding Section */}
+            <div className="col-span-4 pt-4 border-t">
+              <p className="text-sm font-medium text-muted-foreground mb-4">Portal WiFi (Branding)</p>
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="logo_url" className="text-right">
+                URL do Logo
+              </Label>
+              <Input
+                id="logo_url"
+                value={formData.logo_url}
+                onChange={(e) => handleChange("logo_url", e.target.value)}
+                className="col-span-3"
+                placeholder="https://exemplo.com/logo.png"
+              />
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="cor_primaria" className="text-right">
+                Cor Primária
+              </Label>
+              <div className="col-span-3 flex items-center gap-2">
+                <input
+                  type="color"
+                  id="cor_primaria"
+                  value={formData.cor_primaria}
+                  onChange={(e) => handleChange("cor_primaria", e.target.value)}
+                  className="w-10 h-10 rounded border cursor-pointer"
+                />
+                <Input
+                  value={formData.cor_primaria}
+                  onChange={(e) => handleChange("cor_primaria", e.target.value)}
+                  className="flex-1"
+                  placeholder="#1E3A8A"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="cor_secundaria" className="text-right">
+                Cor Secundária
+              </Label>
+              <div className="col-span-3 flex items-center gap-2">
+                <input
+                  type="color"
+                  id="cor_secundaria"
+                  value={formData.cor_secundaria}
+                  onChange={(e) => handleChange("cor_secundaria", e.target.value)}
+                  className="w-10 h-10 rounded border cursor-pointer"
+                />
+                <Input
+                  value={formData.cor_secundaria}
+                  onChange={(e) => handleChange("cor_secundaria", e.target.value)}
+                  className="flex-1"
+                  placeholder="#38BDF8"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="cor_fundo" className="text-right">
+                Cor de Fundo
+              </Label>
+              <div className="col-span-3 flex items-center gap-2">
+                <input
+                  type="color"
+                  id="cor_fundo"
+                  value={formData.cor_fundo}
+                  onChange={(e) => handleChange("cor_fundo", e.target.value)}
+                  className="w-10 h-10 rounded border cursor-pointer"
+                />
+                <Input
+                  value={formData.cor_fundo}
+                  onChange={(e) => handleChange("cor_fundo", e.target.value)}
+                  className="flex-1"
+                  placeholder="#F8FAFC"
+                />
+              </div>
+            </div>
+
+            {/* Preview */}
+            {(formData.logo_url || formData.cor_primaria !== "#1E3A8A") && (
+              <div className="col-span-4 mt-2">
+                <p className="text-xs text-muted-foreground mb-2">Preview do Portal:</p>
+                <div 
+                  className="rounded-lg p-4 flex items-center gap-3"
+                  style={{ backgroundColor: formData.cor_fundo }}
+                >
+                  {formData.logo_url ? (
+                    <img 
+                      src={formData.logo_url} 
+                      alt="Logo preview" 
+                      className="h-8 w-auto object-contain"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                  ) : (
+                    <div 
+                      className="w-8 h-8 rounded-full flex items-center justify-center"
+                      style={{ backgroundColor: `${formData.cor_primaria}20` }}
+                    >
+                      <Building2 className="h-4 w-4" style={{ color: formData.cor_primaria }} />
+                    </div>
+                  )}
+                  <div>
+                    <p className="text-sm font-semibold" style={{ color: formData.cor_primaria }}>
+                      {formData.nome || "Nome da Empresa"}
+                    </p>
+                    <p className="text-xs" style={{ color: formData.cor_secundaria }}>
+                      WiFi Marítimo
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <DialogFooter>

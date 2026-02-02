@@ -32,3 +32,9 @@ verify_jwt = false
 
 [functions.auto-resolve-alerts]
 verify_jwt = false
+
+[functions.hotspot-portal-config]
+verify_jwt = false
+
+[functions.hotspot-login]
+verify_jwt = false
