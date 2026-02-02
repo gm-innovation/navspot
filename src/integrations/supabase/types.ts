@@ -474,6 +474,8 @@ export type Database = {
         Row: {
           created_at: string
           embarcacao_id: string
+          firewall_rules_hash: string | null
+          firewall_rules_updated_at: string | null
           id: string
           interface_wifi: string
           max_usuarios: number | null
@@ -494,6 +496,8 @@ export type Database = {
         Insert: {
           created_at?: string
           embarcacao_id: string
+          firewall_rules_hash?: string | null
+          firewall_rules_updated_at?: string | null
           id?: string
           interface_wifi?: string
           max_usuarios?: number | null
@@ -514,6 +518,8 @@ export type Database = {
         Update: {
           created_at?: string
           embarcacao_id?: string
+          firewall_rules_hash?: string | null
+          firewall_rules_updated_at?: string | null
           id?: string
           interface_wifi?: string
           max_usuarios?: number | null
