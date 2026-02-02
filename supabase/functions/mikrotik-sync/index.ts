@@ -392,7 +392,12 @@ Deno.serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
-    console.log('[mikrotik-sync] Received sync request:', JSON.stringify(payload))
+    // v6.9.13: Mask sensitive data in logs
+    const safePayload = { 
+      ...payload, 
+      sync_token: payload.sync_token ? `${payload.sync_token.slice(0, 4)}...${payload.sync_token.slice(-4)}` : undefined 
+    };
+    console.log('[mikrotik-sync] Received sync request:', JSON.stringify(safePayload))
 
     // v6.9.10: Parse active_users_csv if provided as CSV string instead of array
     if (!payload.active_users && (payload as any).active_users_csv) {

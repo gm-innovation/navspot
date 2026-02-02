@@ -352,10 +352,14 @@ export type Database = {
       empresas: {
         Row: {
           cnpj: string | null
+          cor_fundo: string | null
+          cor_primaria: string | null
+          cor_secundaria: string | null
           created_at: string
           email: string | null
           endereco: string | null
           id: string
+          logo_url: string | null
           nome: string
           status: string
           telefone: string | null
@@ -364,10 +368,14 @@ export type Database = {
         }
         Insert: {
           cnpj?: string | null
+          cor_fundo?: string | null
+          cor_primaria?: string | null
+          cor_secundaria?: string | null
           created_at?: string
           email?: string | null
           endereco?: string | null
           id?: string
+          logo_url?: string | null
           nome: string
           status?: string
           telefone?: string | null
@@ -376,10 +384,14 @@ export type Database = {
         }
         Update: {
           cnpj?: string | null
+          cor_fundo?: string | null
+          cor_primaria?: string | null
+          cor_secundaria?: string | null
           created_at?: string
           email?: string | null
           endereco?: string | null
           id?: string
+          logo_url?: string | null
           nome?: string
           status?: string
           telefone?: string | null
@@ -628,6 +640,36 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      login_attempts: {
+        Row: {
+          attempts: number | null
+          blocked_until: string | null
+          created_at: string | null
+          id: string
+          ip: unknown
+          last_attempt: string | null
+          mac: string
+        }
+        Insert: {
+          attempts?: number | null
+          blocked_until?: string | null
+          created_at?: string | null
+          id?: string
+          ip: unknown
+          last_attempt?: string | null
+          mac: string
+        }
+        Update: {
+          attempts?: number | null
+          blocked_until?: string | null
+          created_at?: string | null
+          id?: string
+          ip?: unknown
+          last_attempt?: string | null
+          mac?: string
+        }
+        Relationships: []
       }
       notification_settings: {
         Row: {
