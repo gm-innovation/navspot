@@ -97,13 +97,28 @@ export function useCreateRegraAcesso() {
 
       if (error) throw error;
 
-      // Trigger firewall update
+      // P1 Fix: Buscar dados da lista para incluir no payload
       try {
-        await createMikrotikActionForEmpresa({
-          empresaId: data.empresa_id,
-          tipo: 'add_firewall_filter',
-          payload: { regra_id: data.id, action: 'add' },
-        });
+        const { data: lista } = await supabase
+          .from('listas_acesso')
+          .select('dominios, tipo, nome')
+          .eq('id', data.lista_id)
+          .single();
+
+        if (lista && Array.isArray(lista.dominios) && lista.dominios.length > 0) {
+          // Criar ação com payload expandido contendo domínios
+          await createMikrotikActionForEmpresa({
+            empresaId: data.empresa_id,
+            tipo: lista.tipo === 'whitelist' ? 'add_walled_garden' : 'add_firewall_filter',
+            payload: { 
+              lista_name: lista.nome,
+              tipo: lista.tipo,
+              dominios: lista.dominios,
+              perfil_id: data.perfil_id,
+              regra_id: data.id,
+            },
+          });
+        }
       } catch (actionError) {
         console.error('[useRegrasAcesso] Failed to create MikroTik action:', actionError);
       }
@@ -140,16 +155,43 @@ export function useCreateMultipleRegras() {
 
       if (error) throw error;
 
-      // Trigger firewall update for the empresa
+      // P1 Fix: Para cada regra criada, buscar domínios e criar ações expandidas
       if (data && data.length > 0) {
-        try {
-          await createMikrotikActionForEmpresa({
-            empresaId: data[0].empresa_id,
-            tipo: 'add_firewall_filter',
-            payload: { regra_ids: data.map(r => r.id), action: 'add_multiple' },
-          });
-        } catch (actionError) {
-          console.error('[useRegrasAcesso] Failed to create MikroTik action:', actionError);
+        const empresaId = data[0].empresa_id;
+        
+        // Coletar todos os lista_ids únicos
+        const listaIds = [...new Set(data.map(r => r.lista_id))];
+        
+        // Buscar todas as listas de uma vez
+        const { data: listas } = await supabase
+          .from('listas_acesso')
+          .select('id, dominios, tipo, nome')
+          .in('id', listaIds);
+        
+        if (listas) {
+          const listasMap = new Map(listas.map(l => [l.id, l]));
+          
+          for (const regra of data) {
+            const lista = listasMap.get(regra.lista_id);
+            
+            if (lista && Array.isArray(lista.dominios) && lista.dominios.length > 0) {
+              try {
+                await createMikrotikActionForEmpresa({
+                  empresaId,
+                  tipo: lista.tipo === 'whitelist' ? 'add_walled_garden' : 'add_firewall_filter',
+                  payload: { 
+                    lista_name: lista.nome,
+                    tipo: lista.tipo,
+                    dominios: lista.dominios,
+                    perfil_id: regra.perfil_id,
+                    regra_id: regra.id,
+                  },
+                });
+              } catch (actionError) {
+                console.error('[useRegrasAcesso] Failed to create MikroTik action:', actionError);
+              }
+            }
+          }
         }
       }
 
@@ -187,13 +229,28 @@ export function useUpdateRegraAcesso() {
 
       if (error) throw error;
 
-      // Trigger firewall update
+      // P1 Fix: Buscar dados da lista para incluir no payload
       try {
-        await createMikrotikActionForEmpresa({
-          empresaId: data.empresa_id,
-          tipo: 'add_firewall_filter',
-          payload: { regra_id: data.id, action: 'update' },
-        });
+        const { data: lista } = await supabase
+          .from('listas_acesso')
+          .select('dominios, tipo, nome')
+          .eq('id', data.lista_id)
+          .single();
+
+        if (lista && Array.isArray(lista.dominios) && lista.dominios.length > 0) {
+          await createMikrotikActionForEmpresa({
+            empresaId: data.empresa_id,
+            tipo: lista.tipo === 'whitelist' ? 'add_walled_garden' : 'add_firewall_filter',
+            payload: { 
+              lista_name: lista.nome,
+              tipo: lista.tipo,
+              dominios: lista.dominios,
+              perfil_id: data.perfil_id,
+              regra_id: data.id,
+              action: 'update',
+            },
+          });
+        }
       } catch (actionError) {
         console.error('[useRegrasAcesso] Failed to create MikroTik action:', actionError);
       }
