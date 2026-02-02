@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.9.12 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.9.15 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -171,7 +171,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.9.12 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.9.15 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -181,7 +181,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.9.12'
+        version: '6.9.15'
       }),
       { 
         status: 200, 
@@ -448,13 +448,32 @@ function generateBootstrapScript(
 :if ($cmd = "add_firewall_block") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-:if ([:len [/ip firewall filter find comment=("NAVSPOT-BLOCK-" . $domain)]] = 0) do={
-:local pos [/ip firewall filter find where action=fasttrack-connection]
-:if ([:len $pos] = 0) do={:set pos 0}
-/ip firewall filter add chain=forward action=drop protocol=tcp dst-port=80,443 content=$domain comment=("NAVSPOT-BLOCK-" . $domain) place-before=$pos
-:log info ("NAVSPOT: Firewall block added - " . $domain)
+# v6.9.15: Ensure master drop rule exists before fasttrack
+:if ([:len [/ip firewall filter find comment="NAVSPOT-BLOCK-MASTER"]] = 0) do={
+:local ftPos [/ip firewall filter find where action=fasttrack-connection]
+:if ([:len $ftPos] = 0) do={:set ftPos 0}
+/ip firewall filter add chain=forward action=drop dst-address-list=NAVSPOT-BLACKLIST comment="NAVSPOT-BLOCK-MASTER" place-before=$ftPos
+:log info "NAVSPOT: Master firewall rule created"
+}
+# v6.9.15: Resolve domain to IP and add to address-list (more robust than content match)
+:do {
+:local resolvedIp [:resolve $domain]
+:if ([:len $resolvedIp] > 0) do={
+:if ([:len [/ip firewall address-list find list="NAVSPOT-BLACKLIST" address=$resolvedIp]] = 0) do={
+/ip firewall address-list add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=1d comment=("navspot-" . $domain)
+:log info ("NAVSPOT: Firewall block - " . $domain . " -> " . $resolvedIp)
 } else={
-:log info ("NAVSPOT: Firewall block exists - " . $domain)
+:log info ("NAVSPOT: IP already in blacklist - " . $resolvedIp)
+}
+}
+} on-error={
+:log warning ("NAVSPOT: Failed to resolve " . $domain . " - using content match fallback")
+# Fallback to content match if DNS fails
+:if ([:len [/ip firewall filter find comment=("NAVSPOT-BLOCK-" . $domain)]] = 0) do={
+:local ftPos [/ip firewall filter find where action=fasttrack-connection]
+:if ([:len $ftPos] = 0) do={:set ftPos 0}
+/ip firewall filter add chain=forward action=drop protocol=tcp dst-port=80,443 content=$domain comment=("NAVSPOT-BLOCK-" . $domain) place-before=$ftPos
+}
 }
 }
 }
@@ -489,8 +508,8 @@ function generateBootstrapScript(
   // v6.9.12: Recovery URL for guardian
   const recoveryUrl = `${supabaseUrl}/functions/v1/mikrotik-recovery-download`
 
-  // v6.9.12: Guardian script source - self-healing mechanism
-  const guardianScriptSource = `:log info "NAVSPOT-GUARDIAN: Verificando integridade..."
+  // v6.9.15: Guardian script source - self-healing mechanism with version check
+  const guardianScriptSource = `:log info "NAVSPOT-GUARDIAN v6.9.15: Verificando integridade..."
 :local needsRepair 0
 :local missing ""
 # Verificar scripts essenciais
@@ -505,6 +524,15 @@ function generateBootstrapScript(
 :if ([:len [/system scheduler find name="navspot-sync-scheduler"]] = 0) do={
 :set needsRepair 1
 :set missing ($missing . "navspot-sync-scheduler ")
+}
+# v6.9.15: Check if action-processor has add_firewall_block handler (version marker)
+:if ($needsRepair = 0) do={
+:local apSource [/system script get [find name="navspot-action-processor"] source]
+:if ([:find $apSource "NAVSPOT-BLACKLIST"] < 0) do={
+:set needsRepair 1
+:set missing ($missing . "action-processor-outdated ")
+:log warning "NAVSPOT-GUARDIAN: action-processor desatualizado (falta NAVSPOT-BLACKLIST)"
+}
 }
 :if ($needsRepair = 1) do={
 :log warning ("NAVSPOT-GUARDIAN: Componentes faltando: " . $missing)
@@ -536,11 +564,11 @@ function generateBootstrapScript(
 }
 }
 } else={
-:log info "NAVSPOT-GUARDIAN: Sistema integro"
+:log info "NAVSPOT-GUARDIAN: Sistema integro v6.9.15"
 }`
 
-  // Bootstrap script v6.9.12 - Safe Update + Guardian + Token via /file print file=
-  return `:log info "NAVSPOT v6.9.12: Iniciando instalacao..."
+  // Bootstrap script v6.9.15 - Safe Update + Guardian + Token via /file print file=
+  return `:log info "NAVSPOT v6.9.15: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -572,7 +600,7 @@ function generateBootstrapScript(
 :do { /file remove "navspot-token.txt" } on-error={}
 :do { /ip dhcp-client remove [find comment="navspot-wan"] } on-error={}
 :delay 2s
-:log info "NAVSPOT: Limpeza concluida (scripts preservados)"
+:log info "NAVSPOT: Limpeza concluida (scripts preservados) v6.9.15"
 
 # 2. CONFIGURAR WAN (antes de criar bridge)
 ${wanConfig}
@@ -697,7 +725,7 @@ ${guardianScriptSource}
 } else={
 /system scheduler add name="navspot-guardian-scheduler" interval=10m on-event="/system script run navspot-guardian" start-time=startup
 }
-:log info "NAVSPOT: Guardian v6.9.12 ativo"
+:log info "NAVSPOT: Guardian v6.9.15 ativo (version check enabled)"
 
 # 11. ACTION PROCESSOR v2 - set-or-add pattern (nunca remove antes)
 :local apExists [/system script find name="navspot-action-processor"]
@@ -736,7 +764,7 @@ ${syncScriptSource}
 } else={
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup
 }
-:log info "NAVSPOT: Sync v6.9.12 + Action Processor v2 configurados"
+:log info "NAVSPOT: Sync v6.9.15 + Action Processor v2 configurados"
 
 # 13. MIGRACAO DE PORTAS LAN (ether3, 4, 5 - ether2 permanece como gerencia)
 :log info "NAVSPOT: Migrando portas LAN para bridge1..."
@@ -745,11 +773,12 @@ ${migrationCommands}
 
 # 14. FINALIZACAO
 :log info "=========================================="
-:log info "NAVSPOT v6.9.12: INSTALACAO CONCLUIDA!"
+:log info "NAVSPOT v6.9.15: INSTALACAO CONCLUIDA!"
 :log info "Portas LAN (ether3-5) ativas no Hotspot"
 :log info "Porta de gerencia (ether2) configurada para Winbox"
 :log info "Sync rodando a cada ${syncIntervalMinutes} minuto(s)"
-:log info "Guardian ativo - auto-recuperacao habilitada"
+:log info "Guardian ativo - auto-recuperacao + version check"
+:log info "Address-List blocking para HTTPS/apps"
 :log info "=========================================="
 `
 }

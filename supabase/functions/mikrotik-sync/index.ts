@@ -5,6 +5,26 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// v6.9.15: Simple hash function for firewall rules change detection
+async function hashString(str: string): Promise<string> {
+  const encoder = new TextEncoder()
+  const data = encoder.encode(str)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// v6.9.15: Normalize domain for firewall rules (remove wildcards, clean up)
+function normalizeDomain(domain: string): string {
+  if (!domain) return ''
+  return domain
+    .trim()
+    .toLowerCase()
+    .replace(/^\*\./, '')  // Remove leading *.
+    .replace(/\*/g, '')    // Remove any remaining *
+    .replace(/^\./, '')    // Remove leading dot
+}
+
 interface ActiveUser {
   user: string
   mac: string
@@ -414,10 +434,10 @@ Deno.serve(async (req) => {
       )
     }
 
-    // v6.9.7: Include synced_profiles and synced_users for tracking
+    // v6.9.15: Include firewall_rules_hash for loop prevention
     const { data: hotspot, error: hotspotError } = await supabase
       .from('hotspots')
-      .select('id, embarcacao_id, nome, status, synced_profiles, synced_users')
+      .select('id, embarcacao_id, nome, status, synced_profiles, synced_users, firewall_rules_hash')
       .eq('sync_token', payload.sync_token)
       .single()
 
@@ -904,43 +924,79 @@ Deno.serve(async (req) => {
         })
       }
       
-      // v6.9.14: Convert firewallRules to pending actions for MikroTik
-      // This ensures both Walled Garden (pre-login) AND Firewall Filter (post-login) blocking
+      // v6.9.15: Hash-based caching to prevent infinite loop
+      // Only inject firewall/walled-garden actions if rules have changed
       if (firewallRules.length > 0) {
+        // Normalize and sort all domains for deterministic hash
+        const allDomains: string[] = []
         for (const rule of firewallRules) {
-          if (rule.action === 'block' && rule.domains.length > 0) {
-            for (const domain of rule.domains) {
-              if (domain && domain.trim().length > 0) {
-                // Walled Garden (pré-login)
-                formattedActions.push({
-                  id: `auto-blacklist-${domain.replace(/[^a-z0-9]/gi, '')}`,
-                  type: 'add_blacklist_domain',
-                  payload: { list_name: 'blacklist', domain }
-                })
-                
-                // Firewall Filter (pós-login)
-                formattedActions.push({
-                  id: `auto-firewall-${domain.replace(/[^a-z0-9]/gi, '')}`,
-                  type: 'add_firewall_block',
-                  payload: { domain }
-                })
-              }
-            }
-          } else if (rule.action === 'allow' && rule.domains.length > 0) {
-            for (const domain of rule.domains) {
-              if (domain && domain.trim().length > 0) {
-                // Whitelist no Walled Garden
-                formattedActions.push({
-                  id: `auto-whitelist-${domain.replace(/[^a-z0-9]/gi, '')}`,
-                  type: 'add_whitelist_domain',
-                  payload: { list_name: 'whitelist', domain }
-                })
-              }
+          for (const domain of rule.domains) {
+            const normalized = normalizeDomain(domain)
+            if (normalized) {
+              allDomains.push(`${rule.action}:${normalized}`)
             }
           }
         }
-        const totalDomains = firewallRules.reduce((acc, r) => acc + r.domains.length, 0)
-        console.log(`[mikrotik-sync] v6.9.14: Injected ${totalDomains} domain actions (walled-garden + firewall)`)
+        allDomains.sort()
+        
+        // Calculate hash of current firewall rules
+        const rulesString = allDomains.join('|')
+        const newHash = await hashString(rulesString)
+        const currentHash = (hotspot as any).firewall_rules_hash || null
+        
+        console.log(`[mikrotik-sync] v6.9.15: Firewall rules hash - current: ${currentHash?.slice(0, 8) || 'null'}, new: ${newHash.slice(0, 8)}`)
+        
+        if (currentHash !== newHash) {
+          // Rules changed - inject actions
+          console.log(`[mikrotik-sync] v6.9.15: Firewall rules changed, injecting ${allDomains.length} domain actions`)
+          
+          for (const rule of firewallRules) {
+            if (rule.action === 'block' && rule.domains.length > 0) {
+              for (const domain of rule.domains) {
+                const normalized = normalizeDomain(domain)
+                if (normalized) {
+                  // Walled Garden (pré-login) - use original domain for pattern matching
+                  formattedActions.push({
+                    id: `auto-blacklist-${normalized.replace(/[^a-z0-9]/gi, '')}`,
+                    type: 'add_blacklist_domain',
+                    payload: { list_name: 'blacklist', domain: domain.trim() }
+                  })
+                  
+                  // Firewall Filter (pós-login) - use NORMALIZED domain for IP resolution
+                  formattedActions.push({
+                    id: `auto-firewall-${normalized.replace(/[^a-z0-9]/gi, '')}`,
+                    type: 'add_firewall_block',
+                    payload: { domain: normalized }
+                  })
+                }
+              }
+            } else if (rule.action === 'allow' && rule.domains.length > 0) {
+              for (const domain of rule.domains) {
+                const normalized = normalizeDomain(domain)
+                if (normalized) {
+                  formattedActions.push({
+                    id: `auto-whitelist-${normalized.replace(/[^a-z0-9]/gi, '')}`,
+                    type: 'add_whitelist_domain',
+                    payload: { list_name: 'whitelist', domain: domain.trim() }
+                  })
+                }
+              }
+            }
+          }
+          
+          // Update hash in database
+          await supabase
+            .from('hotspots')
+            .update({ 
+              firewall_rules_hash: newHash,
+              firewall_rules_updated_at: new Date().toISOString()
+            })
+            .eq('id', hotspot.id)
+          
+          console.log(`[mikrotik-sync] v6.9.15: Updated firewall_rules_hash`)
+        } else {
+          console.log(`[mikrotik-sync] v6.9.15: Firewall rules unchanged, skipping injection (loop prevention)`)
+        }
       }
     }
 
