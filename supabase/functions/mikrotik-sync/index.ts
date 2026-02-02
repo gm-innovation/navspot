@@ -900,7 +900,52 @@ Deno.serve(async (req) => {
     // Fetch active access rules for this hotspot
     let firewallRules: { action: string; domains: string[]; apps: string[] }[] = []
     
+    // v6.9.17: Track if any profile uses "bloquear_tudo" mode for whitelist firewall
+    let hasRestrictiveProfile = false
+    let restrictiveWhitelistDomains: string[] = []
+    
     if (embarcacao) {
+      // v6.9.17: Check for profiles with modo_acesso = 'bloquear_tudo'
+      // These need firewall whitelist (allow only specified domains, block everything else)
+      const { data: restrictivePerfis } = await supabase
+        .from('perfis_velocidade')
+        .select('id, nome, modo_acesso')
+        .eq('empresa_id', embarcacao.empresa_id)
+        .eq('modo_acesso', 'bloquear_tudo')
+
+      if (restrictivePerfis && restrictivePerfis.length > 0) {
+        hasRestrictiveProfile = true
+        console.log(`[mikrotik-sync] v6.9.17: Found ${restrictivePerfis.length} restrictive profiles (bloquear_tudo)`)
+
+        // Get all whitelists for these profiles
+        const perfilIds = restrictivePerfis.map(p => p.id)
+        
+        const { data: whitelistRegras } = await supabase
+          .from('regras_acesso')
+          .select(`
+            listas_acesso(dominios, tipo)
+          `)
+          .eq('empresa_id', embarcacao.empresa_id)
+          .eq('ativo', true)
+          .in('perfil_id', perfilIds)
+
+        if (whitelistRegras) {
+          for (const regra of whitelistRegras) {
+            const lista = regra.listas_acesso as { dominios: string[]; tipo: string } | null
+            if (lista?.tipo === 'whitelist' && lista.dominios) {
+              for (const domain of lista.dominios) {
+                const normalized = normalizeDomain(domain)
+                if (normalized && !restrictiveWhitelistDomains.includes(normalized)) {
+                  restrictiveWhitelistDomains.push(normalized)
+                }
+              }
+            }
+          }
+        }
+        
+        console.log(`[mikrotik-sync] v6.9.17: Collected ${restrictiveWhitelistDomains.length} whitelist domains for restrictive profiles`)
+      }
+      
       const { data: regras } = await supabase
         .from('regras_acesso')
         .select(`
@@ -926,7 +971,7 @@ Deno.serve(async (req) => {
       
       // v6.9.15: Hash-based caching to prevent infinite loop
       // Only inject firewall/walled-garden actions if rules have changed
-      if (firewallRules.length > 0) {
+      if (firewallRules.length > 0 || hasRestrictiveProfile) {
         // Normalize and sort all domains for deterministic hash
         const allDomains: string[] = []
         for (const rule of firewallRules) {
@@ -937,6 +982,12 @@ Deno.serve(async (req) => {
             }
           }
         }
+        
+        // v6.9.17: Include restrictive whitelist domains in hash
+        for (const domain of restrictiveWhitelistDomains) {
+          allDomains.push(`restrictive-allow:${domain}`)
+        }
+        
         allDomains.sort()
         
         // Calculate hash of current firewall rules
@@ -944,11 +995,11 @@ Deno.serve(async (req) => {
         const newHash = await hashString(rulesString)
         const currentHash = (hotspot as any).firewall_rules_hash || null
         
-        console.log(`[mikrotik-sync] v6.9.15: Firewall rules hash - current: ${currentHash?.slice(0, 8) || 'null'}, new: ${newHash.slice(0, 8)}`)
+        console.log(`[mikrotik-sync] v6.9.17: Firewall rules hash - current: ${currentHash?.slice(0, 8) || 'null'}, new: ${newHash.slice(0, 8)}`)
         
         if (currentHash !== newHash) {
           // Rules changed - inject actions
-          console.log(`[mikrotik-sync] v6.9.15: Firewall rules changed, injecting ${allDomains.length} domain actions`)
+          console.log(`[mikrotik-sync] v6.9.17: Firewall rules changed, injecting ${allDomains.length} domain actions`)
           
           for (const rule of firewallRules) {
             if (rule.action === 'block' && rule.domains.length > 0) {
@@ -984,6 +1035,19 @@ Deno.serve(async (req) => {
             }
           }
           
+          // v6.9.17: Inject firewall allow rules for restrictive profiles
+          if (hasRestrictiveProfile && restrictiveWhitelistDomains.length > 0) {
+            console.log(`[mikrotik-sync] v6.9.17: Injecting ${restrictiveWhitelistDomains.length} firewall allow rules for bloquear_tudo mode`)
+            
+            for (const domain of restrictiveWhitelistDomains) {
+              formattedActions.push({
+                id: `auto-fw-allow-${domain.replace(/[^a-z0-9]/gi, '')}`,
+                type: 'add_firewall_allow',
+                payload: { domain: domain }
+              })
+            }
+          }
+          
           // Update hash in database
           await supabase
             .from('hotspots')
@@ -993,9 +1057,9 @@ Deno.serve(async (req) => {
             })
             .eq('id', hotspot.id)
           
-          console.log(`[mikrotik-sync] v6.9.15: Updated firewall_rules_hash`)
+          console.log(`[mikrotik-sync] v6.9.17: Updated firewall_rules_hash`)
         } else {
-          console.log(`[mikrotik-sync] v6.9.15: Firewall rules unchanged, skipping injection (loop prevention)`)
+          console.log(`[mikrotik-sync] v6.9.17: Firewall rules unchanged, skipping injection (loop prevention)`)
         }
       }
     }
@@ -1214,6 +1278,9 @@ Deno.serve(async (req) => {
         case 'add_firewall_block':
           // v6.9.14: Firewall filter for post-login blocking
           return `add_firewall_block|${p.domain || ''}`
+        case 'add_firewall_allow':
+          // v6.9.17: Firewall filter for "bloquear_tudo" mode - whitelist
+          return `add_firewall_allow|${p.domain || ''}`
         case 'add_firewall_l7':
           return `create_firewall_rule|${p.order || 0}|${p.list || ''}|${p.type || ''}|${p.profile || ''}|${p.schedule || ''}|${p.action || ''}`
         case 'update_profile_quota':

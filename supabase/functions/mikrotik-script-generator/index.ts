@@ -438,7 +438,7 @@ function generateBootstrapScript(
 :local domain [:pick $rest ($p2 + 1) [:len $rest]]
 :if ([:len $domain] > 0) do={
 :if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
-/ip hotspot walled-garden add dst-host=$domain action=reject comment=("navspot-blacklist-" . $bName)
+/ip hotspot walled-garden add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
 :log info ("NAVSPOT: Blacklist bloqueado (walled-garden) - " . $domain)
 } else={
 :log info ("NAVSPOT: Blacklist ja existe - " . $domain)
@@ -477,6 +477,37 @@ function generateBootstrapScript(
 }
 }
 }
+# v6.9.17: add_firewall_allow - Whitelist for "bloquear_tudo" mode
+:if ($cmd = "add_firewall_allow") do={
+:local domain $rest
+:if ([:len $domain] > 0) do={
+# Ensure master deny-all rule exists (must be AFTER allow rules)
+:if ([:len [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]] = 0) do={
+:local ftPos [/ip firewall filter find where action=fasttrack-connection]
+:if ([:len $ftPos] = 0) do={:set ftPos 0}
+# Create ACCEPT rule for allowed list first
+/ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED comment="NAVSPOT-ALLOW-ACCEPT" place-before=$ftPos
+:log info "NAVSPOT: Allow accept rule created"
+# Then create DROP for everything else (will be after the accept due to place-before logic)
+/ip firewall filter add chain=forward action=drop comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
+:log info "NAVSPOT: Allow master drop rule created"
+}
+# Resolve domain to IP and add to allowed list
+:do {
+:local resolvedIp [:resolve $domain]
+:if ([:len $resolvedIp] > 0) do={
+:if ([:len [/ip firewall address-list find list="NAVSPOT-ALLOWED" address=$resolvedIp]] = 0) do={
+/ip firewall address-list add list="NAVSPOT-ALLOWED" address=$resolvedIp timeout=1d comment=("navspot-allow-" . $domain)
+:log info ("NAVSPOT: Firewall allow - " . $domain . " -> " . $resolvedIp)
+} else={
+:log info ("NAVSPOT: IP already in allowed list - " . $resolvedIp)
+}
+}
+} on-error={
+:log warning ("NAVSPOT: Failed to resolve allowed domain " . $domain)
+}
+}
+}
 :if ($cmd = "update_profile_quota") do={
 :local p2 [:find $rest "|"]
 :local pName [:pick $rest 0 $p2]
@@ -486,6 +517,7 @@ function generateBootstrapScript(
 :do { /ip hotspot user set $uId limit-bytes-total=$quotaBytes } on-error={}
 }
 :log info ("NAVSPOT: Quota aplicada - " . $pName . " = " . $quota . " MB")
+}
 }
 }
 }
