@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { toast } from "@/hooks/use-toast";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -155,7 +156,19 @@ export default function PerfisVelocidade() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     
-    const dataToSubmit = {
+    // P0 Fix: Validação de empresa_id - não enviar string vazia para UUID
+    // Para UPDATE: não precisa enviar empresa_id (já existe no perfil)
+    // Para CREATE: validar que existe empresa_id no user
+    if (!editingPerfil && !user?.empresa_id) {
+      toast({
+        title: 'Erro',
+        description: 'Empresa não identificada. Não é possível criar perfil.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    
+    const baseData = {
       nome: formData.nome,
       velocidade_download: formData.velocidade_download,
       velocidade_upload: formData.velocidade_upload,
@@ -168,15 +181,16 @@ export default function PerfisVelocidade() {
       tipo_usuario: formData.tipo_usuario,
       modo_acesso: formData.modo_acesso,
       herdar_regras_empresa: formData.herdar_regras_empresa,
-      empresa_id: user?.empresa_id || "",
     };
 
     if (editingPerfil) {
-      updatePerfil.mutate({ ...dataToSubmit, id: editingPerfil.id }, {
+      // UPDATE: não incluir empresa_id (usa o existente)
+      updatePerfil.mutate({ ...baseData, id: editingPerfil.id }, {
         onSuccess: () => setFormOpen(false),
       });
     } else {
-      createPerfil.mutate(dataToSubmit, {
+      // CREATE: incluir empresa_id válido
+      createPerfil.mutate({ ...baseData, empresa_id: user!.empresa_id! }, {
         onSuccess: () => setFormOpen(false),
       });
     }
