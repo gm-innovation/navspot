@@ -437,11 +437,24 @@ function generateBootstrapScript(
 :local bName [:pick $rest 0 $p2]
 :local domain [:pick $rest ($p2 + 1) [:len $rest]]
 :if ([:len $domain] > 0) do={
-:if ([:len [/ip hotspot walled-garden find dst-host=$domain action=deny]] = 0) do={
-/ip hotspot walled-garden add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
-:log info ("NAVSPOT: Blacklist bloqueado - " . $domain)
+:if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
+/ip hotspot walled-garden add dst-host=$domain action=reject comment=("navspot-blacklist-" . $bName)
+:log info ("NAVSPOT: Blacklist bloqueado (walled-garden) - " . $domain)
 } else={
 :log info ("NAVSPOT: Blacklist ja existe - " . $domain)
+}
+}
+}
+:if ($cmd = "add_firewall_block") do={
+:local domain $rest
+:if ([:len $domain] > 0) do={
+:if ([:len [/ip firewall filter find comment=("NAVSPOT-BLOCK-" . $domain)]] = 0) do={
+:local pos [/ip firewall filter find where action=fasttrack-connection]
+:if ([:len $pos] = 0) do={:set pos 0}
+/ip firewall filter add chain=forward action=drop protocol=tcp dst-port=80,443 content=$domain comment=("NAVSPOT-BLOCK-" . $domain) place-before=$pos
+:log info ("NAVSPOT: Firewall block added - " . $domain)
+} else={
+:log info ("NAVSPOT: Firewall block exists - " . $domain)
 }
 }
 }

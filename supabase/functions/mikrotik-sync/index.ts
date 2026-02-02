@@ -903,6 +903,45 @@ Deno.serve(async (req) => {
           }
         })
       }
+      
+      // v6.9.14: Convert firewallRules to pending actions for MikroTik
+      // This ensures both Walled Garden (pre-login) AND Firewall Filter (post-login) blocking
+      if (firewallRules.length > 0) {
+        for (const rule of firewallRules) {
+          if (rule.action === 'block' && rule.domains.length > 0) {
+            for (const domain of rule.domains) {
+              if (domain && domain.trim().length > 0) {
+                // Walled Garden (pré-login)
+                formattedActions.push({
+                  id: `auto-blacklist-${domain.replace(/[^a-z0-9]/gi, '')}`,
+                  type: 'add_blacklist_domain',
+                  payload: { list_name: 'blacklist', domain }
+                })
+                
+                // Firewall Filter (pós-login)
+                formattedActions.push({
+                  id: `auto-firewall-${domain.replace(/[^a-z0-9]/gi, '')}`,
+                  type: 'add_firewall_block',
+                  payload: { domain }
+                })
+              }
+            }
+          } else if (rule.action === 'allow' && rule.domains.length > 0) {
+            for (const domain of rule.domains) {
+              if (domain && domain.trim().length > 0) {
+                // Whitelist no Walled Garden
+                formattedActions.push({
+                  id: `auto-whitelist-${domain.replace(/[^a-z0-9]/gi, '')}`,
+                  type: 'add_whitelist_domain',
+                  payload: { list_name: 'whitelist', domain }
+                })
+              }
+            }
+          }
+        }
+        const totalDomains = firewallRules.reduce((acc, r) => acc + r.domains.length, 0)
+        console.log(`[mikrotik-sync] v6.9.14: Injected ${totalDomains} domain actions (walled-garden + firewall)`)
+      }
     }
 
     // v6.9.9: Ensure all company profiles are synced with MikroTik data validation
@@ -1116,6 +1155,9 @@ Deno.serve(async (req) => {
         case 'add_blacklist_domain':
           // v6.9: Blacklist as separate domain command
           return `create_blacklist_domain|${p.list_name || 'default'}|${p.domain || ''}`
+        case 'add_firewall_block':
+          // v6.9.14: Firewall filter for post-login blocking
+          return `add_firewall_block|${p.domain || ''}`
         case 'add_firewall_l7':
           return `create_firewall_rule|${p.order || 0}|${p.list || ''}|${p.type || ''}|${p.profile || ''}|${p.schedule || ''}|${p.action || ''}`
         case 'update_profile_quota':
