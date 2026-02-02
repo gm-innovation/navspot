@@ -622,9 +622,19 @@ Deno.serve(async (req) => {
                 tripulante_id: tripulante.id
               }, 60)
               
+              // v6.9.14: Update tripulante status with block reason
+              await supabase
+                .from('tripulantes')
+                .update({
+                  status: 'bloqueado',
+                  bloqueio_motivo: 'quota_exceeded',
+                  bloqueado_at: new Date().toISOString()
+                })
+                .eq('id', tripulante.id)
+              
               // v6.9.11: Mark for kick when quota >= 100%
               shouldKickForQuota = true
-              console.log(`[mikrotik-sync] v6.9.11: User ${activeUser.user} exceeded quota (${Math.round(percentage)}%), will be kicked`)
+              console.log(`[mikrotik-sync] v6.9.14: User ${activeUser.user} exceeded quota (${Math.round(percentage)}%), blocked and will be kicked`)
             } else if (percentage >= 80) {
               await createAlertIfNotRecent(supabase, {
                 tipo: 'quota_warning',

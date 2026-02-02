@@ -18,7 +18,9 @@ import {
   RotateCcw,
   QrCode,
   Eye,
-  Shield
+  Shield,
+  AlertTriangle,
+  Info
 } from "lucide-react";
 import {
   Table,
@@ -45,6 +47,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { 
   useTripulantes, 
   useCreateTripulante, 
@@ -63,6 +71,19 @@ import { PageLoadingSkeleton } from "@/components/ui/loading-skeleton";
 import { EmptyState, ErrorState } from "@/components/ui/empty-state";
 import { formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
+
+// Helper function to format block reason
+const formatBloqueioMotivo = (motivo: string | null): string => {
+  if (!motivo) return "";
+  const motivos: Record<string, string> = {
+    'manual': 'Bloqueio manual',
+    'quota_exceeded': 'Quota excedida',
+    'device_limit': 'Limite de dispositivos',
+    'device_sharing': 'Compartilhamento',
+    'security': 'Segurança',
+  };
+  return motivos[motivo] || motivo;
+};
 
 export default function Tripulantes() {
   // Enable realtime updates
@@ -148,7 +169,12 @@ export default function Tripulantes() {
   // Actions
   const handleBlock = (tripulante: TripulanteWithDetails) => {
     const newStatus = tripulante.status === "bloqueado" ? "ativo" : "bloqueado";
-    updateTripulante.mutate({ id: tripulante.id, status: newStatus });
+    updateTripulante.mutate({ 
+      id: tripulante.id, 
+      status: newStatus,
+      bloqueio_motivo: newStatus === 'bloqueado' ? 'manual' : null,
+      bloqueado_at: newStatus === 'bloqueado' ? new Date().toISOString() : null,
+    });
     createAction.mutate({
       tripulanteId: tripulante.id,
       tipo: newStatus === "bloqueado" ? "disable_user" : "enable_user",
@@ -360,18 +386,69 @@ export default function Tripulantes() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <Badge 
-                        variant={tripulante.status === "ativo" ? "default" : "secondary"}
-                        className={
-                          tripulante.status === "ativo" 
-                            ? "bg-green-100 text-green-800 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400" 
-                            : tripulante.status === "bloqueado"
-                            ? "bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400"
-                            : "bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-400"
-                        }
-                      >
-                        {tripulante.status === "ativo" ? "Ativo" : tripulante.status === "bloqueado" ? "Bloqueado" : "Inativo"}
-                      </Badge>
+                      <TooltipProvider>
+                        <div className="flex flex-col gap-1">
+                          <Badge 
+                            variant={tripulante.status === "ativo" ? "default" : "secondary"}
+                            className={
+                              tripulante.status === "ativo" 
+                                ? "bg-green-100 text-green-800 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400" 
+                                : tripulante.status === "bloqueado"
+                                ? "bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400"
+                                : "bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-400"
+                            }
+                          >
+                            {tripulante.status === "ativo" ? "Ativo" : tripulante.status === "bloqueado" ? "Bloqueado" : "Inativo"}
+                          </Badge>
+                          
+                          {/* Quota indicator */}
+                          {tripulante.quota_percentual !== undefined && tripulante.quota_percentual > 80 && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Badge 
+                                  variant="outline" 
+                                  className={
+                                    tripulante.quota_percentual >= 100 
+                                      ? "border-destructive text-destructive text-xs cursor-help" 
+                                      : "border-yellow-500 text-yellow-600 dark:text-yellow-400 text-xs cursor-help"
+                                  }
+                                >
+                                  {tripulante.quota_percentual >= 100 ? (
+                                    <AlertTriangle className="h-3 w-3 mr-1" />
+                                  ) : null}
+                                  Quota: {Math.round(tripulante.quota_percentual)}%
+                                </Badge>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {tripulante.quota_percentual >= 100 
+                                  ? "Quota excedida - usuário desconectado automaticamente"
+                                  : `Atenção: consumo alto de dados (${Math.round(tripulante.quota_percentual)}%)`
+                                }
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                          
+                          {/* Block reason */}
+                          {tripulante.status === 'bloqueado' && tripulante.bloqueio_motivo && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="text-xs text-muted-foreground flex items-center gap-1 cursor-help">
+                                  <Info className="h-3 w-3" />
+                                  {formatBloqueioMotivo(tripulante.bloqueio_motivo)}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <div className="text-xs">
+                                  <p><strong>Motivo:</strong> {formatBloqueioMotivo(tripulante.bloqueio_motivo)}</p>
+                                  {tripulante.bloqueado_at && (
+                                    <p><strong>Quando:</strong> {formatDistanceToNow(new Date(tripulante.bloqueado_at), { addSuffix: true, locale: ptBR })}</p>
+                                  )}
+                                </div>
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                        </div>
+                      </TooltipProvider>
                     </TableCell>
                     <TableCell>
                       <span className="text-sm">{formatBytes(tripulante.bytes_consumidos)}</span>

@@ -12,6 +12,9 @@ export interface TripulanteWithDetails extends Tripulante {
   embarcacao_nome?: string;
   perfil_nome?: string;
   empresa_nome?: string;
+  limite_dados_mb?: number | null;
+  max_dispositivos?: number;
+  quota_percentual?: number;
 }
 
 export function useTripulantes() {
@@ -23,18 +26,29 @@ export function useTripulantes() {
         .select(`
           *,
           embarcacoes(nome, empresas(nome)),
-          perfis_velocidade(nome)
+          perfis_velocidade(nome, limite_dados_mb, max_dispositivos)
         `)
         .order('nome');
 
       if (error) throw error;
       
-      return data.map((t: any) => ({
-        ...t,
-        embarcacao_nome: t.embarcacoes?.nome,
-        empresa_nome: t.embarcacoes?.empresas?.nome,
-        perfil_nome: t.perfis_velocidade?.nome,
-      })) as TripulanteWithDetails[];
+      return data.map((t: any) => {
+        const limiteMb = t.perfis_velocidade?.limite_dados_mb;
+        const bytesConsumed = t.bytes_consumidos || 0;
+        const quotaPercentual = limiteMb 
+          ? (bytesConsumed / (limiteMb * 1024 * 1024)) * 100 
+          : undefined;
+        
+        return {
+          ...t,
+          embarcacao_nome: t.embarcacoes?.nome,
+          empresa_nome: t.embarcacoes?.empresas?.nome,
+          perfil_nome: t.perfis_velocidade?.nome,
+          limite_dados_mb: limiteMb,
+          max_dispositivos: t.perfis_velocidade?.max_dispositivos,
+          quota_percentual: quotaPercentual,
+        };
+      }) as TripulanteWithDetails[];
     },
   });
 }
