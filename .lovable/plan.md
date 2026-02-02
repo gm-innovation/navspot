@@ -1,157 +1,135 @@
 
+# Plano de Correção v6.9.17: Sintaxe RouterOS 6.x + Modo Bloquear Tudo
 
-# Plano Consolidado: Correção Completa v6.9.16
+## Diagnóstico Resumido
 
-## Diagnóstico Completo
+| Problema | Causa Raiz | Impacto |
+|----------|------------|---------|
+| Erro sintaxe linha 148 | `action=reject` inválido em Walled Garden hostnames (RouterOS 6.x) | Action-processor quebrado, nenhum comando executa |
+| Whitelist não funciona | Perfil "bloquear_tudo" não está implementado no sync | Após login, tráfego passa direto sem filtro |
+| Firewall vazio | Script quebrou antes de chegar no `add_firewall_block` | Bloqueio pós-login inexistente |
 
-### 1. Loop de Hash - CORRIGIDO
-Os logs confirmam que o hash está funcionando:
-```
-Firewall rules hash - current: 6ec17f16, new: 6ec17f16
-```
-O sistema NÃO está mais reenviando as regras a cada sync.
+## Correções Necessárias
 
-### 2. Regras de Firewall Não Aplicadas
-**Problema crítico**: O hash foi salvo no banco (`firewall_rules_hash = 6ec17f16...`) na primeira vez, mas o MikroTik estava com action-processor **antigo** (sem handler `add_firewall_block`). Resultado:
-- Backend pensa que as regras foram aplicadas (hash salvo)
-- MikroTik nunca recebeu/executou as regras
-- Agora o sync vê "hash igual" e nunca mais envia
+### Parte 1: Corrigir Sintaxe - `action=reject` para `action=deny`
 
-**Solução**: Resetar o hash para forçar nova injeção APÓS atualizar o action-processor.
+No RouterOS 6.x, o menu `/ip hotspot walled-garden` (hostnames) aceita:
+- `action=allow` - libera o site
+- `action=deny` - bloqueia o site
 
-### 3. Guardian Desatualizado no Roteador
-O arquivo `mikrotik-recovery-download` foi atualizado com `add_firewall_block`, mas o Guardian **no roteador** é antigo e não sabe verificar a versão correta. Rodar `/system script run navspot-guardian` não resolve porque o script Guardian que está no MikroTik é antigo.
+Já o menu `/ip hotspot walled-garden ip` (IPs) aceita:
+- `action=accept`
+- `action=reject`
 
-**Solução**: Baixar manualmente o recovery v6.9.15.
+**Arquivos a modificar:**
 
-### 4. Consumo de 100MB Não Registrado
-Dados do banco:
-- `tripulantes.bytes_consumidos = 66,845,521 bytes (63.7 MB)`
-- `sessoes_wifi` ativas mostram apenas ~1 MB (999,667 + 982,809 bytes)
-- Perfil: limite de 100 MB
+1. `supabase/functions/mikrotik-recovery-download/index.ts` (linhas 319-321)
+2. `supabase/functions/mikrotik-script-generator/index.ts` (linhas 440-442)
 
-Os logs mostram deltas pequenos (2KB-10KB por sync). O download de 100MB não aparece nos deltas.
-
-**Possíveis causas**:
-1. Download foi feito em outro dispositivo/rede
-2. MikroTik não reportou corretamente (bytes resetaram)
-3. WiFi desconectou durante download
-
-**Não há bug no código** - o sistema de delta está funcionando. O download simplesmente não passou pelo hotspot monitorado.
-
-### 5. Quota Não Bloqueou
-- Consumo atual: 63.7 MB de 100 MB = 63.7%
-- Bloqueio só ocorre em 100%
-- **Funcionamento correto** - apenas não atingiu o limite
-
----
-
-## Mudanças Necessárias
-
-### Parte 1: Reset do Hash e Forçar Aplicação (URGENTE)
-
-**Migration SQL**:
-```sql
--- v6.9.16: Reset firewall_rules_hash to force re-application
--- This is needed because the hash was saved before the rules were actually applied on the router
-UPDATE hotspots 
-SET firewall_rules_hash = NULL, 
-    firewall_rules_updated_at = NULL
-WHERE firewall_rules_hash IS NOT NULL;
-
--- Log for audit
-COMMENT ON TABLE hotspots IS 'v6.9.16: Hash reset applied to force firewall rules re-sync';
-```
-
-### Parte 2: Atualização Manual do Action-Processor
-
-Você precisa executar no MikroTik (o Guardian local está desatualizado):
-
+**Mudança:**
 ```routeros
-# Baixar e aplicar recovery v6.9.15
-:local token [/file get "navspot-token.txt" contents]
-:local url "https://focqrhkozhdefohroqyi.supabase.co/functions/v1/mikrotik-recovery-download"
-:local body ("{\"sync_token\":\"" . $token . "\"}")
-/tool fetch url=$url mode=https http-method=post http-data=$body http-header-field="Content-Type: application/json" dst-path="navspot-recovery.rsc"
-:delay 3s
-/import navspot-recovery.rsc
+# DE (incorreto para RouterOS 6.x)
+/ip hotspot walled-garden add dst-host=$domain action=reject comment=...
+
+# PARA (correto)
+/ip hotspot walled-garden add dst-host=$domain action=deny comment=...
 ```
 
-Após isso, rodar:
-```routeros
-/system script run navspot-sync
-```
+### Parte 2: Implementar Lógica "Bloquear Tudo" (modo_acesso)
 
-### Parte 3: Melhorias de UI no Monitoramento
+Para perfis com `modo_acesso = 'bloquear_tudo'`, o sistema precisa:
 
-**Arquivo: `src/components/monitoring/LiveMetricsGrid.tsx`**
+1. **Antes do login (Walled Garden):** Bloquear tudo por padrão, liberar apenas domínios da whitelist
+2. **Depois do login (Firewall):** Criar Address-List de permissão e dropar todo resto
 
-| De | Para |
-|---|---|
-| `title="Consumo Total"` | `title="Consumo Sessões"` |
-| `subtitle="Dados transferidos"` | `subtitle="Nas conexões ativas"` |
+**Mudanças no mikrotik-sync:**
 
-Isso clarifica que é o consumo das sessões ativas, não o histórico acumulado.
+Adicionar lógica para detectar tripulantes com perfil `bloquear_tudo` e injetar:
+- Regra mestre de DROP no firewall (inverter lógica)
+- Whitelists na Address-List de permissão
 
-### Parte 4: Indicador de Quota na Lista de Tripulantes (Opcional)
+**Complexidade:** Alta - requer refatoração significativa da lógica de firewall.
 
-**Arquivos**: `src/pages/Tripulantes.tsx`
+**Alternativa simplificada para v6.9.17:**
+Usar o Walled Garden com padrão invertido - adicionar regra de deny-all e permitir apenas os domínios configurados.
 
-Adicionar barra de progresso visual mostrando consumo vs. limite do perfil. Isso já existe parcialmente, mas pode ser melhorado.
+### Parte 3: Reset do Hash (Já Aplicado)
 
----
+A migration `20260202183250` já foi aplicada, mas o hotspot ainda mostra `firewall_rules_hash` preenchido. Precisamos verificar se a migration realmente executou.
+
+### Parte 4: Reenviar Recovery Corrigido
+
+Após corrigir os Edge Functions, será necessário:
+1. Gerar novo recovery.rsc
+2. Aplicar no MikroTik
+3. Rodar sync e verificar logs
 
 ## Arquivos a Modificar
 
-| Arquivo | Prioridade | Mudança |
-|---------|------------|---------|
-| Migration SQL | P0 | Reset de `firewall_rules_hash` |
-| `src/components/monitoring/LiveMetricsGrid.tsx` | P2 | Corrigir rótulo "Consumo Total" |
+| Arquivo | Mudança | Prioridade |
+|---------|---------|------------|
+| `supabase/functions/mikrotik-recovery-download/index.ts` | `action=reject` → `action=deny` | P0 |
+| `supabase/functions/mikrotik-script-generator/index.ts` | `action=reject` → `action=deny` | P0 |
+| `supabase/functions/mikrotik-sync/index.ts` | Implementar lógica modo_acesso | P1 |
+| Migration SQL | Novo reset do hash (se necessário) | P0 |
 
----
+## Detalhes Técnicos
 
-## Procedimento de Teste Após Aplicação
+### Correção 1: mikrotik-recovery-download (linhas 319-321)
 
-### 1. Verificar atualização do action-processor
-```routeros
-/system script print detail where name="navspot-action-processor"
-# Procurar por "NAVSPOT-BLACKLIST" ou "v6.9.15"
+```typescript
+// ANTES
+/ip hotspot walled-garden add dst-host=$domain action=reject comment=("navspot-blacklist-" . $bName)
+
+// DEPOIS  
+/ip hotspot walled-garden add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
 ```
 
-### 2. Aguardar próximo sync e verificar se as regras foram injetadas
-```routeros
-/ip firewall filter print where comment="NAVSPOT-BLOCK-MASTER"
-/ip firewall address-list print where list="NAVSPOT-BLACKLIST"
-/ip hotspot walled-garden print where comment~"navspot-blacklist"
+### Correção 2: mikrotik-script-generator (linhas 440-442)
+
+```typescript
+// ANTES
+/ip hotspot walled-garden add dst-host=$domain action=reject comment=("navspot-blacklist-" . $bName)
+
+// DEPOIS
+/ip hotspot walled-garden add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
 ```
 
-### 3. Testar bloqueio
-- Antes do login: tentar acessar domínio bloqueado
-- Depois do login: tentar acessar domínio bloqueado
-- Verificar counters: `/ip firewall filter print stats where comment~"NAVSPOT"`
+### Correção 3: Implementar modo_acesso no mikrotik-sync
 
-### 4. Testar quota (para forçar bloqueio)
-- Diminuir temporariamente o limite do perfil para 50 MB
-- O usuário com 63.7 MB será bloqueado no próximo sync
-- Ou aumentar o consumo fazendo downloads
+Adicionar verificação do campo `modo_acesso` do perfil e, se for `bloquear_tudo`:
+1. Injetar regra de DROP padrão no firewall
+2. Criar Address-List `NAVSPOT-ALLOWED` com IPs dos domínios permitidos
+3. Regra de ACCEPT antes do DROP para `dst-address-list=NAVSPOT-ALLOWED`
 
-### 5. Sobre "não pediu login novamente"
-Isso é **comportamento normal** do MikroTik. Para testar login fresh:
+## Fluxo de Teste Após Aplicação
+
+1. Deploy das Edge Functions corrigidas
+2. Gerar novo recovery via API ou copiar script corrigido
+3. Aplicar no MikroTik:
 ```routeros
-/ip hotspot active remove [find user="alexandre.silva"]
+/system script remove [find name~"navspot"]
+/system scheduler remove [find name="navspot-sync-scheduler"]
+# Importar novo recovery
+/import navspot-recovery.rsc
+/system script run navspot-sync
 ```
-Depois reconectar o dispositivo.
+4. Verificar:
+```routeros
+/ip hotspot walled-garden print where comment~"navspot"
+/ip firewall filter print where comment~"NAVSPOT"
+/ip firewall address-list print where list~"NAVSPOT"
+```
+5. Testar acesso a site da whitelist (g1.com) após login
 
----
+## Ordem de Execução
 
-## Resumo Executivo
+1. Corrigir `action=reject` → `action=deny` nos 2 arquivos
+2. Resetar novamente o `firewall_rules_hash` no banco
+3. Deploy
+4. Aplicar recovery no MikroTik
+5. Testar whitelist
 
-| Problema | Status | Solução |
-|----------|--------|---------|
-| Loop infinito de ações | ✅ CORRIGIDO | Hash já funciona |
-| Regras de firewall não aplicadas | ⚠️ PENDENTE | Reset hash + recovery manual |
-| Guardian desatualizado no MikroTik | ⚠️ PENDENTE | Recovery manual |
-| 100MB não registrado | 🔍 DIAGNÓSTICO | Provavelmente não passou pelo hotspot |
-| Quota não bloqueou | ✅ FUNCIONANDO | Usuário está em 63.7%, limite é 100% |
-| UI confusa sobre consumo | ⚠️ PENDENTE | Renomear rótulo |
+## Sobre o Consumo
 
+O consumo não está atualizando porque o usuário está bloqueado e não consegue navegar. Após corrigir o bloqueio/whitelist, o consumo voltará a ser contabilizado normalmente.
