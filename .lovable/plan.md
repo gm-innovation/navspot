@@ -1,280 +1,240 @@
 
-# Plano: Visibilidade do Status de Bloqueio/Desconexão do Tripulante
 
-## Problema Identificado
+# Plano: Implementação Completa de Bloqueio de Sites v6.9.14
 
-Atualmente, quando um tripulante é deslogado ou bloqueado automaticamente (ex: por exceder quota de dados), essa informação **não é visível** para o administrador na lista de tripulantes nem no modal de detalhes.
+## Resumo Executivo
 
-O sistema já:
-- Gera alertas (`quota_exceeded`, `device_limit`, `blocked_device_attempt`, etc.)
-- Envia ação `kick_session` para desconectar usuários que excederam quota
-- Possui a tabela `alertas` com `tripulante_id` vinculado
+Este plano implementa a solução de bloqueio de sites que você detalhou, corrigindo duas falhas críticas:
 
-O sistema **NÃO**:
-- Mostra o motivo do bloqueio na lista de tripulantes
-- Exibe alertas recentes relacionados ao tripulante
-- Diferencia entre "bloqueado manualmente" vs "bloqueado por quota"
-- Mostra barra de progresso da quota consumida
+1. **Pré-login**: Walled Garden já funciona com `action=deny` no action-processor (linha 435-446), mas precisa de ajuste para usar `action=reject`
+2. **Pós-login**: Falta completamente - não existe comando `add_firewall_block` para inserir regras de firewall
 
 ---
 
-## Solução Proposta
+## Análise do Código Atual
 
-### 1. Adicionar campo `bloqueio_motivo` na tabela `tripulantes`
+### O que já existe e funciona:
 
-**Migration SQL:**
-```sql
-ALTER TABLE tripulantes 
-ADD COLUMN IF NOT EXISTS bloqueio_motivo TEXT,
-ADD COLUMN IF NOT EXISTS bloqueado_at TIMESTAMPTZ,
-ADD COLUMN IF NOT EXISTS bloqueado_por UUID REFERENCES auth.users(id);
-
-COMMENT ON COLUMN tripulantes.bloqueio_motivo IS 'Motivo do bloqueio (manual, quota_exceeded, device_limit, etc)';
-```
-
-### 2. Atualizar `useTripulantes.ts` para incluir informações de quota
-
-**Mudanças no query:**
-```typescript
-// Adicionar dados do perfil para calcular % da quota
-.select(`
-  *,
-  embarcacoes(nome, empresas(nome)),
-  perfis_velocidade(nome, limite_dados_mb, max_dispositivos)
-`)
-```
-
-**Novo campo no TripulanteWithDetails:**
-```typescript
-interface TripulanteWithDetails extends Tripulante {
-  // ... campos existentes
-  limite_dados_mb?: number | null;
-  max_dispositivos?: number;
-  quota_percentual?: number; // Calculado: (bytes_consumidos / limite_dados_mb) * 100
-  bloqueio_motivo?: string | null;
-  bloqueado_at?: string | null;
+**action-processor (script-generator linhas 435-446)**:
+```routeros
+:if ($cmd = "create_blacklist_domain") do={
+  :local p2 [:find $rest "|"]
+  :local bName [:pick $rest 0 $p2]
+  :local domain [:pick $rest ($p2 + 1) [:len $rest]]
+  :if ([:len $domain] > 0) do={
+    :if ([:len [/ip hotspot walled-garden find dst-host=$domain action=deny]] = 0) do={
+      /ip hotspot walled-garden add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
+      :log info ("NAVSPOT: Blacklist bloqueado - " . $domain)
+    }
+  }
 }
 ```
 
-### 3. Criar hook `useTripulanteAlertas` para buscar alertas recentes
-
-**Arquivo:** `src/hooks/useTripulanteAlertas.ts`
-
+**mikrotik-sync pipe formatter (linhas 1115-1118)**:
 ```typescript
-export function useTripulanteAlertas(tripulanteId: string | undefined) {
-  return useQuery({
-    queryKey: ['tripulante-alertas', tripulanteId],
-    queryFn: async () => {
-      if (!tripulanteId) return [];
-      
-      const { data, error } = await supabase
-        .from('alertas')
-        .select('id, tipo, severidade, mensagem, created_at, resolvido')
-        .eq('tripulante_id', tripulanteId)
-        .order('created_at', { ascending: false })
-        .limit(10);
-      
-      if (error) throw error;
-      return data;
-    },
-    enabled: !!tripulanteId,
-  });
-}
+case 'add_firewall_filter':
+case 'add_blacklist_domain':
+  return `create_blacklist_domain|${p.list_name || 'default'}|${p.domain || ''}`
 ```
 
-### 4. Atualizar coluna Status na lista de tripulantes
+### O que está faltando:
 
-**Arquivo:** `src/pages/Tripulantes.tsx` (linhas 362-375)
+1. **Firewall Filter para bloqueio pós-login**: O `create_blacklist_domain` só cria regra no Walled Garden (pré-login). Após autenticação, o usuário passa livre.
 
-**Antes:**
-```
-[Badge: Ativo/Bloqueado/Inativo]
-```
+2. **Inserção antes do Fasttrack**: As regras precisam ser inseridas ANTES de regras de fasttrack-connection para serem efetivas.
 
-**Depois:**
-```
-[Badge: Ativo/Bloqueado/Inativo]
-[SubBadge: Quota 85% ⚠️] (se > 80%)
-[Tooltip: "Bloqueado por: Quota de dados excedida"]
-```
-
-**Código:**
-```tsx
-<TableCell>
-  <div className="flex flex-col gap-1">
-    <Badge variant={...}>
-      {tripulante.status}
-    </Badge>
-    
-    {/* Indicador de quota */}
-    {tripulante.quota_percentual !== undefined && tripulante.quota_percentual > 80 && (
-      <Badge variant="outline" className={
-        tripulante.quota_percentual >= 100 
-          ? "border-red-500 text-red-500" 
-          : "border-yellow-500 text-yellow-500"
-      }>
-        Quota: {tripulante.quota_percentual.toFixed(0)}%
-      </Badge>
-    )}
-    
-    {/* Motivo do bloqueio */}
-    {tripulante.status === 'bloqueado' && tripulante.bloqueio_motivo && (
-      <Tooltip>
-        <TooltipTrigger>
-          <span className="text-xs text-muted-foreground">
-            {formatBloqueioMotivo(tripulante.bloqueio_motivo)}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent>
-          Motivo: {tripulante.bloqueio_motivo}
-        </TooltipContent>
-      </Tooltip>
-    )}
-  </div>
-</TableCell>
-```
-
-### 5. Atualizar Modal de Detalhes do Tripulante
-
-**Arquivo:** `src/components/modals/TripulanteDetailsModal.tsx`
-
-**Adicionar nova tab "Alertas" ou seção no tab "Consumo":**
-
-```tsx
-// Nova aba ou seção
-<TabsContent value="consumo">
-  {/* Barra de progresso da quota */}
-  {tripulante.limite_dados_mb && (
-    <Card>
-      <CardContent className="p-4">
-        <div className="flex justify-between items-center mb-2">
-          <span className="text-sm">Quota de Dados</span>
-          <span className="text-sm font-medium">
-            {formatBytes(tripulante.bytes_consumidos)} / {tripulante.limite_dados_mb} MB
-          </span>
-        </div>
-        <Progress 
-          value={quotaPercentual} 
-          className={quotaPercentual >= 100 ? "bg-red-200" : quotaPercentual >= 80 ? "bg-yellow-200" : ""}
-        />
-        {quotaPercentual >= 100 && (
-          <p className="text-xs text-red-500 mt-1">
-            Quota excedida - usuário será desconectado automaticamente
-          </p>
-        )}
-      </CardContent>
-    </Card>
-  )}
-
-  {/* Alertas recentes */}
-  <Card className="mt-4">
-    <CardHeader>
-      <CardTitle className="text-sm">Alertas Recentes</CardTitle>
-    </CardHeader>
-    <CardContent>
-      {alertas?.length > 0 ? (
-        <div className="space-y-2">
-          {alertas.map(alerta => (
-            <div key={alerta.id} className="flex items-center gap-2 text-sm">
-              <Badge variant="outline" className={getSeveridadeColor(alerta.severidade)}>
-                {alerta.severidade}
-              </Badge>
-              <span className="text-muted-foreground">{alerta.mensagem}</span>
-              <span className="text-xs text-muted-foreground ml-auto">
-                {formatDistanceToNow(new Date(alerta.created_at))}
-              </span>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="text-sm text-muted-foreground">Nenhum alerta recente</p>
-      )}
-    </CardContent>
-  </Card>
-</TabsContent>
-```
-
-### 6. Atualizar `mikrotik-sync` para registrar motivo de bloqueio
-
-**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
-
-Quando a quota é excedida (linha ~614-627):
-```typescript
-if (percentage >= 100) {
-  // Atualizar tripulante com motivo do bloqueio
-  await supabase
-    .from('tripulantes')
-    .update({
-      status: 'bloqueado',
-      bloqueio_motivo: 'quota_exceeded',
-      bloqueado_at: new Date().toISOString()
-    })
-    .eq('id', tripulante.id);
-  
-  // ... criar alerta e kick existentes
-}
-```
-
-### 7. Atualizar ação de bloqueio manual para incluir motivo
-
-**Arquivo:** `src/pages/Tripulantes.tsx` - handleBlock (linhas 148-157)
-
-```typescript
-const handleBlock = (tripulante: TripulanteWithDetails) => {
-  const newStatus = tripulante.status === "bloqueado" ? "ativo" : "bloqueado";
-  updateTripulante.mutate({ 
-    id: tripulante.id, 
-    status: newStatus,
-    bloqueio_motivo: newStatus === 'bloqueado' ? 'manual' : null,
-    bloqueado_at: newStatus === 'bloqueado' ? new Date().toISOString() : null
-  });
-  // ... resto do código
-};
-```
+3. **Geração automática de ações de firewall**: O `firewallRules` é retornado no JSON (linha 1139) mas não é convertido em comandos no pipe.
 
 ---
 
-## Arquivos a Modificar/Criar
+## Mudanças Propostas
 
-| Prioridade | Arquivo | Ação |
-|------------|---------|------|
-| **P0** | Migration | Adicionar `bloqueio_motivo`, `bloqueado_at` em `tripulantes` |
-| **P1** | `src/hooks/useTripulantes.ts` | Incluir dados de perfil (limite_dados_mb) no query |
-| **P1** | `src/hooks/useTripulanteAlertas.ts` | Criar hook para buscar alertas do tripulante |
-| **P1** | `src/pages/Tripulantes.tsx` | Exibir indicador de quota e motivo de bloqueio |
-| **P2** | `src/components/modals/TripulanteDetailsModal.tsx` | Adicionar barra de quota e lista de alertas |
-| **P2** | `supabase/functions/mikrotik-sync/index.ts` | Registrar motivo ao bloquear por quota |
+### 1. Atualizar action-processor no script-generator
+
+**Arquivo**: `supabase/functions/mikrotik-script-generator/index.ts`
+
+Adicionar novo comando `add_firewall_block` após linha 446:
+
+```routeros
+:if ($cmd = "add_firewall_block") do={
+  :local domain $rest
+  :if ([:len $domain] > 0) do={
+    # Verificar se regra já existe
+    :if ([:len [/ip firewall filter find comment=("NAVSPOT-BLOCK-" . $domain)]] = 0) do={
+      # Inserir antes do fasttrack para garantir inspeção
+      :local pos [/ip firewall filter find where action=fasttrack-connection]
+      :if ([:len $pos] = 0) do={:set pos 0}
+      /ip firewall filter add chain=forward action=drop protocol=tcp dst-port=80,443 content=$domain comment=("NAVSPOT-BLOCK-" . $domain) place-before=$pos
+      :log info ("NAVSPOT: Firewall block added - " . $domain)
+    } else={
+      :log info ("NAVSPOT: Firewall block exists - " . $domain)
+    }
+  }
+}
+```
+
+### 2. Adicionar case no pipe formatter
+
+**Arquivo**: `supabase/functions/mikrotik-sync/index.ts`
+
+Adicionar novo case após linha 1118:
+
+```typescript
+case 'add_firewall_block':
+  return `add_firewall_block|${p.domain || ''}`
+```
+
+### 3. Gerar ações de firewall a partir de firewallRules
+
+**Arquivo**: `supabase/functions/mikrotik-sync/index.ts`
+
+Após o loop de firewallRules (linha ~906), adicionar lógica para injetar ações:
+
+```typescript
+// v6.9.14: Convert firewallRules to pending actions for MikroTik
+if (firewallRules.length > 0) {
+  for (const rule of firewallRules) {
+    if (rule.action === 'block' && rule.domains.length > 0) {
+      for (const domain of rule.domains) {
+        if (domain) {
+          // Walled Garden (pré-login)
+          formattedActions.push({
+            id: `auto-blacklist-${domain.replace(/[^a-z0-9]/gi, '')}`,
+            type: 'add_blacklist_domain',
+            payload: { list_name: 'blacklist', domain }
+          })
+          
+          // Firewall Filter (pós-login)
+          formattedActions.push({
+            id: `auto-firewall-${domain.replace(/[^a-z0-9]/gi, '')}`,
+            type: 'add_firewall_block',
+            payload: { domain }
+          })
+        }
+      }
+    } else if (rule.action === 'allow' && rule.domains.length > 0) {
+      for (const domain of rule.domains) {
+        if (domain) {
+          // Whitelist no Walled Garden
+          formattedActions.push({
+            id: `auto-whitelist-${domain.replace(/[^a-z0-9]/gi, '')}`,
+            type: 'add_whitelist_domain',
+            payload: { list_name: 'whitelist', domain }
+          })
+        }
+      }
+    }
+  }
+  console.log(`[mikrotik-sync] v6.9.14: Injected ${firewallRules.reduce((acc, r) => acc + r.domains.length, 0)} domain actions`)
+}
+```
+
+### 4. Atualizar Walled Garden para usar action=reject
+
+**Arquivo**: `supabase/functions/mikrotik-script-generator/index.ts`
+
+Alterar linha 441 de `action=deny` para `action=reject` conforme especificado:
+
+```routeros
+:if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
+  /ip hotspot walled-garden add dst-host=$domain action=reject comment=("navspot-blacklist-" . $bName)
+```
+
+> **Nota**: `action=reject` é mais agressivo que `deny` - envia resposta de rejeição ao cliente.
 
 ---
 
-## Fluxo Visual Final
+## Fluxo de Dados Corrigido
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
-│  LISTA DE TRIPULANTES                                           │
+│  FLUXO v6.9.14 (CORRIGIDO)                                      │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  Nome           Status            Consumo     Último Login      │
-│  ─────────────  ────────────────  ──────────  ──────────────    │
-│  João Silva     [Ativo]           45.2 MB     há 2 min          │
-│                 Quota: 45%                                      │
-│                                                                 │
-│  Maria Santos   [Bloqueado]       100.5 MB    há 15 min         │
-│                 Quota: 101% 🔴                                  │
-│                 "Quota excedida"                                │
-│                                                                 │
-│  Pedro Oliveira [Ativo]           82.1 MB     há 5 min          │
-│                 Quota: 82% ⚠️                                   │
+│  1. Admin cria blacklist (ex: facebook.com, netflix.com)       │
+│     ↓                                                           │
+│  2. Regras salvas em listas_acesso.dominios                    │
+│     ↓                                                           │
+│  3. mikrotik-sync busca regras_acesso + listas_acesso          │
+│     ↓                                                           │
+│  4. Para cada domínio bloqueado, gera 2 ações:                 │
+│     - add_blacklist_domain|blacklist|*.facebook.com            │
+│     - add_firewall_block|*.facebook.com                        │
+│     ↓                                                           │
+│  5. pending_actions_pipe enviado ao MikroTik:                  │
+│     [[create_blacklist_domain|blacklist|*.facebook.com;        │
+│       add_firewall_block|*.facebook.com;]]                     │
+│     ↓                                                           │
+│  6. action-processor executa:                                   │
+│     a) /ip hotspot walled-garden add ... action=reject         │
+│     b) /ip firewall filter add ... action=drop place-before=0 │
+│     ↓                                                           │
+│  7. Resultado:                                                  │
+│     - Pré-login: Walled Garden bloqueia acesso                 │
+│     - Pós-login: Firewall Filter dropa pacotes                 │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
+## Arquivos a Modificar
+
+| Arquivo | Linha(s) | Mudança |
+|---------|----------|---------|
+| `supabase/functions/mikrotik-script-generator/index.ts` | 441 | Alterar `action=deny` para `action=reject` |
+| `supabase/functions/mikrotik-script-generator/index.ts` | 458+ | Adicionar handler `add_firewall_block` |
+| `supabase/functions/mikrotik-sync/index.ts` | ~907 | Converter `firewallRules` em ações pendentes |
+| `supabase/functions/mikrotik-sync/index.ts` | ~1119 | Adicionar case `add_firewall_block` no formatter |
+
+---
+
+## Comandos de Verificação no MikroTik
+
+Após sincronização, execute para confirmar:
+
+```routeros
+# Ver regras Walled Garden (pré-login)
+/ip hotspot walled-garden print where comment~"navspot-blacklist"
+
+# Ver regras Firewall (pós-login)
+/ip firewall filter print where comment~"NAVSPOT-BLOCK"
+
+# Monitorar counters durante teste
+/ip firewall filter print stats where comment~"NAVSPOT-BLOCK"
+```
+
+---
+
 ## Testes de Aceitação
 
-1. **Indicador de Quota**: Tripulante com consumo > 80% exibe badge amarelo
-2. **Bloqueio por Quota**: Quando quota atinge 100%, status muda para "Bloqueado" com motivo "Quota excedida"
-3. **Bloqueio Manual**: Administrador bloqueia tripulante, motivo aparece como "Manual"
-4. **Modal de Detalhes**: Exibe barra de progresso da quota e lista de alertas recentes
-5. **Desbloqueio**: Ao desbloquear, campos `bloqueio_motivo` e `bloqueado_at` são limpos
+1. **Criar blacklist** com domínios `*.facebook.com`, `*.netflix.com`
+2. **Aguardar sync** (ou forçar via /system script run navspot-sync)
+3. **Verificar Walled Garden**: `print where comment~"navspot"` deve mostrar regras
+4. **Verificar Firewall**: `print where comment~"NAVSPOT-BLOCK"` deve mostrar regras
+5. **Testar pré-login**: Conectar ao WiFi sem autenticar, tentar facebook.com → bloqueado
+6. **Testar pós-login**: Autenticar, tentar facebook.com → bloqueado (firewall)
+7. **Verificar counters**: Devem incrementar durante tentativas de acesso
+
+---
+
+## Observações Técnicas
+
+### Sobre content match vs Layer 7
+
+O método `content=` funciona para:
+- HTTP (porta 80) - match no Host header
+- HTTPS (porta 443) - match no SNI durante handshake TLS
+
+Limitações:
+- DoH (DNS over HTTPS) pode bypassar
+- Apps que não usam SNI podem escapar
+
+Para v6.9.15, considerar:
+- Address-list dinâmica via resolução DNS
+- Layer 7 protocol regex (mais CPU intensivo)
+
+### Sobre place-before=fasttrack
+
+Crítico porque o fasttrack estabelece conexões "rápidas" que bypassam inspeção. Inserir ANTES garante que a primeira verificação bloqueia.
+
