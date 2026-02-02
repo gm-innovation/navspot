@@ -81,9 +81,9 @@ export function LiveMetricsGrid({ autoRefresh }: LiveMetricsGridProps) {
         icon={<Activity className="h-5 w-5 text-primary" />}
       />
       <MetricCard
-        title="Consumo Total"
+        title="Consumo Sessões"
         value={formatBytes(totalConsumo)}
-        subtitle="Dados transferidos"
+        subtitle="Nas conexões ativas"
         icon={<Wifi className="h-5 w-5 text-primary" />}
       />
       <MetricCard
