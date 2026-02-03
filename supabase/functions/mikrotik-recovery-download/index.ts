@@ -6,16 +6,18 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-recovery-download v6.9.19
+ * mikrotik-recovery-download v6.9.20
  * 
  * Minimal recovery endpoint for MikroTik self-healing.
  * Returns a .rsc script that ONLY recreates scripts/schedulers without touching
  * bridge, DHCP, NAT, hotspot config - to avoid network disruption.
  * 
+ * v6.9.20: Token fallback embutido nos scripts + suporte a hotspot_id autenticado
  * v6.9.19: Startup resilience - delay in schedulers + Netwatch for auto-sync
  * v6.9.15: Added add_firewall_block handler with Address-List + DNS resolution
  * 
  * Called by navspot-guardian when it detects missing components or outdated scripts.
+ * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
 function maskToken(token: string): string {
@@ -36,22 +38,25 @@ Deno.serve(async (req) => {
     )
 
     let syncToken: string | null = null
+    let hotspotId: string | null = null
 
     // Support both POST (JSON body) and GET (query param)
     if (req.method === 'POST') {
       try {
         const body = await req.json()
-        syncToken = body.sync_token
+        syncToken = body.sync_token || null
+        hotspotId = body.hotspot_id || null
       } catch {
         console.error('[mikrotik-recovery-download] Invalid JSON body')
         return new Response(
-          'Invalid JSON body. Expected: {"sync_token": "..."}',
+          'Invalid JSON body. Expected: {"sync_token": "..."} or {"hotspot_id": "..."}',
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
         )
       }
     } else if (req.method === 'GET') {
       const url = new URL(req.url)
       syncToken = url.searchParams.get('sync_token')
+      hotspotId = url.searchParams.get('hotspot_id')
     } else {
       return new Response(
         'Method not allowed. Use GET or POST.',
@@ -59,44 +64,178 @@ Deno.serve(async (req) => {
       )
     }
 
+    // v6.9.20: Support hotspot_id with JWT authentication (for admin panel)
+    if (hotspotId) {
+      const authHeader = req.headers.get('Authorization')
+      if (!authHeader?.startsWith('Bearer ')) {
+        console.error('[mikrotik-recovery-download] hotspot_id requires authentication')
+        return new Response(
+          'Authorization required when using hotspot_id',
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
+        )
+      }
+
+      // Create authenticated client
+      const supabaseAuth = createClient(
+        Deno.env.get('SUPABASE_URL')!,
+        Deno.env.get('SUPABASE_ANON_KEY')!,
+        { global: { headers: { Authorization: authHeader } } }
+      )
+
+      // Validate JWT
+      const token = authHeader.replace('Bearer ', '')
+      const { data: claims, error: claimsError } = await supabaseAuth.auth.getClaims(token)
+
+      if (claimsError || !claims?.claims) {
+        console.error('[mikrotik-recovery-download] Invalid JWT:', claimsError)
+        return new Response(
+          'Invalid token',
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
+        )
+      }
+
+      const userId = claims.claims.sub as string
+      console.log(`[mikrotik-recovery-download] Authenticated user: ${userId} requesting hotspot: ${hotspotId}`)
+
+      // Get user role and permissions
+      const { data: userRole, error: roleError } = await supabase
+        .from('user_roles')
+        .select('role, empresa_id, embarcacao_id')
+        .eq('user_id', userId)
+        .single()
+
+      if (roleError || !userRole) {
+        console.error('[mikrotik-recovery-download] User role not found:', roleError)
+        return new Response(
+          'User role not found',
+          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
+        )
+      }
+
+      // Fetch hotspot with embarcacao for permission check
+      const { data: hotspot, error: hotspotError } = await supabase
+        .from('hotspots')
+        .select(`
+          id, nome, sync_token, sync_interval_minutes,
+          embarcacoes!inner(id, nome, empresa_id)
+        `)
+        .eq('id', hotspotId)
+        .single()
+
+      if (hotspotError || !hotspot) {
+        console.error(`[mikrotik-recovery-download] Hotspot not found: ${hotspotId}`)
+        return new Response(
+          'Hotspot not found',
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
+        )
+      }
+
+      const embarcacao = hotspot.embarcacoes as unknown as { id: string; nome: string; empresa_id: string }
+
+      // Check permission based on role
+      if (userRole.role === 'super_admin') {
+        // OK - full access
+        console.log('[mikrotik-recovery-download] super_admin has full access')
+      } else if (userRole.role === 'empresa_admin') {
+        // Check if hotspot belongs to user's empresa
+        if (embarcacao.empresa_id !== userRole.empresa_id) {
+          console.error(`[mikrotik-recovery-download] empresa_admin denied - hotspot empresa: ${embarcacao.empresa_id}, user empresa: ${userRole.empresa_id}`)
+          return new Response(
+            'Access denied - hotspot belongs to another empresa',
+            { status: 403, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
+          )
+        }
+      } else if (userRole.role === 'gerente_embarcacao') {
+        // Check via gerente_embarcacoes table
+        const { data: access, error: accessError } = await supabase
+          .from('gerente_embarcacoes')
+          .select('embarcacao_id')
+          .eq('user_id', userId)
+          .eq('embarcacao_id', embarcacao.id)
+          .maybeSingle()
+
+        if (accessError || !access) {
+          console.error(`[mikrotik-recovery-download] gerente_embarcacao denied - no access to embarcacao: ${embarcacao.id}`)
+          return new Response(
+            'Access denied - you do not manage this embarcacao',
+            { status: 403, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
+          )
+        }
+      } else {
+        console.error(`[mikrotik-recovery-download] Unknown role: ${userRole.role}`)
+        return new Response(
+          'Access denied',
+          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
+        )
+      }
+
+      // Permission granted - use the hotspot's sync_token
+      syncToken = hotspot.sync_token
+      console.log(`[mikrotik-recovery-download] Permission granted for ${hotspot.nome}`)
+    }
+
     if (!syncToken) {
-      console.error('[mikrotik-recovery-download] Missing sync_token')
+      console.error('[mikrotik-recovery-download] Missing sync_token or hotspot_id')
       return new Response(
-        'sync_token is required',
+        'sync_token or hotspot_id is required',
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
       )
     }
 
     console.log(`[mikrotik-recovery-download] Recovery request for token: ${maskToken(syncToken)}`)
 
-    // Find hotspot by sync_token
-    const { data: hotspot, error: hotspotError } = await supabase
-      .from('hotspots')
-      .select(`
-        id, nome, sync_token, sync_interval_minutes,
-        embarcacoes!inner(id, nome, empresa_id)
-      `)
-      .eq('sync_token', syncToken)
-      .single()
+    // Find hotspot by sync_token (if we didn't already fetch it above)
+    let hotspot: { id: string; nome: string; sync_token: string; sync_interval_minutes: number; embarcacoes: { id: string; nome: string; empresa_id: string } } | null = null
 
-    if (hotspotError || !hotspot) {
-      console.error(`[mikrotik-recovery-download] Invalid token: ${maskToken(syncToken)}`)
-      return new Response(
-        'Invalid sync_token',
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
-      )
+    if (!hotspotId) {
+      const { data, error: hotspotError } = await supabase
+        .from('hotspots')
+        .select(`
+          id, nome, sync_token, sync_interval_minutes,
+          embarcacoes!inner(id, nome, empresa_id)
+        `)
+        .eq('sync_token', syncToken)
+        .single()
+
+      if (hotspotError || !data) {
+        console.error(`[mikrotik-recovery-download] Invalid token: ${maskToken(syncToken)}`)
+        return new Response(
+          'Invalid sync_token',
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
+        )
+      }
+      hotspot = data as unknown as typeof hotspot
+    } else {
+      // We already fetched it above - fetch again to ensure we have correct data
+      const { data, error: hotspotError } = await supabase
+        .from('hotspots')
+        .select(`
+          id, nome, sync_token, sync_interval_minutes,
+          embarcacoes!inner(id, nome, empresa_id)
+        `)
+        .eq('sync_token', syncToken)
+        .single()
+
+      if (hotspotError || !data) {
+        console.error(`[mikrotik-recovery-download] Hotspot not found for token`)
+        return new Response(
+          'Hotspot not found',
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
+        )
+      }
+      hotspot = data as unknown as typeof hotspot
     }
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
     const syncUrl = `${supabaseUrl}/functions/v1/mikrotik-sync`
-    const syncIntervalMinutes = hotspot.sync_interval_minutes || 5
+    const syncIntervalMinutes = hotspot!.sync_interval_minutes || 5
 
-    console.log(`[mikrotik-recovery-download] Generating recovery v6.9.19 for: ${hotspot.nome}`)
+    console.log(`[mikrotik-recovery-download] Generating recovery v6.9.20 for: ${hotspot!.nome}`)
 
-    // v6.9.19: Recovery script with Address-List blocking + startup resilience
-    const recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes)
+    // v6.9.20: Recovery script with embedded token fallback + Address-List blocking + startup resilience
+    const recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes, syncToken)
 
-    console.log(`[mikrotik-recovery-download] Recovery script v6.9.19 generated for ${hotspot.nome} (${recoveryScript.length} bytes)`)
+    console.log(`[mikrotik-recovery-download] Recovery script v6.9.20 generated for ${hotspot!.nome} (${recoveryScript.length} bytes)`)
 
     return new Response(recoveryScript, {
       status: 200,
@@ -117,9 +256,14 @@ Deno.serve(async (req) => {
   }
 })
 
-function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number): string {
-  // v6.9.19 sync script source (same as main generator)
-  const syncScriptSource = `:local token [/file get "navspot-token.txt" contents]
+function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, syncToken: string): string {
+  // v6.9.20 sync script source with embedded token fallback
+  const syncScriptSource = `:local token ""
+:do { :set token [/file get "navspot-token.txt" contents] } on-error={}
+:if ([:len $token] < 10) do={
+:set token "${syncToken}"
+:log warning "NAVSPOT-SYNC: Usando token fallback embutido"
+}
 :local syncUrl "${syncUrl}"
 :local users ""
 :local registered ""
@@ -173,7 +317,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number): s
 } on-error={:log warning "NAVSPOT-SYNC: Falha"}
 :log info "NAVSPOT-SYNC: OK"`
 
-  // v6.9.19 action processor source with Address-List blocking
+  // v6.9.20 action processor source with Address-List blocking
   const actionProcessorSource = `:global navspotActions
 :global navspotLock
 :if ($navspotLock = "1") do={
@@ -187,7 +331,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number): s
 :log info "NAVSPOT: Sem acoes pendentes"
 :return
 }
-:log info ("NAVSPOT-ACTION v6.9.19: Iniciando - " . $rawData)
+:log info ("NAVSPOT-ACTION v6.9.20: Iniciando - " . $rawData)
 :local pos 0
 :do {
 :while ([:find $rawData ";" $pos] >= 0) do={
@@ -328,14 +472,14 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number): s
 :if ($cmd = "add_firewall_block") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# v6.9.19: Ensure master drop rule exists before fasttrack
+# v6.9.20: Ensure master drop rule exists before fasttrack
 :if ([:len [/ip firewall filter find comment="NAVSPOT-BLOCK-MASTER"]] = 0) do={
 :local ftPos [/ip firewall filter find where action=fasttrack-connection]
 :if ([:len $ftPos] = 0) do={:set ftPos 0}
 /ip firewall filter add chain=forward action=drop dst-address-list=NAVSPOT-BLACKLIST comment="NAVSPOT-BLOCK-MASTER" place-before=$ftPos
 :log info "NAVSPOT: Master firewall rule created"
 }
-# v6.9.19: Resolve domain to IP and add to address-list
+# v6.9.20: Resolve domain to IP and add to address-list
 :do {
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
@@ -406,65 +550,75 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number): s
 }
 :set navspotActions ""
 :set navspotLock "0"
-:log info "NAVSPOT-ACTION v6.9.19: Processamento concluido"`
+:log info "NAVSPOT-ACTION v6.9.20: Processamento concluido"`
 
-  // v6.9.19: Recovery script with set-or-add pattern + startup resilience + netwatch
-  return `# NAVSPOT Recovery Script v6.9.19
-# This script ONLY recreates missing scripts/schedulers
+  // v6.9.20: Recovery script with set-or-add pattern + startup resilience + netwatch + token recreation + embedded fallback
+  return `# NAVSPOT Recovery Script v6.9.20
+# This script recreates missing scripts/schedulers + token
 # It does NOT touch network config (bridge, DHCP, NAT, hotspot)
-:log info "NAVSPOT-RECOVERY v6.9.19: Iniciando reparacao..."
+:log info "NAVSPOT-RECOVERY v6.9.20: Iniciando reparacao..."
+
+# 0. RECRIAR TOKEN (metodo RouterOS 6.x compativel)
+:log info "NAVSPOT-RECOVERY v6.9.20: Recriando token..."
+:do { /file remove "navspot-token.txt" } on-error={}
+:delay 500ms
+/file print file=navspot-token where name="__never__"
+:delay 1s
+/file set [find name~"navspot-token"] contents="${syncToken}"
+:log info "NAVSPOT-RECOVERY: Token recriado"
 
 # 1. ACTION PROCESSOR - set-or-add pattern
 :local apExists [/system script find name="navspot-action-processor"]
 :if ([:len $apExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando navspot-action-processor v6.9.19..."
+:log info "NAVSPOT-RECOVERY: Atualizando navspot-action-processor v6.9.20..."
 /system script set $apExists policy=read,write,test source={
 ${actionProcessorSource}
 }
 } else={
-:log info "NAVSPOT-RECOVERY: Criando navspot-action-processor v6.9.19..."
+:log info "NAVSPOT-RECOVERY: Criando navspot-action-processor v6.9.20..."
 /system script add name="navspot-action-processor" policy=read,write,test source={
 ${actionProcessorSource}
 }
 }
 :delay 200ms
 
-# 2. SYNC SCRIPT - set-or-add pattern
+# 2. SYNC SCRIPT - set-or-add pattern with token fallback embutido
 :local syncExists [/system script find name="navspot-sync"]
 :if ([:len $syncExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando navspot-sync..."
+:log info "NAVSPOT-RECOVERY: Atualizando navspot-sync v6.9.20 (token fallback embutido)..."
 /system script set $syncExists policy=read,write,test source={
 ${syncScriptSource}
 }
 } else={
-:log info "NAVSPOT-RECOVERY: Criando navspot-sync..."
+:log info "NAVSPOT-RECOVERY: Criando navspot-sync v6.9.20 (token fallback embutido)..."
 /system script add name="navspot-sync" policy=read,write,test source={
 ${syncScriptSource}
 }
 }
 :delay 200ms
 
-# 3. SCHEDULER - set-or-add pattern v6.9.19: delay para aguardar rede + start-date fixo
+# 3. SCHEDULER - set-or-add pattern v6.9.20: delay para aguardar rede + start-date fixo
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando scheduler v6.9.19..."
+:log info "NAVSPOT-RECOVERY: Atualizando scheduler v6.9.20..."
 /system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
-:log info "NAVSPOT-RECOVERY: Criando scheduler v6.9.19..."
+:log info "NAVSPOT-RECOVERY: Criando scheduler v6.9.20..."
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
 }
 
-# 4. NETWATCH v6.9.19 - Dispara sync quando internet volta
+# 4. NETWATCH v6.9.20 - Dispara sync quando internet volta
 :if ([:len [/tool netwatch find comment="navspot-netwatch"]] = 0) do={
 /tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script=":delay 5s; :do { /system script run navspot-sync } on-error={}" comment="navspot-netwatch"
 :log info "NAVSPOT-RECOVERY: Netwatch configurado para auto-sync"
 }
 
 :log info "=========================================="
-:log info "NAVSPOT-RECOVERY v6.9.19: REPARACAO CONCLUIDA!"
-:log info "Startup resilience: delay 30s + start-date fixo"
+:log info "NAVSPOT-RECOVERY v6.9.20: REPARACAO CONCLUIDA!"
+:log info "Token: recriado e fallback embutido no sync"
+:log info "Scripts: sync + action-processor atualizados"
+:log info "Scheduler: sync a cada ${syncIntervalMinutes}m com startup delay"
 :log info "Netwatch: auto-sync quando internet volta"
-:log info "Address-List blocking enabled"
 :log info "=========================================="
 `
 }

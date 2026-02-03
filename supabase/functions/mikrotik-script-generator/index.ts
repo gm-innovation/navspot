@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.9.19 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.9.20 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -89,7 +89,7 @@ Deno.serve(async (req) => {
 
     const embarcacao = hotspot.embarcacoes as unknown as Embarcacao
 
-    // Generate v6.9.2 single bootstrap script (no finalize needed)
+    // Generate v6.9.20 single bootstrap script (no finalize needed)
     const bootstrapScript = generateBootstrapScript(
       hotspot as unknown as Hotspot,
       embarcacao,
@@ -112,7 +112,7 @@ Deno.serve(async (req) => {
       console.error('[script-generator] Failed to save script:', updateError)
     }
 
-    // v6.9.12: Sanity checks - now using set-or-add pattern
+    // v6.9.20: Sanity checks - now using set-or-add pattern with token fallback
     // Scripts are created via conditional set/add, not simple add
     if (!bootstrapScript.includes('navspot-sync') || !bootstrapScript.includes('navspot-action-processor')) {
       throw new Error('Erro critico: scripts navspot nao foram gerados')
@@ -120,6 +120,11 @@ Deno.serve(async (req) => {
 
     if (!bootstrapScript.includes('navspot-guardian')) {
       throw new Error('Erro critico: navspot-guardian nao foi gerado')
+    }
+
+    // v6.9.20: Verify token fallback is embedded
+    if (!bootstrapScript.includes('token fallback embutido')) {
+      throw new Error('Erro critico: token fallback nao foi embutido no sync')
     }
 
     if (bootstrapScript.includes('/ip hotspot user profile set') && 
@@ -171,7 +176,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.9.19 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.9.20 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -181,7 +186,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.9.19'
+        version: '6.9.20'
       }),
       { 
         status: 200, 
@@ -238,8 +243,13 @@ function generateBootstrapScript(
 :delay 500ms`
   }).join('\n\n')
 
-  // v6.9.9: Script sync com JSON usando hex \22 para aspas + header Content-Type + registered_users + registered_profiles
-  const syncScriptSource = `:local token [/file get "navspot-token.txt" contents]
+  // v6.9.20: Script sync com JSON usando hex \22 para aspas + header Content-Type + registered_users + registered_profiles + TOKEN FALLBACK EMBUTIDO
+  const syncScriptSource = `:local token ""
+:do { :set token [/file get "navspot-token.txt" contents] } on-error={}
+:if ([:len $token] < 10) do={
+:set token "${hotspot.sync_token}"
+:log warning "NAVSPOT-SYNC: Usando token fallback embutido"
+}
 :local syncUrl "${syncUrl}"
 :local users ""
 :local registered ""
@@ -307,7 +317,7 @@ function generateBootstrapScript(
 :log info "NAVSPOT: Sem acoes pendentes"
 :return
 }
-:log info ("NAVSPOT-ACTION v2: Iniciando - " . $rawData)
+:log info ("NAVSPOT-ACTION v6.9.20: Iniciando - " . $rawData)
 :local pos 0
 :do {
 :while ([:find $rawData ";" $pos] >= 0) do={
@@ -448,14 +458,14 @@ function generateBootstrapScript(
 :if ($cmd = "add_firewall_block") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# v6.9.15: Ensure master drop rule exists before fasttrack
+# v6.9.20: Ensure master drop rule exists before fasttrack
 :if ([:len [/ip firewall filter find comment="NAVSPOT-BLOCK-MASTER"]] = 0) do={
 :local ftPos [/ip firewall filter find where action=fasttrack-connection]
 :if ([:len $ftPos] = 0) do={:set ftPos 0}
 /ip firewall filter add chain=forward action=drop dst-address-list=NAVSPOT-BLACKLIST comment="NAVSPOT-BLOCK-MASTER" place-before=$ftPos
 :log info "NAVSPOT: Master firewall rule created"
 }
-# v6.9.15: Resolve domain to IP and add to address-list (more robust than content match)
+# v6.9.20: Resolve domain to IP and add to address-list (more robust than content match)
 :do {
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
@@ -528,7 +538,7 @@ function generateBootstrapScript(
 }
 :set navspotActions ""
 :set navspotLock "0"
-:log info "NAVSPOT-ACTION v2: Processamento concluido"`
+:log info "NAVSPOT-ACTION v6.9.20: Processamento concluido"`
 
   // Configuração WAN com remoção prévia do DHCP client existente
   const wanConfig = wanType === 'dhcp' 
@@ -537,11 +547,11 @@ function generateBootstrapScript(
 :log info "NAVSPOT: DHCP client em ${wanInterface}"`
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
-  // v6.9.12: Recovery URL for guardian
+  // v6.9.20: Recovery URL for guardian
   const recoveryUrl = `${supabaseUrl}/functions/v1/mikrotik-recovery-download`
 
-  // v6.9.19: Guardian script source - self-healing mechanism with version check
-  const guardianScriptSource = `:log info "NAVSPOT-GUARDIAN v6.9.19: Verificando integridade..."
+  // v6.9.20: Guardian script source - self-healing mechanism with version check + token fallback verification
+  const guardianScriptSource = `:log info "NAVSPOT-GUARDIAN v6.9.20: Verificando integridade..."
 :local needsRepair 0
 :local missing ""
 # Verificar scripts essenciais
@@ -557,13 +567,22 @@ function generateBootstrapScript(
 :set needsRepair 1
 :set missing ($missing . "navspot-sync-scheduler ")
 }
-# v6.9.19: Check if action-processor has add_firewall_block handler (version marker)
+# v6.9.20: Check if action-processor has add_firewall_block handler (version marker)
 :if ($needsRepair = 0) do={
 :local apSource [/system script get [find name="navspot-action-processor"] source]
 :if ([:find $apSource "NAVSPOT-BLACKLIST"] < 0) do={
 :set needsRepair 1
 :set missing ($missing . "action-processor-outdated ")
 :log warning "NAVSPOT-GUARDIAN: action-processor desatualizado (falta NAVSPOT-BLACKLIST)"
+}
+}
+# v6.9.20: Check if sync has embedded token fallback
+:if ($needsRepair = 0) do={
+:local syncSource [/system script get [find name="navspot-sync"] source]
+:if ([:find $syncSource "token fallback embutido"] < 0) do={
+:set needsRepair 1
+:set missing ($missing . "sync-outdated-no-fallback ")
+:log warning "NAVSPOT-GUARDIAN: sync desatualizado (falta fallback de token)"
 }
 }
 :if ($needsRepair = 1) do={
@@ -578,7 +597,12 @@ function generateBootstrapScript(
 :if ($canRepair = 1) do={
 :log info "NAVSPOT-GUARDIAN: Iniciando reparo automatico..."
 :do {
-:local token [/file get "navspot-token.txt" contents]
+:local token ""
+:do { :set token [/file get "navspot-token.txt" contents] } on-error={}
+:if ([:len $token] < 10) do={
+:set token "${hotspot.sync_token}"
+:log warning "NAVSPOT-GUARDIAN: Usando token fallback embutido"
+}
 :local recoveryUrl "${recoveryUrl}"
 :local body ("{\\"sync_token\\":\\"" . $token . "\\"}")
 /tool fetch url=$recoveryUrl mode=https http-method=post http-data=$body http-header-field="Content-Type: application/json" dst-path="navspot-recovery.rsc"
@@ -596,11 +620,11 @@ function generateBootstrapScript(
 }
 }
 } else={
-:log info "NAVSPOT-GUARDIAN: Sistema integro v6.9.19"
+:log info "NAVSPOT-GUARDIAN: Sistema integro v6.9.20"
 }`
 
-  // Bootstrap script v6.9.19 - Safe Update + Guardian + Netwatch + Startup Resilience
-  return `:log info "NAVSPOT v6.9.19: Iniciando instalacao..."
+  // Bootstrap script v6.9.20 - Safe Update + Guardian + Netwatch + Startup Resilience + Token Fallback
+  return `:log info "NAVSPOT v6.9.20: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -610,7 +634,7 @@ function generateBootstrapScript(
 :log info "NAVSPOT: Interface WAN (${wanInterface}) validada"
 
 # 1. LIMPEZA INICIAL (configs de fabrica + rede navspot - NAO remove scripts!)
-# v6.9.12: Scripts/schedulers sao atualizados via set-or-add, nao removidos aqui
+# v6.9.20: Scripts/schedulers sao atualizados via set-or-add, nao removidos aqui
 :do { /ip address remove [find address="${gateway}/24"] } on-error={}
 :do { /ip dhcp-server remove [find name="defconf"] } on-error={}
 :do { /ip dhcp-server remove [find name="dhcp1"] } on-error={}
@@ -633,7 +657,7 @@ function generateBootstrapScript(
 :do { /ip dhcp-client remove [find comment="navspot-wan"] } on-error={}
 :do { /tool netwatch remove [find comment="navspot-netwatch"] } on-error={}
 :delay 2s
-:log info "NAVSPOT: Limpeza concluida (scripts preservados) v6.9.19"
+:log info "NAVSPOT: Limpeza concluida (scripts preservados) v6.9.20"
 
 # 2. CONFIGURAR WAN (antes de criar bridge)
 ${wanConfig}
@@ -721,23 +745,17 @@ ${wanConfig}
 /ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
 :log info "NAVSPOT: Walled Garden v6.9.13 configurado (Portal + CPD)"
 
-# 9. TOKEN (metodo robusto compativel com RouterOS 6.x e 7.x)
+# 9. TOKEN (metodo robusto RouterOS 6.x e 7.x - usa print+set como padrao)
 :do { /file remove "navspot-token.txt" } on-error={}
 :delay 500ms
 :local tokenValue "${hotspot.sync_token}"
-:do {
-/file add name="navspot-token.txt" contents=$tokenValue
-:log info "NAVSPOT: Token criado via /file add"
-} on-error={
-# Fallback para builds antigas
-/file print file=navspot-token
+/file print file=navspot-token where name="__never__"
 :delay 1s
 /file set [find name~"navspot-token"] contents=$tokenValue
-:log info "NAVSPOT: Token criado via fallback"
-}
+:log info "NAVSPOT: Token criado (metodo universal RouterOS 6.x/7.x)"
 :delay 500ms
 
-# 10. GUARDIAN SCRIPT v6.9.12 (criado PRIMEIRO para auto-recuperacao)
+# 10. GUARDIAN SCRIPT v6.9.20 (criado PRIMEIRO para auto-recuperacao + token fallback)
 :local guardianExists [/system script find name="navspot-guardian"]
 :if ([:len $guardianExists] > 0) do={
 :log info "NAVSPOT: Atualizando guardian..."
@@ -751,16 +769,16 @@ ${guardianScriptSource}
 }
 }
 
-# Guardian scheduler (startup + a cada 10 min) v6.9.19: delay para aguardar rede
+# Guardian scheduler (startup + a cada 10 min) v6.9.20: delay para aguardar rede
 :local guardianSchedExists [/system scheduler find name="navspot-guardian-scheduler"]
 :if ([:len $guardianSchedExists] > 0) do={
 /system scheduler set $guardianSchedExists interval=10m on-event=":delay 20s; :do { /system script run navspot-guardian } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
 /system scheduler add name="navspot-guardian-scheduler" interval=10m on-event=":delay 20s; :do { /system script run navspot-guardian } on-error={}" start-time=startup start-date=jan/01/1970
 }
-:log info "NAVSPOT: Guardian v6.9.19 ativo (startup delay + version check)"
+:log info "NAVSPOT: Guardian v6.9.20 ativo (startup delay + token fallback + version check)"
 
-# 11. ACTION PROCESSOR v2 - set-or-add pattern (nunca remove antes)
+# 11. ACTION PROCESSOR v6.9.20 - set-or-add pattern (nunca remove antes)
 :local apExists [/system script find name="navspot-action-processor"]
 :if ([:len $apExists] > 0) do={
 :log info "NAVSPOT: Atualizando action-processor..."
@@ -775,31 +793,31 @@ ${actionProcessorSource}
 }
 :delay 100ms
 
-# 12. SYNC SCRIPT - set-or-add pattern (nunca remove antes)
+# 12. SYNC SCRIPT v6.9.20 - set-or-add pattern com TOKEN FALLBACK EMBUTIDO
 :local syncExists [/system script find name="navspot-sync"]
 :if ([:len $syncExists] > 0) do={
-:log info "NAVSPOT: Atualizando sync..."
+:log info "NAVSPOT: Atualizando sync (token fallback embutido)..."
 /system script set $syncExists policy=read,write,test source={
 ${syncScriptSource}
 }
 } else={
-:log info "NAVSPOT: Criando sync..."
+:log info "NAVSPOT: Criando sync (token fallback embutido)..."
 /system script add name="navspot-sync" policy=read,write,test source={
 ${syncScriptSource}
 }
 }
 :delay 100ms
 
-# Scheduler - set-or-add pattern v6.9.19: delay para aguardar rede + start-date fixo
+# Scheduler - set-or-add pattern v6.9.20: delay para aguardar rede + start-date fixo
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
 /system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
 }
-:log info "NAVSPOT: Sync v6.9.19 + Action Processor v2 configurados (startup delay)"
+:log info "NAVSPOT: Sync v6.9.20 + Action Processor configurados (startup delay + token fallback)"
 
-# 13. NETWATCH v6.9.19 - Dispara sync quando internet volta
+# 13. NETWATCH v6.9.20 - Dispara sync quando internet volta
 :if ([:len [/tool netwatch find comment="navspot-netwatch"]] = 0) do={
 /tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script=":delay 5s; :do { /system script run navspot-sync } on-error={}" comment="navspot-netwatch"
 :log info "NAVSPOT: Netwatch configurado para auto-sync quando internet volta"
@@ -812,10 +830,11 @@ ${migrationCommands}
 
 # 15. FINALIZACAO
 :log info "=========================================="
-:log info "NAVSPOT v6.9.19: INSTALACAO CONCLUIDA!"
+:log info "NAVSPOT v6.9.20: INSTALACAO CONCLUIDA!"
 :log info "Portas LAN (ether3-5) ativas no Hotspot"
 :log info "Porta de gerencia (ether2) configurada para Winbox"
 :log info "Sync rodando a cada ${syncIntervalMinutes} minuto(s)"
+:log info "Token fallback embutido no sync e guardian"
 :log info "Startup resilience: delay 30s + start-date fixo"
 :log info "Netwatch: auto-sync quando internet volta"
 :log info "Guardian ativo - auto-recuperacao + version check"
