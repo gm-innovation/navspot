@@ -1,121 +1,223 @@
 
-# Plano: Atualização Completa para v6.9.21
+# Plano: Diagnóstico e Resolução dos Problemas do Hotspot
 
-## Diagnóstico
+## Diagnóstico Completo
 
-A implementação anterior da v6.9.21 foi **parcialmente aplicada**:
-
-| Arquivo | Estado |
-|---------|--------|
-| `mikrotik-script-generator` - Action Processor | Atualizado (linhas 490-546) |
-| `mikrotik-script-generator` - Bootstrap/Guardian/Sync | Ainda v6.9.20 (107 referências) |
-| `mikrotik-recovery-download` - Tudo | Ainda v6.9.20 (arquivo inteiro) |
-
-Isso explica por que o script exibido no modal ainda mostra "v6.9.20" e o Recovery baixado não tem as correções de whitelist.
+Após análise detalhada do código, logs e fluxo do sistema, identifiquei as causas raiz de cada problema:
 
 ---
 
-## Mudanças Necessárias
+## Problema 1: Tela de Autenticação do Hotspot Não Aparece
 
-### 1. mikrotik-script-generator/index.ts
+### Causa Raiz
+O script de Recovery v6.9.21 **não foi importado corretamente** (houve erro de sintaxe na linha 20). O MikroTik continua rodando a versão antiga que pode ter:
+- Walled Garden incompleto
+- login-url incorreta
+- Hotspot Profile não configurado
 
-Atualizar todas as referências de `v6.9.20` para `v6.9.21`:
+### Verificação Necessária
+```routeros
+/ip hotspot profile print
+/ip hotspot print
+/log print where message~"NAVSPOT"
+```
 
-| Linha | Atual | Novo |
-|-------|-------|------|
-| 70 | `v6.9.21` (já OK) | - |
-| 92 | `v6.9.20 single bootstrap` | `v6.9.21 single bootstrap` |
-| 115-127 | Comentários v6.9.20 | Comentários v6.9.21 |
-| 246 | Sync script v6.9.20 | v6.9.21 |
-| 461-468 | add_firewall_block v6.9.20 | v6.9.21 |
-| 555-556 | Recovery URL v6.9.20 | v6.9.21 |
-| 558-559 | Guardian v6.9.20 | v6.9.21 |
-| 628 | Sistema integro v6.9.20 | v6.9.21 |
-| 631-632 | Bootstrap v6.9.20 | v6.9.21 |
-| 642, 665 | Limpeza v6.9.20 | v6.9.21 |
-| 763, 777, 784 | Guardian v6.9.20 | v6.9.21 |
-| 786, 801, 816, 823 | Action/Sync v6.9.20 | v6.9.21 |
-| 825 | Netwatch v6.9.20 | v6.9.21 |
-| 838 | Instalação concluída v6.9.20 | v6.9.21 |
+### Solução
+1. Corrigir o script de Recovery v6.9.21 (já corrigido no último deploy)
+2. Baixar novo Recovery e importar no MikroTik
+3. Verificar que o hotspot profile tem `login-url` apontando para `navspot.lovable.app`
 
 ---
 
-### 2. mikrotik-recovery-download/index.ts
+## Problema 2: Formulário de Cadastro Não Abre
 
-#### 2.1 Atualizar versão e comentários
-- Linhas 9, 15: Comentário do arquivo
-- Linhas 233, 238: Logs de geração
-- Linha 260: syncScriptSource v6.9.20
-- Linha 320, 334: actionProcessorSource v6.9.20
-- Linhas 555-623: Script de recovery
+### Causa Raiz
+O redirecionamento para `/completar-cadastro` depende de:
+1. **login-url** estar configurada corretamente no hotspot profile
+2. **Status do tripulante** ser `pendente_cadastro`
+3. **Walled Garden** permitir acesso ao `navspot.lovable.app`
 
-#### 2.2 Corrigir ordem das regras de firewall (linhas 503-532)
-
-**Código atual (INCORRETO):**
+### Verificação
+A login-url está configurada como:
 ```routeros
-# Create ACCEPT rule for allowed list first
-/ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED comment="NAVSPOT-ALLOW-ACCEPT" place-before=$ftPos
-# Then create DROP for everything else
-/ip firewall filter add chain=forward action=drop comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
+login-url="https://navspot.lovable.app/hotspot-login?h=${hotspot.id}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
 ```
 
-**Código corrigido:**
-```routeros
-# v6.9.21: FIRST create DROP (master block)
-/ip firewall filter add chain=forward action=drop comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
-:log info "NAVSPOT: Allow master drop rule created (v6.9.21)"
-# THEN add ACCEPT BEFORE the drop (so it's processed first)
-:local dropPos [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
-/ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED comment="NAVSPOT-ALLOW-ACCEPT" place-before=$dropPos
-:log info "NAVSPOT: Allow accept rule created BEFORE drop (v6.9.21)"
+O fluxo é:
+1. Usuário conecta na WiFi
+2. MikroTik redireciona para `navspot.lovable.app/hotspot-login`
+3. Usuário faz login com credenciais
+4. Se status = `pendente_cadastro`, redireciona para `/completar-cadastro`
+5. Após completar, faz auto-login e libera acesso
+
+### Solução
+Reimportar o script v6.9.21 que configura o hotspot profile corretamente.
+
+---
+
+## Problema 3: Whitelists Não Funcionam (Apenas Templates)
+
+### Causa Raiz Principal
+Os logs mostram claramente:
+```
+v6.9.17: Firewall rules unchanged, skipping injection (loop prevention)
 ```
 
-#### 2.3 Adicionar Walled Garden para whitelists (após linha 517)
+O sistema coleta corretamente **17 domínios** da whitelist, mas **não injeta os comandos** porque:
+1. O hash das regras não mudou desde a última vez
+2. Os comandos foram enviados anteriormente, mas o MikroTik não os processou corretamente (script v6.9.20)
+3. O action processor v6.9.20 **não tinha** a lógica de Walled Garden + ordem correta
 
+### Solução em 3 Etapas
+
+#### Etapa 1: Forçar Re-injeção das Regras
+Limpar o hash para forçar o backend a reenviar todos os comandos de whitelist:
+
+```sql
+UPDATE hotspots SET firewall_rules_hash = NULL 
+WHERE id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1';
+```
+
+#### Etapa 2: Atualizar o Script no MikroTik
+Importar o Recovery v6.9.21 que tem:
+- Action processor com ordem correta (ACCEPT antes de DROP)
+- Lógica de Walled Garden para whitelists
+- timeout=none nos address-list
+
+#### Etapa 3: Verificar Resultado
 ```routeros
-# v6.9.21: DUAL APPROACH - Walled Garden (robust for hostnames) + Address-List (backup)
-# 1. Add to Walled Garden with action=allow
-:if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
-/ip hotspot walled-garden add dst-host=$domain action=allow comment=("navspot-allow-" . $domain)
-:log info ("NAVSPOT: Walled Garden allow - " . $domain)
+# Verificar Walled Garden
+/ip hotspot walled-garden print where comment~"navspot-allow"
+
+# Verificar Address-List
+/ip firewall address-list print where list=NAVSPOT-ALLOWED
+
+# Verificar ordem do Firewall
+/ip firewall filter print where comment~"NAVSPOT-ALLOW"
+```
+
+---
+
+## Problema 4: Sugestão de Mudança de Abordagem
+
+### Análise da Sugestão
+A abordagem "liberar tudo + blacklist" é mais simples, mas o sistema **já suporta ambos os modos**:
+
+| Modo | Configuração | Comportamento |
+|------|--------------|---------------|
+| `liberar_tudo` | modo_acesso=liberar_tudo + blacklist | Tudo liberado, apenas blacklist bloqueada |
+| `bloquear_tudo` | modo_acesso=bloquear_tudo + whitelist | Tudo bloqueado, apenas whitelist liberada |
+
+### Problema Atual
+O perfil "Tripulação Googlemarine" está em modo `bloquear_tudo`, que requer whitelist funcional.
+
+### Opções
+
+**Opção A: Manter modo atual e corrigir whitelist**
+- Implementar as correções acima
+- Resultado: Sistema funciona como projetado
+
+**Opção B: Mudar para modo permissivo**
+- Alterar perfil para `liberar_tudo`
+- Criar blacklists robustas (streaming, redes sociais, etc)
+- Mais simples de manter, menos falsos positivos
+
+---
+
+## Plano de Implementação
+
+### 1. Limpar Hash para Forçar Re-injeção
+Executar no banco de dados:
+```sql
+UPDATE hotspots SET firewall_rules_hash = NULL;
+```
+
+Isso fará o próximo sync enviar todos os comandos `add_firewall_allow` novamente.
+
+### 2. Corrigir Erro de Sintaxe no Recovery (se ainda existir)
+Verificar se há algum problema remanescente no arquivo gerado.
+
+### 3. Melhorar Logging no Action Processor
+Adicionar logs mais detalhados para debug quando comandos são processados.
+
+### 4. Considerar Opção de "Limpar e Reaplicar" no Painel
+Criar um botão no painel que:
+- Limpa o hash
+- Limpa regras NAVSPOT no MikroTik (via action)
+- Força re-sincronização completa
+
+---
+
+## Mudanças de Código Necessárias
+
+### Arquivo 1: Limpar Hash via SQL
+```sql
+-- Forçar re-injeção de regras de firewall
+UPDATE hotspots 
+SET firewall_rules_hash = NULL, firewall_rules_updated_at = NULL;
+```
+
+### Arquivo 2: Adicionar Logging Detalhado (Opcional)
+Em `mikrotik-sync/index.ts`, melhorar logs quando hash muda:
+
+```typescript
+if (currentHash !== newHash) {
+  console.log(`[mikrotik-sync] v6.9.21: Firewall rules changed!`)
+  console.log(`[mikrotik-sync] v6.9.21: Old hash: ${currentHash || 'none'}`)
+  console.log(`[mikrotik-sync] v6.9.21: New hash: ${newHash}`)
+  console.log(`[mikrotik-sync] v6.9.21: Domains to inject: ${allDomains.join(', ')}`)
+  // ... inject actions
 }
-# 2. Try DNS resolution for address-list (timeout=none para não expirar)
 ```
 
-#### 2.4 Remover timeout=1d das address-lists (linha 523)
+---
 
+## Resumo das Ações
+
+| # | Ação | Responsável |
+|---|------|-------------|
+| 1 | Limpar `firewall_rules_hash` no banco | Sistema |
+| 2 | Baixar novo Recovery v6.9.21 | Usuário |
+| 3 | Importar Recovery no MikroTik | Usuário |
+| 4 | Aguardar próximo sync (1 minuto) | Automático |
+| 5 | Verificar logs e regras aplicadas | Usuário |
+
+---
+
+## Testes de Validação
+
+### No MikroTik:
 ```routeros
-# Atual:
-/ip firewall address-list add ... timeout=1d ...
+# 1. Verificar versão
+/log print where message~"v6.9.21"
 
-# Novo:
-/ip firewall address-list add ... timeout=none ...
+# 2. Verificar Hotspot Profile
+/ip hotspot profile print where name~"navspot"
+
+# 3. Verificar Walled Garden
+/ip hotspot walled-garden print where comment~"navspot-allow"
+
+# 4. Verificar Address-List
+/ip firewall address-list print where list=NAVSPOT-ALLOWED
+
+# 5. Verificar ordem do Firewall
+/ip firewall filter print where comment~"NAVSPOT-ALLOW"
+
+# 6. Testar acesso
+/tool fetch url="https://uol.com.br" output=none
 ```
+
+### No Painel:
+1. Verificar que o consumo foi resetado
+2. Verificar logs de sincronização
 
 ---
 
 ## Arquivos a Modificar
 
-| Arquivo | Mudanças |
-|---------|----------|
-| `supabase/functions/mikrotik-script-generator/index.ts` | Atualizar ~15 referências de v6.9.20 para v6.9.21 |
-| `supabase/functions/mikrotik-recovery-download/index.ts` | Atualizar versão + corrigir ordem de regras + adicionar Walled Garden + remover timeout |
+Apenas limpeza de dados no banco (não requer código novo).
 
----
+A implementação anterior da v6.9.21 já contém todas as correções necessárias no código. O problema é que:
+1. O hash impede re-injeção das regras
+2. O MikroTik não recebeu o script atualizado
 
-## Resultado Esperado
-
-Após a implementação:
-1. O modal de script mostrará **"Script MikroTik v6.9.21"**
-2. O Recovery baixado terá as correções de whitelist
-3. Sites como uol.com.br, r7.com.br funcionarão com o modo "bloquear_tudo"
-4. As regras de firewall serão criadas na ordem correta (ACCEPT antes de DROP)
-
----
-
-## Testes Após Implementação
-
-1. Gerar novo script de bootstrap - verificar título v6.9.21
-2. Baixar Recovery e importar no MikroTik
-3. Verificar logs: `/log print where message~"v6.9.21"`
-4. Testar acesso a sites whitelisted
