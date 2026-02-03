@@ -6,15 +6,15 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-recovery-download v6.9.27
+ * mikrotik-recovery-download v6.9.28
  * 
  * Minimal recovery endpoint for MikroTik self-healing.
  * Returns a .rsc script that recreates scripts/schedulers and verifies hotspot profile login-url.
  * 
- * v6.9.27: CRITICAL FIX - Eliminated ALL [:len [/... find ...]] patterns
- *          RouterOS 6.x cannot parse nested brackets during /import
- *          Uses idempotent remove+add pattern for Walled Garden entries
- *          Action-processor uses direct commands with on-error={}
+ * v6.9.28: CRITICAL FIX - Removed *.apple.com wildcard (breaks RouterOS 6.x /import)
+ *          Replaced with explicit hosts: captive.apple.com, www.apple.com
+ *          Linter now blocks *.apple.com pattern to prevent recurrence
+ * v6.9.27: Eliminated ALL [:len [/... find ...]] patterns
  * v6.9.26: CRITICAL FIX - Removed AUTO-FIX firewall block completely
  * v6.9.25: CRITICAL FIX - RouterOS 6.x /import compatible syntax (partial fix)
  * v6.9.24: RouterOS 6.x compatible check (no -> operator)
@@ -27,7 +27,7 @@ const corsHeaders = {
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.27"
+const VERSION = "6.9.28"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -42,6 +42,7 @@ function validateRouterOSScript(script: string, context: string): void {
   const forbiddenPatterns = [
     { regex: /:if \(\[:len \[\//, desc: '[:len [/... (nested brackets in conditional)' },
     { regex: /comment~"/, desc: 'comment~ (must use comment= for exact match)' },
+    { regex: /dst-host="\*\.apple\.com"/, desc: '*.apple.com (breaks RouterOS 6.x parser during /import)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
@@ -655,11 +656,11 @@ ${syncScriptSource}
 :do { /ip hotspot walled-garden remove [find dst-host="*.msftncsi.com"] } on-error={}
 /ip hotspot walled-garden add dst-host="*.msftncsi.com" action=allow comment="navspot-cpd-windows"
 
-# Captive Portal Detection - Apple
+# Captive Portal Detection - Apple (v6.9.28: explicit hosts instead of *.apple.com wildcard)
 :do { /ip hotspot walled-garden remove [find dst-host="captive.apple.com"] } on-error={}
 /ip hotspot walled-garden add dst-host="captive.apple.com" action=allow comment="navspot-cpd-apple"
-:do { /ip hotspot walled-garden remove [find dst-host="*.apple.com"] } on-error={}
-/ip hotspot walled-garden add dst-host="*.apple.com" action=allow comment="navspot-cpd-apple"
+:do { /ip hotspot walled-garden remove [find dst-host="www.apple.com"] } on-error={}
+/ip hotspot walled-garden add dst-host="www.apple.com" action=allow comment="navspot-cpd-apple"
 
 # v6.9.27: Protocolos essenciais (remove+add by comment - EXACT match)
 :do { /ip hotspot walled-garden ip remove [find comment="navspot-dns-udp"] } on-error={}
@@ -695,7 +696,7 @@ ${syncScriptSource}
 
 :log info "=========================================="
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
-:log info "FIX v6.9.27: Eliminated ALL [:len [/...]] nested patterns"
+:log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"
 :log info "FIX: Uses idempotent remove+add pattern for Walled Garden"
 :log info "FIX: login-url do hotspot profile verificada/corrigida"
 :log info "Token: recriado e fallback embutido no sync"
