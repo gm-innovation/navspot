@@ -262,7 +262,7 @@ Deno.serve(async (req) => {
 
 function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, syncToken: string, hotspotId: string): string {
   // External portal login URL with escaped variables for runtime expansion
-  const loginUrl = `https://navspot.lovable.app/hotspot-login?h=${hotspotId}&mac=\\\\\\$(mac)&ip=\\\\\\$(ip)&link-login-only=\\\\\\$(link-login-only)`
+  const loginUrl = `https://navspot.lovable.app/hotspot-login?h=${hotspotId}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)`
   
   // v6.9.24 sync script source with embedded token fallback
   const syncScriptSource = `:local token ""
