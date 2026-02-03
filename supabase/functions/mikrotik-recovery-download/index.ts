@@ -691,15 +691,12 @@ ${syncScriptSource}
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial configurado"
 
 # 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.33
-# Two-step pattern: assign [find] to local var, then set with escaped vars in separate :do block
+# Two-step pattern: find to local, then set in separate :do block (no nested :if with escaped vars)
 :log info "NAVSPOT-RECOVERY: Configurando hotspot profile login-url..."
 :local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len \$_hsprof] > 0) do={ :global _hsprof_id \$_hsprof }
 :do {
-:if ([:len \$_hsprof_id] > 0) do={
-/ip hotspot profile set \$_hsprof_id login-url="${loginUrl}"
+/ip hotspot profile set \$_hsprof login-url="${loginUrl}"
 :log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
-}
 } on-error={
 :log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
 }
