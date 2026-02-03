@@ -31,7 +31,7 @@ const corsHeaders = {
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.31"
+const VERSION = "6.9.32"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -52,6 +52,8 @@ function validateRouterOSScript(script: string, context: string): void {
     // v6.9.30: Only detect MikroTik variables INSIDE strings (those break /import)
     // Local script variables like $hsprof outside strings are fine and SHOULD NOT be escaped
     { regex: /login-url="\$[a-zA-Z]/, desc: 'login-url="$var... (MikroTik variable in string breaks /import - use escaped \\$)' },
+    // v6.9.32: Block do={...} blocks containing escaped variables - breaks parser on single line
+    { regex: /do=\{[^}]*\\\$\(/, desc: 'do={...\\$(...} (escaped var inside do block breaks parser - use :do { } on-error={} pattern)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
@@ -685,23 +687,20 @@ ${syncScriptSource}
 
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial configurado"
 
-# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.30
-# NOTE: $hsprof is a LOCAL script variable - NO escape needed (parser recognizes it)
-# Runtime vars like $(mac) ARE escaped as \\$(mac) in TypeScript -> \$(mac) in .rsc
-:log info "NAVSPOT-RECOVERY: Verificando hotspot profile login-url..."
-:local hsprof [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len $hsprof] > 0) do={
-/ip hotspot profile set $hsprof login-url="${loginUrl}"
-:log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
-} else={
+# 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.32
+# Using direct set with find + on-error - avoids complex :if do={} blocks with inline escaped vars
+# The problem was: :if ([:len $x] > 0) do={ set ... login-url="...\\$(mac)..." } breaks RouterOS 6.x parser
+:log info "NAVSPOT-RECOVERY: Configurando hotspot profile login-url..."
+:do { /ip hotspot profile set [find name="hsprof-navspot"] login-url="${loginUrl}" } on-error={
 :log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
 }
+:log info "NAVSPOT-RECOVERY: login-url verificada"
 
 :log info "=========================================="
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
+:log info "FIX v6.9.32: Hotspot profile set uses :do { } on-error={} pattern"
 :log info "FIX v6.9.31: Replaced *.supabase.* wildcards with explicit host"
 :log info "FIX v6.9.31: Token file uses explicit .txt extension"
-:log info "FIX v6.9.30: Local vars unescaped, runtime vars escaped"
 :log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"
 :log info "FIX: Uses idempotent remove+add pattern for Walled Garden"
 :log info "FIX: login-url do hotspot profile verificada/corrigida"

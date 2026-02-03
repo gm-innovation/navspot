@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "6.9.31"
+const VERSION = "6.9.32"
 const DEPLOYED_AT = new Date().toISOString()
 
 interface Hotspot {
@@ -48,6 +48,8 @@ function validateRouterOSScript(script: string, context: string): void {
     // v6.9.30: Only detect MikroTik variables INSIDE strings (those break /import)
     // Local script variables like $hsprof outside strings are fine and SHOULD NOT be escaped
     { regex: /login-url="\$[a-zA-Z]/, desc: 'login-url="$var... (MikroTik variable in string breaks /import - use escaped \\$)' },
+    // v6.9.32: Block do={...} blocks containing escaped variables - breaks parser on single line
+    { regex: /do=\{[^}]*\\\$\(/, desc: 'do={...\\$(...} (escaped var inside do block breaks parser - use :do { } on-error={} pattern)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
