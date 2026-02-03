@@ -6,14 +6,16 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-recovery-download v6.9.28
+ * mikrotik-recovery-download v6.9.29
  * 
  * Minimal recovery endpoint for MikroTik self-healing.
  * Returns a .rsc script that recreates scripts/schedulers and verifies hotspot profile login-url.
  * 
- * v6.9.28: CRITICAL FIX - Removed *.apple.com wildcard (breaks RouterOS 6.x /import)
- *          Replaced with explicit hosts: captive.apple.com, www.apple.com
- *          Linter now blocks *.apple.com pattern to prevent recurrence
+ * v6.9.29: CRITICAL FIX - Escaped MikroTik variables in /import context
+ *          Variables like $hsprof must be \\$hsprof to prevent premature expansion
+ *          Removed $correctLoginUrl variable - URL is now inline
+ *          Linter now blocks login-url="$ pattern to prevent recurrence
+ * v6.9.28: Removed *.apple.com wildcard (breaks RouterOS 6.x /import)
  * v6.9.27: Eliminated ALL [:len [/... find ...]] patterns
  * v6.9.26: CRITICAL FIX - Removed AUTO-FIX firewall block completely
  * v6.9.25: CRITICAL FIX - RouterOS 6.x /import compatible syntax (partial fix)
@@ -27,7 +29,7 @@ const corsHeaders = {
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.28"
+const VERSION = "6.9.29"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -43,6 +45,8 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /:if \(\[:len \[\//, desc: '[:len [/... (nested brackets in conditional)' },
     { regex: /comment~"/, desc: 'comment~ (must use comment= for exact match)' },
     { regex: /dst-host="\*\.apple\.com"/, desc: '*.apple.com (breaks RouterOS 6.x parser during /import)' },
+    { regex: /login-url="\$/, desc: 'login-url="$... (MikroTik variable in string breaks /import - use escaped \\$)' },
+    { regex: /set \$[a-zA-Z]+ login-url/, desc: 'set $var login-url (unescaped variable breaks /import - use \\$var)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
@@ -676,26 +680,21 @@ ${syncScriptSource}
 
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial configurado"
 
-# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.27
+# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.29
+# CRITICAL: Variables must be escaped with \\$ for /import compatibility
+# The URL is written inline to avoid variable expansion during parse
 :log info "NAVSPOT-RECOVERY: Verificando hotspot profile login-url..."
-:local hsprofName "hsprof-navspot"
-:local correctLoginUrl "${loginUrl}"
-
-:local hsprof [/ip hotspot profile find name=$hsprofName]
-:if ([:len $hsprof] > 0) do={
-:local currentLoginUrl [/ip hotspot profile get $hsprof login-url]
-:if ($currentLoginUrl != $correctLoginUrl) do={
-/ip hotspot profile set $hsprof login-url="$correctLoginUrl"
-:log info "NAVSPOT-RECOVERY: login-url corrigida no hotspot profile"
-} else={
-:log info "NAVSPOT-RECOVERY: login-url ja esta correta"
-}
+:local hsprof [/ip hotspot profile find name="hsprof-navspot"]
+:if ([:len \\$hsprof] > 0) do={
+/ip hotspot profile set \\$hsprof login-url="${loginUrl}"
+:log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
 } else={
 :log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
 }
 
 :log info "=========================================="
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
+:log info "FIX v6.9.29: Escaped variables for /import compatibility"
 :log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"
 :log info "FIX: Uses idempotent remove+add pattern for Walled Garden"
 :log info "FIX: login-url do hotspot profile verificada/corrigida"
