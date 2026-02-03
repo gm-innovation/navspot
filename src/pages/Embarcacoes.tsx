@@ -64,6 +64,7 @@ export default function Embarcacoes() {
   const [finalizeScript, setFinalizeScript] = useState("");
   const [currentHotspotName, setCurrentHotspotName] = useState("");
   const [currentHotspotId, setCurrentHotspotId] = useState("");
+  const [currentScriptVersion, setCurrentScriptVersion] = useState("6.9.24");
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -137,6 +138,7 @@ export default function Embarcacoes() {
       onSuccess: (data) => {
         setBootstrapScript(data.bootstrap_script || "# Script não gerado");
         setFinalizeScript(data.finalize_script || "# Script não gerado");
+        setCurrentScriptVersion(data.version || "6.9.24");
         setScriptModalOpen(true);
         setGeneratingFor(null);
       },
@@ -450,6 +452,7 @@ export default function Embarcacoes() {
         finalizeScript={finalizeScript}
         hotspotName={currentHotspotName}
         hotspotId={currentHotspotId}
+        scriptVersion={currentScriptVersion}
         onRegenerate={handleRegenerateScript}
         isRegenerating={generateScript.isPending}
       />
