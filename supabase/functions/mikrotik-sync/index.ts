@@ -1178,8 +1178,18 @@ Deno.serve(async (req) => {
       )
     }
 
-    // v6.9: Expand domain-based actions to individual commands
+    // v6.9.18: Expand domain-based actions to individual commands
+    // PRIORITY ORDER: Firewall rules FIRST (most critical for bloquear_tudo mode)
+    // to prevent buffer truncation from losing them
     const expandedActions: typeof formattedActions = []
+    
+    // v6.9.18: Separate actions by priority
+    const firewallAllowActions: typeof formattedActions = []
+    const firewallBlockActions: typeof formattedActions = []
+    const profileActions: typeof formattedActions = []
+    const userActions: typeof formattedActions = []
+    const walledGardenActions: typeof formattedActions = []
+    const otherActions: typeof formattedActions = []
 
     for (const action of formattedActions) {
       const p = action.payload as Record<string, unknown>
@@ -1188,7 +1198,7 @@ Deno.serve(async (req) => {
       if (action.type === 'add_walled_garden' && Array.isArray(p.dominios)) {
         for (const domain of p.dominios as string[]) {
           if (domain) {
-            expandedActions.push({
+            walledGardenActions.push({
               id: `${action.id}-${domain.replace(/[^a-z0-9]/gi, '')}`,
               type: (p.tipo === 'blacklist' ? 'add_blacklist_domain' : 'add_whitelist_domain') as string,
               payload: { list_name: String(p.lista_name || 'default'), domain }
@@ -1200,18 +1210,50 @@ Deno.serve(async (req) => {
       else if (action.type === 'add_firewall_filter' && Array.isArray(p.dominios)) {
         for (const domain of p.dominios as string[]) {
           if (domain) {
-            expandedActions.push({
+            walledGardenActions.push({
               id: `${action.id}-${domain.replace(/[^a-z0-9]/gi, '')}`,
               type: 'add_blacklist_domain' as string,
               payload: { list_name: String(p.lista_name || 'regra'), domain }
             })
           }
         }
-      } 
+      }
+      // v6.9.18: Categorize by priority
+      else if (action.type === 'add_firewall_allow') {
+        firewallAllowActions.push(action)
+      }
+      else if (action.type === 'add_firewall_block') {
+        firewallBlockActions.push(action)
+      }
+      else if (action.type === 'add_user_profile' || action.type === 'create_profile') {
+        profileActions.push(action)
+      }
+      else if (action.type === 'create_user' || action.type === 'add_user') {
+        userActions.push(action)
+      }
+      else if (action.type === 'add_whitelist_domain' || action.type === 'add_blacklist_domain') {
+        walledGardenActions.push(action)
+      }
       else {
-        expandedActions.push(action)
+        otherActions.push(action)
       }
     }
+    
+    // v6.9.18: Assemble in priority order (most critical first to avoid truncation)
+    // 1. Firewall ALLOW (bloquear_tudo whitelist) - HIGHEST priority
+    // 2. Firewall BLOCK (blacklist)
+    // 3. Profiles (must exist before users)
+    // 4. Users
+    // 5. Walled Garden (pre-login, less critical since firewall handles post-login)
+    // 6. Other actions
+    expandedActions.push(...firewallAllowActions)
+    expandedActions.push(...firewallBlockActions)
+    expandedActions.push(...profileActions)
+    expandedActions.push(...userActions)
+    expandedActions.push(...walledGardenActions)
+    expandedActions.push(...otherActions)
+    
+    console.log(`[mikrotik-sync] v6.9.18: Action priority order - firewall_allow:${firewallAllowActions.length}, firewall_block:${firewallBlockActions.length}, profiles:${profileActions.length}, users:${userActions.length}, walled_garden:${walledGardenActions.length}, other:${otherActions.length}`)
 
     // v6.9: Auto-mark as executed after 1 delivery (fire-and-forget pattern)
     if (expandedActions.length > 0) {
