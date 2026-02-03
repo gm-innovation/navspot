@@ -1,81 +1,128 @@
 
-# Plano: Corrigir Blacklist e Clarificar Fluxo de Cadastro
+# Plano: Corrigir Exibição de Status + Configurar login-url no Recovery
 
 ## Diagnóstico
 
-### Problema 1: Formulário de cadastro
-**NÃO é um bug** - o usuário `alexandre.silva` já está com status `ativo`, então o sistema corretamente redireciona para autenticação no MikroTik. O formulário de cadastro só aparece para usuários com status `pendente_cadastro`.
+### Problema 1: Status "Inativo" na tabela (BUG)
+O banco de dados está correto (`status: 'pendente_cadastro'`), mas a tabela na página Tripulantes mostra "Inativo" porque o código só trata `ativo` e `bloqueado`.
 
-**Para testar o formulário**: Crie um novo tripulante com status `pendente_cadastro` e tente logar com ele.
-
-### Problema 2: Blacklist não funciona
-Este é o bug real. Analisando os logs:
-- Apenas `create_whitelist_domain` está sendo processado
-- Nenhuma ação `create_blacklist_domain` aparece no pipe
-- Motivo: O hash de firewall não mudou, então o sync não reinjecta as regras
-
-**Causa raiz**: O mecanismo de hash-caching impede que as regras sejam reaplicadas quando necessário. Além disso, no MikroTik as Address-Lists têm `timeout=1d`, então os IPs expiram após 24h e o bloqueio para de funcionar.
-
-## Soluções Propostas
-
-### Correção 1: Forçar resync do firewall
-Resetar o `firewall_rules_hash` do hotspot para forçar o backend a reinjetar todas as regras de blacklist/whitelist.
-
-**Ação SQL**:
-```sql
-UPDATE hotspots 
-SET firewall_rules_hash = NULL 
-WHERE nome = 'Engenharia Googlemarine';
+**Linha 401 de Tripulantes.tsx:**
+```typescript
+{tripulante.status === "ativo" ? "Ativo" : tripulante.status === "bloqueado" ? "Bloqueado" : "Inativo"}
 ```
 
-### Correção 2: Corrigir timeout das Address-Lists (código)
-Atualmente o código usa `timeout=1d` (linha 490), o que faz os IPs expirarem. Precisa mudar para `timeout=none` para blacklist também (já está correto para whitelist).
+### Problema 2: Portal não abre (BUG CRÍTICO)
+O Recovery script **não configura a login-url do hotspot profile**. Sem essa configuração, o MikroTik não redireciona clientes para o portal externo.
 
-**Arquivo**: `supabase/functions/mikrotik-recovery-download/index.ts`
-
-**Mudança na linha 490**:
+O Bootstrap script configura corretamente:
 ```routeros
-# DE:
-/ip firewall address-list add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=1d comment=("navspot-" . $domain)
-
-# PARA:
-/ip firewall address-list add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=none comment=("navspot-" . $domain)
+/ip hotspot profile add ... login-url="https://navspot.lovable.app/hotspot-login?..."
 ```
 
-### Correção 3: Mesmo fix no script-generator
-Garantir que o script de bootstrap também use `timeout=none`.
+Mas o Recovery diz: *"It does NOT touch network config (bridge, DHCP, NAT, hotspot)"*.
 
-**Arquivo**: `supabase/functions/mikrotik-script-generator/index.ts`
+Isso significa que se o hotspot profile não estiver configurado corretamente, o Recovery não conserta.
+
+---
+
+## Soluções
+
+### Correção 1: Exibir status "Pendente Cadastro" corretamente
+
+**Arquivo:** `src/pages/Tripulantes.tsx`
+
+Atualizar a lógica de exibição do badge de status para incluir `pendente_cadastro`:
+
+```typescript
+// Linha ~391-402
+<Badge 
+  variant={tripulante.status === "ativo" ? "default" : "secondary"}
+  className={
+    tripulante.status === "ativo" 
+      ? "bg-green-100 text-green-800..." 
+      : tripulante.status === "bloqueado"
+      ? "bg-red-100 text-red-800..."
+      : tripulante.status === "pendente_cadastro"
+      ? "bg-yellow-100 text-yellow-800..."  // Amarelo para pendente
+      : "bg-gray-100 text-gray-800..."
+  }
+>
+  {tripulante.status === "ativo" ? "Ativo" 
+    : tripulante.status === "bloqueado" ? "Bloqueado" 
+    : tripulante.status === "pendente_cadastro" ? "Pendente Cadastro"
+    : "Inativo"}
+</Badge>
+```
+
+### Correção 2: Recovery deve verificar/corrigir login-url do hotspot profile
+
+**Arquivo:** `supabase/functions/mikrotik-recovery-download/index.ts`
+
+Adicionar seção no Recovery script para verificar e corrigir o hotspot profile:
+
+```routeros
+# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.24
+:log info "NAVSPOT-RECOVERY: Verificando hotspot profile..."
+:local hsprofName "hsprof-navspot"
+:local correctLoginUrl "https://navspot.lovable.app/hotspot-login?h=${hotspotId}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
+
+:local hsprof [/ip hotspot profile find name=$hsprofName]
+:if ([:len $hsprof] > 0) do={
+  :local currentLoginUrl [/ip hotspot profile get $hsprof login-url]
+  :if ($currentLoginUrl != $correctLoginUrl) do={
+    /ip hotspot profile set $hsprof login-url=$correctLoginUrl html-directory=""
+    :log info "NAVSPOT-RECOVERY: login-url corrigida no hotspot profile"
+  }
+} else={
+  # Se nao existe o profile, o bootstrap completo e necessario
+  :log warning "NAVSPOT-RECOVERY: Hotspot profile nao encontrado - execute bootstrap completo"
+}
+```
+
+### Correção 3: Mesma lógica no script-generator (consistência)
+
+**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
+
+Garantir que o Bootstrap script use a mesma versão e padrões.
+
+---
 
 ## Arquivos a Modificar
 
 | Arquivo | Mudança |
 |---------|---------|
-| `supabase/functions/mikrotik-recovery-download/index.ts` | Mudar `timeout=1d` para `timeout=none` na Address-List BLACKLIST (linha 490) |
-| `supabase/functions/mikrotik-script-generator/index.ts` | Mesma correção para consistência |
+| `src/pages/Tripulantes.tsx` | Adicionar tratamento visual para status `pendente_cadastro` (amarelo) |
+| `supabase/functions/mikrotik-recovery-download/index.ts` | Adicionar verificação/correção da `login-url` no hotspot profile + bump para v6.9.24 |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Bump para v6.9.24 (consistência) |
 
-## Passos Após Implementação
+---
 
-1. **Resetar hash no banco** (executar SQL acima ou via painel)
-2. **Deploy das Edge Functions atualizadas**
-3. **Aguardar próximo sync** (1 minuto) - as regras serão reinjetadas
-4. **Verificar no MikroTik**:
-   ```routeros
-   /ip hotspot walled-garden print where comment~"navspot-blacklist"
-   /ip firewall address-list print where list="NAVSPOT-BLACKLIST"
-   ```
-5. **Testar**: Acessar facebook.com ou instagram.com - deve bloquear
+## Workaround Imediato (MikroTik)
 
-## Sobre o Formulário de Cadastro
+Enquanto implementamos, você pode corrigir manualmente no terminal do MikroTik:
 
-Para testar se o formulário funciona:
-1. Acesse o painel → Tripulantes
-2. Crie um novo tripulante com status "Pendente de Cadastro"
-3. Conecte ao WiFi com as credenciais desse novo tripulante
-4. O formulário de cadastro deve aparecer
+```routeros
+# Verificar qual login-url esta configurada
+/ip hotspot profile print
+
+# Corrigir manualmente (substitua pelo ID real do hotspot)
+/ip hotspot profile set hsprof-navspot login-url="https://navspot.lovable.app/hotspot-login?h=27a1e1be-4ba7-4496-adb1-9227d3a80ad1&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)" html-directory=""
+```
+
+---
+
+## Teste Após Implementação
+
+1. **Frontend**: Verificar que o tripulante mostra "Pendente Cadastro" (amarelo) em vez de "Inativo"
+2. **MikroTik**: Baixar e importar Recovery v6.9.24
+3. **WiFi**: Conectar dispositivo - portal deve abrir automaticamente
+4. **Formulário**: Para usuário `pendente_cadastro`, deve aparecer formulário de conclusão de cadastro
+
+---
 
 ## Resultado Esperado
 
-- **Blacklist funcionando**: Facebook, Instagram, YouTube, Netflix bloqueados
-- **Whitelist funcionando**: Gmail, Google, Office365 liberados
-- **Formulário de cadastro**: Aparece apenas para tripulantes com status `pendente_cadastro`
+- Badge amarelo "Pendente Cadastro" na tabela de tripulantes
+- Portal de autenticação abre ao conectar no WiFi
+- Formulário de cadastro aparece para tripulantes pendentes
+- Após preencher formulário, status muda para "Ativo" e acesso é liberado
