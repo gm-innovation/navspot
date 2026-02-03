@@ -31,7 +31,7 @@ export function ScriptModal({
   bootstrapScript,
   hotspotName,
   hotspotId,
-  scriptVersion = "6.9.24",
+  scriptVersion = "6.9.27",
   onRegenerate,
   isRegenerating,
 }: ScriptModalProps) {
@@ -174,7 +174,7 @@ export function ScriptModal({
                 <li>• <strong>navspot-guardian:</strong> Verifica integridade a cada 10 minutos</li>
                 <li>• <strong>Safe Update:</strong> Atualiza scripts sem remover antes</li>
                 <li>• <strong>Whitelist Fix:</strong> Regras de firewall não bloqueiam mais o portal (hotspot=auth)</li>
-                <li>• <strong>v6.9.26:</strong> Sintaxe simplificada para RouterOS 6.x (comandos diretos)</li>
+                <li>• <strong>v6.9.27:</strong> Eliminado ALL [:len [/...]] - usa remove+add idempotente</li>
               </ul>
             </AlertDescription>
           </Alert>
