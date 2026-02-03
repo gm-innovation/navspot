@@ -1,289 +1,121 @@
 
-# Plano v6.9.21: Correção de Whitelists + Reset Automático de Quota
+# Plano: Atualização Completa para v6.9.21
 
-## Problemas Identificados
+## Diagnóstico
 
-### Problema 1: Reset de Quota Não Funciona
+A implementação anterior da v6.9.21 foi **parcialmente aplicada**:
 
-**Diagnóstico:**
-- O `quota_reset_at` do tripulante Alexandre Silva é `2026-02-02 15:09:55 UTC`
-- Hoje é `2026-02-03` - deveria ter resetado à meia-noite!
-- Consumo atual: 65 MB (não foi resetado)
+| Arquivo | Estado |
+|---------|--------|
+| `mikrotik-script-generator` - Action Processor | Atualizado (linhas 490-546) |
+| `mikrotik-script-generator` - Bootstrap/Guardian/Sync | Ainda v6.9.20 (107 referências) |
+| `mikrotik-recovery-download` - Tudo | Ainda v6.9.20 (arquivo inteiro) |
 
-**Causa Raiz:**
-A lógica de reset de quota (linhas 555-571 do mikrotik-sync) só é executada quando o usuário está na lista de `active_users`. 
-
-Logs mostram: `"active_users_csv":""` - o campo está **VAZIO**!
-
-O reset só ocorre durante o processamento de usuários ativos conectados. Se o usuário não estava conectado no momento do sync após a meia-noite, a quota não foi resetada.
+Isso explica por que o script exibido no modal ainda mostra "v6.9.20" e o Recovery baixado não tem as correções de whitelist.
 
 ---
 
-### Problema 2: Whitelists Não Funcionam ("bloquear_tudo" muito restritivo)
+## Mudanças Necessárias
 
-**Diagnóstico:**
-- O perfil "Tripulação Googlemarine" tem `modo_acesso: bloquear_tudo`
-- As regras de whitelist (Email, Google Workspace, Notícias) estão cadastradas e ativas
-- O backend está coletando 17 domínios de whitelist corretamente
-- Gmail funciona (é uma lista template), mas Notícias (uol.com.br, r7.com.br, g1.globo.com) não funcionam
+### 1. mikrotik-script-generator/index.ts
 
-**Causa Raiz 1 - Ordem das Regras Invertida:**
+Atualizar todas as referências de `v6.9.20` para `v6.9.21`:
 
-O código no action processor usa `place-before=$ftPos` duas vezes:
-
-```routeros
-# Primeiro: adiciona ACCEPT (fica antes do fasttrack)
-/ip firewall filter add ... action=accept dst-address-list=NAVSPOT-ALLOWED ... place-before=$ftPos
-
-# Depois: adiciona DROP (place-before coloca ANTES do ACCEPT!)
-/ip firewall filter add ... action=drop ... place-before=$ftPos
-```
-
-Resultado no firewall:
-1. DROP (bloqueia tudo) ← Processada primeiro!
-2. ACCEPT (permite lista) ← Nunca alcançada!
-
-**Causa Raiz 2 - Resolução DNS Inadequada:**
-
-O código resolve apenas UM IP por domínio, mas sites como g1.globo.com usam múltiplos IPs e CDNs. O acesso pode funcionar para um IP e falhar para outro.
-
-**Causa Raiz 3 - Timeout de 1 dia nos IPs:**
-
-```routeros
-/ip firewall address-list add ... timeout=1d
-```
-
-Após 24h, os IPs expiram e o domínio fica bloqueado até a próxima sincronização com mudança de hash.
+| Linha | Atual | Novo |
+|-------|-------|------|
+| 70 | `v6.9.21` (já OK) | - |
+| 92 | `v6.9.20 single bootstrap` | `v6.9.21 single bootstrap` |
+| 115-127 | Comentários v6.9.20 | Comentários v6.9.21 |
+| 246 | Sync script v6.9.20 | v6.9.21 |
+| 461-468 | add_firewall_block v6.9.20 | v6.9.21 |
+| 555-556 | Recovery URL v6.9.20 | v6.9.21 |
+| 558-559 | Guardian v6.9.20 | v6.9.21 |
+| 628 | Sistema integro v6.9.20 | v6.9.21 |
+| 631-632 | Bootstrap v6.9.20 | v6.9.21 |
+| 642, 665 | Limpeza v6.9.20 | v6.9.21 |
+| 763, 777, 784 | Guardian v6.9.20 | v6.9.21 |
+| 786, 801, 816, 823 | Action/Sync v6.9.20 | v6.9.21 |
+| 825 | Netwatch v6.9.20 | v6.9.21 |
+| 838 | Instalação concluída v6.9.20 | v6.9.21 |
 
 ---
 
-## Solução Proposta
+### 2. mikrotik-recovery-download/index.ts
 
-### 1. Reset de Quota Independente do Usuário Ativo
+#### 2.1 Atualizar versão e comentários
+- Linhas 9, 15: Comentário do arquivo
+- Linhas 233, 238: Logs de geração
+- Linha 260: syncScriptSource v6.9.20
+- Linha 320, 334: actionProcessorSource v6.9.20
+- Linhas 555-623: Script de recovery
 
-Criar uma verificação de reset de quota que roda **a cada sync**, mesmo sem usuários ativos.
+#### 2.2 Corrigir ordem das regras de firewall (linhas 503-532)
 
-**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
-
-**Mudança:** Adicionar função `resetExpiredQuotas()` que verifica TODOS os tripulantes da embarcação, não apenas os ativos.
-
-```typescript
-// Nova função a ser adicionada (após linha 182)
-async function resetExpiredQuotas(
-  supabase: ReturnType<typeof createClient>,
-  embarcacaoId: string,
-  timezone: string
-): Promise<number> {
-  const now = new Date().toISOString()
-  
-  // Buscar tripulantes com quota_reset_at que precisa reset
-  const { data: tripulantes } = await supabase
-    .from('tripulantes')
-    .select(`
-      id, bytes_consumidos, quota_reset_at,
-      perfis_velocidade(limite_dados_mb, quota_periodo)
-    `)
-    .eq('embarcacao_id', embarcacaoId)
-    .gt('bytes_consumidos', 0) // Só verificar quem tem consumo
-  
-  if (!tripulantes || tripulantes.length === 0) return 0
-  
-  let resetCount = 0
-  
-  for (const t of tripulantes) {
-    const perfil = t.perfis_velocidade as { limite_dados_mb: number | null; quota_periodo: string } | null
-    if (!perfil?.limite_dados_mb || !perfil.quota_periodo) continue
-    
-    if (shouldResetQuota(t.quota_reset_at, perfil.quota_periodo, timezone)) {
-      await supabase
-        .from('tripulantes')
-        .update({
-          bytes_consumidos: 0,
-          quota_reset_at: now,
-          status: 'ativo', // Reativar se estava bloqueado por quota
-          bloqueio_motivo: null,
-          bloqueado_at: null
-        })
-        .eq('id', t.id)
-        .eq('status', 'bloqueado')
-        .eq('bloqueio_motivo', 'quota_exceeded')
-      
-      // Reset consumo mesmo se não estava bloqueado
-      await supabase
-        .from('tripulantes')
-        .update({
-          bytes_consumidos: 0,
-          quota_reset_at: now
-        })
-        .eq('id', t.id)
-      
-      resetCount++
-    }
-  }
-  
-  return resetCount
-}
-```
-
-**Chamar no início do processamento (após linha 462):**
-
-```typescript
-// v6.9.21: Reset quotas expiradas para TODOS os tripulantes
-if (embarcacao) {
-  const resetCount = await resetExpiredQuotas(supabase, hotspot.embarcacao_id, effectiveTimezone)
-  if (resetCount > 0) {
-    console.log(`[mikrotik-sync] v6.9.21: Reset quota for ${resetCount} tripulante(s)`)
-  }
-}
-```
-
----
-
-### 2. Corrigir Ordem das Regras de Firewall
-
-**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
-
-**Problema:** `place-before` na mesma posição inverte a ordem.
-
-**Solução:** Criar ACCEPT primeiro, salvar posição, criar DROP após.
-
-**Código atual (linhas 495-504):**
+**Código atual (INCORRETO):**
 ```routeros
-:if ([:len [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]] = 0) do={
-:local ftPos [/ip firewall filter find where action=fasttrack-connection]
-:if ([:len $ftPos] = 0) do={:set ftPos 0}
 # Create ACCEPT rule for allowed list first
 /ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED comment="NAVSPOT-ALLOW-ACCEPT" place-before=$ftPos
-:log info "NAVSPOT: Allow accept rule created"
-# Then create DROP for everything else (will be after the accept due to place-before logic)
+# Then create DROP for everything else
 /ip firewall filter add chain=forward action=drop comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
-:log info "NAVSPOT: Allow master drop rule created"
-}
 ```
 
 **Código corrigido:**
 ```routeros
-:if ([:len [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]] = 0) do={
-:local ftPos [/ip firewall filter find where action=fasttrack-connection]
-:if ([:len $ftPos] = 0) do={:set ftPos 0}
-# v6.9.21: First create DROP (master block), then ACCEPT before it
-# This ensures correct order: ACCEPT -> DROP -> fasttrack
+# v6.9.21: FIRST create DROP (master block)
 /ip firewall filter add chain=forward action=drop comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
-:log info "NAVSPOT: Allow master drop rule created"
-# Now add ACCEPT BEFORE the drop (so it's processed first)
+:log info "NAVSPOT: Allow master drop rule created (v6.9.21)"
+# THEN add ACCEPT BEFORE the drop (so it's processed first)
 :local dropPos [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
 /ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED comment="NAVSPOT-ALLOW-ACCEPT" place-before=$dropPos
-:log info "NAVSPOT: Allow accept rule created (before drop)"
-}
+:log info "NAVSPOT: Allow accept rule created BEFORE drop (v6.9.21)"
 ```
 
----
+#### 2.3 Adicionar Walled Garden para whitelists (após linha 517)
 
-### 3. Melhorar Resolução de Domínios para Whitelists
-
-**Problema:** Sites usam múltiplos IPs/CDNs. Resolver apenas um IP é insuficiente.
-
-**Solução:** Usar regras de Layer 7 (content match) em vez de apenas address-list para domínios.
-
-**Código atual (linhas 506-518):**
 ```routeros
-:do {
-:local resolvedIp [:resolve $domain]
-:if ([:len $resolvedIp] > 0) do={
-:if ([:len [/ip firewall address-list find list="NAVSPOT-ALLOWED" address=$resolvedIp]] = 0) do={
-/ip firewall address-list add list="NAVSPOT-ALLOWED" address=$resolvedIp timeout=1d comment=("navspot-allow-" . $domain)
-:log info ("NAVSPOT: Firewall allow - " . $domain . " -> " . $resolvedIp)
-}
-}
-} on-error={
-:log warning ("NAVSPOT: Failed to resolve allowed domain " . $domain)
-}
-```
-
-**Código corrigido:**
-```routeros
-# v6.9.21: Dual approach - DNS resolution + Walled Garden allow (mais robusto)
-# 1. Adicionar ao Walled Garden como ALLOW (funciona pré-login)
+# v6.9.21: DUAL APPROACH - Walled Garden (robust for hostnames) + Address-List (backup)
+# 1. Add to Walled Garden with action=allow
 :if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
 /ip hotspot walled-garden add dst-host=$domain action=allow comment=("navspot-allow-" . $domain)
 :log info ("NAVSPOT: Walled Garden allow - " . $domain)
 }
-# 2. Tentar resolver IP para address-list (backup pós-login)
-:do {
-:local resolvedIp [:resolve $domain]
-:if ([:len $resolvedIp] > 0) do={
-:if ([:len [/ip firewall address-list find list="NAVSPOT-ALLOWED" address=$resolvedIp]] = 0) do={
-/ip firewall address-list add list="NAVSPOT-ALLOWED" address=$resolvedIp timeout=none comment=("navspot-allow-" . $domain)
-:log info ("NAVSPOT: Firewall allow - " . $domain . " -> " . $resolvedIp)
-}
-}
-} on-error={
-:log warning ("NAVSPOT: DNS failed for " . $domain . " - using Walled Garden only")
-}
+# 2. Try DNS resolution for address-list (timeout=none para não expirar)
 ```
 
-**Mudanças importantes:**
-- Adiciona domínio ao **Walled Garden** com `action=allow` (funciona com wildcards e hostnames)
-- Mantém address-list como backup
-- Remove `timeout=1d` - IPs ficam permanentes até próxima sincronização
-- Walled Garden é mais robusto para hostnames/CDNs
+#### 2.4 Remover timeout=1d das address-lists (linha 523)
 
----
+```routeros
+# Atual:
+/ip firewall address-list add ... timeout=1d ...
 
-### 4. Forçar Reavaliação das Regras de Firewall
-
-Como a correção só será aplicada em novos syncs, precisamos forçar o hash a mudar para que as regras sejam reaplicadas.
-
-**Ação necessária:** Limpar o `firewall_rules_hash` do hotspot para forçar reenvio.
-
-Adicionar no script de recovery e/ou expor como função.
+# Novo:
+/ip firewall address-list add ... timeout=none ...
+```
 
 ---
 
 ## Arquivos a Modificar
 
-| Arquivo | Mudança |
-|---------|---------|
-| `supabase/functions/mikrotik-sync/index.ts` | Adicionar `resetExpiredQuotas()` e chamá-la no início do processamento |
-| `supabase/functions/mikrotik-script-generator/index.ts` | Corrigir ordem das regras ACCEPT/DROP + melhorar resolução de domínios com Walled Garden |
+| Arquivo | Mudanças |
+|---------|----------|
+| `supabase/functions/mikrotik-script-generator/index.ts` | Atualizar ~15 referências de v6.9.20 para v6.9.21 |
+| `supabase/functions/mikrotik-recovery-download/index.ts` | Atualizar versão + corrigir ordem de regras + adicionar Walled Garden + remover timeout |
 
 ---
 
-## Resumo das Correções
+## Resultado Esperado
 
-1. **Reset de Quota Diário**: Agora verifica TODOS os tripulantes da embarcação a cada sync, não apenas os ativos. Isso garante que a quota seja resetada à meia-noite mesmo que o usuário não esteja online.
-
-2. **Ordem das Regras de Firewall**: Corrigida a ordem para garantir que ACCEPT seja processado antes de DROP no modo "bloquear_tudo".
-
-3. **Resolução de Domínios**: Usar abordagem dual com Walled Garden (mais confiável para hostnames) + Address-List (backup para IPs). Remove timeout que expirava os IPs após 24h.
-
----
-
-## Teste Após Implementação
-
-### No Painel:
-1. Verificar que o consumo do tripulante foi resetado (deveria ser 0 MB ou próximo)
-2. Gerar novo script de Recovery e importar no MikroTik
-
-### No MikroTik:
-```routeros
-# Verificar ordem das regras de firewall
-/ip firewall filter print where comment~"NAVSPOT"
-# Deve mostrar: NAVSPOT-ALLOW-ACCEPT (accept) ANTES de NAVSPOT-ALLOW-MASTER (drop)
-
-# Verificar Walled Garden
-/ip hotspot walled-garden print where comment~"navspot-allow"
-# Deve mostrar os domínios das whitelists
-
-# Verificar address-list
-/ip firewall address-list print where list=NAVSPOT-ALLOWED
-
-# Testar acesso
-/tool fetch url="https://g1.globo.com" output=none
-```
+Após a implementação:
+1. O modal de script mostrará **"Script MikroTik v6.9.21"**
+2. O Recovery baixado terá as correções de whitelist
+3. Sites como uol.com.br, r7.com.br funcionarão com o modo "bloquear_tudo"
+4. As regras de firewall serão criadas na ordem correta (ACCEPT antes de DROP)
 
 ---
 
-## Versão
+## Testes Após Implementação
 
-Atualizar versão para `v6.9.21` em todos os scripts e logs afetados.
+1. Gerar novo script de bootstrap - verificar título v6.9.21
+2. Baixar Recovery e importar no MikroTik
+3. Verificar logs: `/log print where message~"v6.9.21"`
+4. Testar acesso a sites whitelisted
