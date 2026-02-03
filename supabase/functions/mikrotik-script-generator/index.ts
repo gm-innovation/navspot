@@ -5,6 +5,9 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+const VERSION = "6.9.25"
+const DEPLOYED_AT = "2026-02-03T17:00:00.000Z"
+
 interface Hotspot {
   id: string
   nome: string
@@ -50,7 +53,7 @@ Deno.serve(async (req) => {
     const { data: claims, error: claimsError } = await supabase.auth.getClaims(token)
     
     if (claimsError || !claims?.claims) {
-      console.error('[script-generator] Invalid JWT:', claimsError)
+      console.error(`[script-generator ${VERSION}] Invalid JWT:`, claimsError)
       return new Response(
         JSON.stringify({ success: false, error: 'Invalid token' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -67,7 +70,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.9.24 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator ${VERSION}] Generating bootstrap script for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -80,7 +83,7 @@ Deno.serve(async (req) => {
       .single()
 
     if (hotspotError || !hotspot) {
-      console.error('[script-generator] Hotspot not found:', hotspotError)
+      console.error(`[script-generator ${VERSION}] Hotspot not found:`, hotspotError)
       return new Response(
         JSON.stringify({ success: false, error: 'Hotspot not found' }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -89,7 +92,7 @@ Deno.serve(async (req) => {
 
     const embarcacao = hotspot.embarcacoes as unknown as Embarcacao
 
-    // Generate v6.9.21 single bootstrap script (no finalize needed)
+    // Generate v6.9.25 single bootstrap script (no finalize needed)
     const bootstrapScript = generateBootstrapScript(
       hotspot as unknown as Hotspot,
       embarcacao,
@@ -109,7 +112,7 @@ Deno.serve(async (req) => {
       .eq('id', hotspot_id)
 
     if (updateError) {
-      console.error('[script-generator] Failed to save script:', updateError)
+      console.error(`[script-generator ${VERSION}] Failed to save script:`, updateError)
     }
 
     // v6.9.21: Sanity checks - now using set-or-add pattern with token fallback
@@ -129,7 +132,7 @@ Deno.serve(async (req) => {
 
     if (bootstrapScript.includes('/ip hotspot user profile set') && 
         bootstrapScript.includes('limit-bytes-total')) {
-      console.error('[script-generator] ERRO: Gerou limit-bytes-total em /ip hotspot user profile. Deve ser em /ip hotspot user.')
+      console.error(`[script-generator ${VERSION}] ERRO: Gerou limit-bytes-total em /ip hotspot user profile. Deve ser em /ip hotspot user.`)
     }
 
     if (bootstrapScript.includes('source="')) {
@@ -137,7 +140,7 @@ Deno.serve(async (req) => {
     }
 
     if (bootstrapScript.includes(':do {/')) {
-      console.error('[script-generator] ERRO: Gerou ":do {/". Corrigir para ":do { /".')
+      console.error(`[script-generator ${VERSION}] ERRO: Gerou ":do {/". Corrigir para ":do { /".`)
     }
 
     // v6.9.3: Verificar políticas inválidas
@@ -148,17 +151,17 @@ Deno.serve(async (req) => {
     // v6.9.3: Verificar scheduler com comando completo
     if (bootstrapScript.includes('on-event="navspot-sync"') && 
         !bootstrapScript.includes('on-event="/system script run navspot-sync"')) {
-      console.warn('[script-generator] AVISO: scheduler deve usar comando completo em on-event')
+      console.warn(`[script-generator ${VERSION}] AVISO: scheduler deve usar comando completo em on-event`)
     }
 
     // v6.9.4: action=deny é VÁLIDO para /ip hotspot walled-garden (hostnames)
     // action=reject é VÁLIDO para /ip hotspot walled-garden ip (IPs)
     // Verificar apenas que não há mistura incorreta
     if (bootstrapScript.includes('walled-garden ip') && bootstrapScript.includes('walled-garden ip add') && bootstrapScript.match(/walled-garden ip add[^;]*action=deny/)) {
-      console.warn('[script-generator] AVISO: action=deny no menu ip pode estar incorreto. Use action=reject para IPs.')
+      console.warn(`[script-generator ${VERSION}] AVISO: action=deny no menu ip pode estar incorreto. Use action=reject para IPs.`)
     }
     if (bootstrapScript.match(/walled-garden add[^i][^;]*action=reject/) && !bootstrapScript.match(/walled-garden ip add/)) {
-      console.warn('[script-generator] AVISO: action=reject no menu de hostnames pode estar incorreto. Use action=deny.')
+      console.warn(`[script-generator ${VERSION}] AVISO: action=reject no menu de hostnames pode estar incorreto. Use action=deny.`)
     }
 
     // v6.8: Sanitização - garantir apenas LF (sem CRLF) e converter tabs
@@ -176,7 +179,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.9.24 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator ${VERSION}] Bootstrap script generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -186,7 +189,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.9.24'
+        version: VERSION
       }),
       { 
         status: 200, 
@@ -195,7 +198,7 @@ Deno.serve(async (req) => {
     )
 
   } catch (error) {
-    console.error('[script-generator] Unexpected error:', error)
+    console.error(`[script-generator ${VERSION}] Unexpected error:`, error)
     return new Response(
       JSON.stringify({ 
         success: false, 
@@ -243,7 +246,7 @@ function generateBootstrapScript(
 :delay 500ms`
   }).join('\n\n')
 
-  // v6.9.21: Script sync com JSON usando hex \22 para aspas + header Content-Type + registered_users + registered_profiles + TOKEN FALLBACK EMBUTIDO
+  // v6.9.25: Script sync com JSON usando hex \22 para aspas + TOKEN FALLBACK EMBUTIDO
   const syncScriptSource = `:local token ""
 :do { :set token [/file get "navspot-token.txt" contents] } on-error={}
 :if ([:len $token] < 10) do={
@@ -303,7 +306,8 @@ function generateBootstrapScript(
 } on-error={:log warning "NAVSPOT-SYNC: Falha"}
 :log info "NAVSPOT-SYNC: OK"`
 
-  // v6.9.24: Action Processor with hotspot=auth scoped whitelist rules
+  // v6.9.25: Action Processor with RouterOS 6.x /import compatible syntax
+  // CRITICAL: No more [/ip firewall filter ...] patterns - use menu-context approach
   const actionProcessorSource = `:global navspotActions
 :global navspotLock
 :if ($navspotLock = "1") do={
@@ -317,7 +321,7 @@ function generateBootstrapScript(
 :log info "NAVSPOT: Sem acoes pendentes"
 :return
 }
-:log info ("NAVSPOT-ACTION v6.9.24: Iniciando - " . $rawData)
+:log info ("NAVSPOT-ACTION v${VERSION}: Iniciando - " . $rawData)
 :local pos 0
 :do {
 :while ([:find $rawData ";" $pos] >= 0) do={
@@ -458,76 +462,67 @@ function generateBootstrapScript(
 :if ($cmd = "add_firewall_block") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# v6.9.21: Ensure master drop rule exists before fasttrack
-:if ([:len [/ip firewall filter find comment="NAVSPOT-BLOCK-MASTER"]] = 0) do={
-:local ftPos [/ip firewall filter find where action=fasttrack-connection]
+# v6.9.25: Menu-context approach for RouterOS 6.x /import compatibility
+/ip firewall filter
+:if ([:len [find comment="NAVSPOT-BLOCK-MASTER"]] = 0) do={
+:local ftPos [find action=fasttrack-connection]
 :if ([:len $ftPos] = 0) do={:set ftPos 0}
-/ip firewall filter add chain=forward action=drop dst-address-list=NAVSPOT-BLACKLIST comment="NAVSPOT-BLOCK-MASTER" place-before=$ftPos
-:log info "NAVSPOT: Master firewall rule created (v6.9.21)"
+add chain=forward action=drop dst-address-list=NAVSPOT-BLACKLIST comment="NAVSPOT-BLOCK-MASTER" place-before=$ftPos
+:log info "NAVSPOT: Master firewall rule created (v${VERSION})"
 }
-# v6.9.21: Resolve domain to IP and add to address-list (more robust than content match)
+# Resolve domain and add to address-list
 :do {
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
-:if ([:len [/ip firewall address-list find list="NAVSPOT-BLACKLIST" address=$resolvedIp]] = 0) do={
-/ip firewall address-list add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=none comment=("navspot-" . $domain)
+/ip firewall address-list
+:if ([:len [find list="NAVSPOT-BLACKLIST" address=$resolvedIp]] = 0) do={
+add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=none comment=("navspot-" . $domain)
 :log info ("NAVSPOT: Firewall block - " . $domain . " -> " . $resolvedIp)
-} else={
-:log info ("NAVSPOT: IP already in blacklist - " . $resolvedIp)
 }
 }
 } on-error={
-:log warning ("NAVSPOT: Failed to resolve " . $domain . " - using content match fallback")
-# Fallback to content match if DNS fails
-:if ([:len [/ip firewall filter find comment=("NAVSPOT-BLOCK-" . $domain)]] = 0) do={
-:local ftPos [/ip firewall filter find where action=fasttrack-connection]
-:if ([:len $ftPos] = 0) do={:set ftPos 0}
-/ip firewall filter add chain=forward action=drop protocol=tcp dst-port=80,443 content=$domain comment=("NAVSPOT-BLOCK-" . $domain) place-before=$ftPos
+:log warning ("NAVSPOT: Failed to resolve " . $domain)
 }
 }
 }
-}
-# v6.9.23: add_firewall_allow - Whitelist for "bloquear_tudo" mode (SCOPED to hotspot=auth)
+# v6.9.25: add_firewall_allow - Menu-context approach for RouterOS 6.x compatibility
 :if ($cmd = "add_firewall_allow") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# v6.9.23: Ensure master rules exist ONLY for authenticated hotspot users
-# v6.9.23: FIX - Remove old unscoped rules that block pre-login traffic
-:local oldMaster [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
+# v6.9.25: Use menu-context approach - enter /ip firewall filter first
+/ip firewall filter
+:local oldMaster [find comment="NAVSPOT-ALLOW-MASTER"]
 :if ([:len $oldMaster] > 0) do={
-# v6.9.24: RouterOS 6.x compatible check (no -> operator)
 :local oldHotspot ""
-:do { :set oldHotspot [/ip firewall filter get $oldMaster hotspot] } on-error={ :set oldHotspot "" }
+:do { :set oldHotspot [get $oldMaster hotspot] } on-error={ :set oldHotspot "" }
 :if ($oldHotspot != "auth") do={
 :log warning "NAVSPOT: Removendo regra ALLOW-MASTER antiga (sem escopo hotspot=auth)"
-/ip firewall filter remove $oldMaster
-:do { /ip firewall filter remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
+remove $oldMaster
+:do { remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
 }
 }
-# v6.9.23: Create scoped rules if they don't exist
-:if ([:len [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]] = 0) do={
-:local ftPos [/ip firewall filter find where action=fasttrack-connection]
+# Create scoped rules if they don't exist
+:if ([:len [find comment="NAVSPOT-ALLOW-MASTER"]] = 0) do={
+:local ftPos [find action=fasttrack-connection]
 :if ([:len $ftPos] = 0) do={:set ftPos 0}
-# v6.9.23: DROP only for AUTHENTICATED hotspot users (pre-login traffic passes through)
-/ip firewall filter add chain=forward action=drop hotspot=auth comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
-:log info "NAVSPOT: Allow master drop rule created (v6.9.23 - hotspot=auth scoped)"
-# ACCEPT rule for allowed destinations - also scoped to auth users
-:local dropPos [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
-/ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED hotspot=auth comment="NAVSPOT-ALLOW-ACCEPT" place-before=$dropPos
-:log info "NAVSPOT: Allow accept rule created BEFORE drop (v6.9.23)"
+add chain=forward action=drop hotspot=auth comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
+:log info "NAVSPOT: Allow master drop rule created (v${VERSION} - hotspot=auth scoped)"
+:local dropPos [find comment="NAVSPOT-ALLOW-MASTER"]
+add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED hotspot=auth comment="NAVSPOT-ALLOW-ACCEPT" place-before=$dropPos
+:log info "NAVSPOT: Allow accept rule created BEFORE drop (v${VERSION})"
 }
-# v6.9.21: DUAL APPROACH - Walled Garden (robust for hostnames) + Address-List (backup)
-# 1. Add to Walled Garden with action=allow (works pre-login and with CDNs)
+# Walled Garden (robust for hostnames)
 :if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
 /ip hotspot walled-garden add dst-host=$domain action=allow comment=("navspot-allow-" . $domain)
 :log info ("NAVSPOT: Walled Garden allow - " . $domain)
 }
-# 2. Try DNS resolution for address-list (backup for post-login firewall)
+# Try DNS resolution for address-list
 :do {
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
-:if ([:len [/ip firewall address-list find list="NAVSPOT-ALLOWED" address=$resolvedIp]] = 0) do={
-/ip firewall address-list add list="NAVSPOT-ALLOWED" address=$resolvedIp timeout=none comment=("navspot-allow-" . $domain)
+/ip firewall address-list
+:if ([:len [find list="NAVSPOT-ALLOWED" address=$resolvedIp]] = 0) do={
+add list="NAVSPOT-ALLOWED" address=$resolvedIp timeout=none comment=("navspot-allow-" . $domain)
 :log info ("NAVSPOT: Firewall allow - " . $domain . " -> " . $resolvedIp)
 }
 }
@@ -556,7 +551,7 @@ function generateBootstrapScript(
 }
 :set navspotActions ""
 :set navspotLock "0"
-:log info "NAVSPOT-ACTION v6.9.24: Processamento concluido"`
+:log info "NAVSPOT-ACTION v${VERSION}: Processamento concluido"`
 
   // Configuração WAN com remoção prévia do DHCP client existente
   const wanConfig = wanType === 'dhcp' 
@@ -568,8 +563,8 @@ function generateBootstrapScript(
   // v6.9.21: Recovery URL for guardian
   const recoveryUrl = `${supabaseUrl}/functions/v1/mikrotik-recovery-download`
 
-  // v6.9.21: Guardian script source - self-healing mechanism with version check + token fallback verification
-  const guardianScriptSource = `:log info "NAVSPOT-GUARDIAN v6.9.21: Verificando integridade..."
+  // v6.9.25: Guardian script source - self-healing mechanism with version check + token fallback verification
+  const guardianScriptSource = `:log info "NAVSPOT-GUARDIAN v${VERSION}: Verificando integridade..."
 :local needsRepair 0
 :local missing ""
 # Verificar scripts essenciais
@@ -638,15 +633,13 @@ function generateBootstrapScript(
 }
 }
 } else={
-:log info "NAVSPOT-GUARDIAN: Sistema integro v6.9.24"
+:log info "NAVSPOT-GUARDIAN: Sistema integro v${VERSION}"
 }`
 
-  const deployedAt = new Date().toISOString()
-  
-  // Bootstrap script v6.9.24 - Safe Update + Guardian + Netwatch + Startup Resilience + Token Fallback + RouterOS 6.x compatible syntax
-  return `# NAVSPOT Bootstrap Script v6.9.24
-# _build: 6.9.24 | deployed_at=${deployedAt}
-:log info "NAVSPOT v6.9.24: Iniciando instalacao..."
+  // Bootstrap script v6.9.25 - RouterOS 6.x /import compatible syntax
+  return `# NAVSPOT Bootstrap Script v${VERSION}
+# _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
+:log info "NAVSPOT v${VERSION}: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -679,7 +672,7 @@ function generateBootstrapScript(
 :do { /ip dhcp-client remove [find comment="navspot-wan"] } on-error={}
 :do { /tool netwatch remove [find comment="navspot-netwatch"] } on-error={}
 :delay 2s
-:log info "NAVSPOT: Limpeza concluida (scripts preservados) v6.9.24"
+:log info "NAVSPOT: Limpeza concluida (scripts preservados) v${VERSION}"
 
 # 2. CONFIGURAR WAN (antes de criar bridge)
 ${wanConfig}
@@ -738,7 +731,7 @@ ${wanConfig}
 # login-url com variaveis escaped para substituicao em runtime
 /ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m login-url="https://navspot.lovable.app/hotspot-login?h=${hotspot.id}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
-:log info "NAVSPOT: Hotspot v6.9.13 com portal externo ativo"
+:log info "NAVSPOT: Hotspot v${VERSION} com portal externo ativo"
 
 # 8. WALLED GARDEN v6.9.13 (Portal + APIs + Captive Portal Detection)
 # Portal NAVSPOT
@@ -765,7 +758,7 @@ ${wanConfig}
 /ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
 /ip hotspot walled-garden ip add dst-port=123 protocol=udp action=accept comment="navspot-ntp"
 /ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
-:log info "NAVSPOT: Walled Garden v6.9.13 configurado (Portal + CPD)"
+:log info "NAVSPOT: Walled Garden v${VERSION} configurado (Portal + CPD)"
 
 # 9. TOKEN (metodo robusto RouterOS 6.x e 7.x - usa print+set como padrao)
 :do { /file remove "navspot-token.txt" } on-error={}
@@ -777,7 +770,7 @@ ${wanConfig}
 :log info "NAVSPOT: Token criado (metodo universal RouterOS 6.x/7.x)"
 :delay 500ms
 
-# 10. GUARDIAN SCRIPT v6.9.21 (criado PRIMEIRO para auto-recuperacao + token fallback)
+# 10. GUARDIAN SCRIPT v6.9.25 (criado PRIMEIRO para auto-recuperacao + token fallback)
 :local guardianExists [/system script find name="navspot-guardian"]
 :if ([:len $guardianExists] > 0) do={
 :log info "NAVSPOT: Atualizando guardian..."
@@ -791,16 +784,16 @@ ${guardianScriptSource}
 }
 }
 
-# Guardian scheduler (startup + a cada 10 min) v6.9.21: delay para aguardar rede
+# Guardian scheduler (startup + a cada 10 min) v6.9.25: delay para aguardar rede
 :local guardianSchedExists [/system scheduler find name="navspot-guardian-scheduler"]
 :if ([:len $guardianSchedExists] > 0) do={
 /system scheduler set $guardianSchedExists interval=10m on-event=":delay 20s; :do { /system script run navspot-guardian } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
 /system scheduler add name="navspot-guardian-scheduler" interval=10m on-event=":delay 20s; :do { /system script run navspot-guardian } on-error={}" start-time=startup start-date=jan/01/1970
 }
-:log info "NAVSPOT: Guardian v6.9.24 ativo (startup delay + token fallback + version check)"
+:log info "NAVSPOT: Guardian v${VERSION} ativo (startup delay + token fallback + version check)"
 
-# 11. ACTION PROCESSOR v6.9.21 - set-or-add pattern (nunca remove antes)
+# 11. ACTION PROCESSOR v6.9.25 - set-or-add pattern (nunca remove antes)
 :local apExists [/system script find name="navspot-action-processor"]
 :if ([:len $apExists] > 0) do={
 :log info "NAVSPOT: Atualizando action-processor..."
@@ -815,7 +808,7 @@ ${actionProcessorSource}
 }
 :delay 100ms
 
-# 12. SYNC SCRIPT v6.9.21 - set-or-add pattern com TOKEN FALLBACK EMBUTIDO
+# 12. SYNC SCRIPT v6.9.25 - set-or-add pattern com TOKEN FALLBACK EMBUTIDO
 :local syncExists [/system script find name="navspot-sync"]
 :if ([:len $syncExists] > 0) do={
 :log info "NAVSPOT: Atualizando sync (token fallback embutido)..."
@@ -830,38 +823,45 @@ ${syncScriptSource}
 }
 :delay 100ms
 
-# Scheduler - set-or-add pattern v6.9.21: delay para aguardar rede + start-date fixo
+# Scheduler - set-or-add pattern v6.9.25: delay para aguardar rede + start-date fixo
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
 /system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
 }
-:log info "NAVSPOT: Sync v6.9.24 + Action Processor configurados (startup delay + token fallback)"
+:log info "NAVSPOT: Sync scheduler v${VERSION} configurado (startup delay 30s)"
 
 # 13. NETWATCH v6.9.21 - Dispara sync quando internet volta
 :if ([:len [/tool netwatch find comment="navspot-netwatch"]] = 0) do={
 /tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script=":delay 5s; :do { /system script run navspot-sync } on-error={}" comment="navspot-netwatch"
-:log info "NAVSPOT: Netwatch configurado para auto-sync quando internet volta"
+:log info "NAVSPOT: Netwatch configurado para auto-sync"
 }
 
-# 14. MIGRACAO DE PORTAS LAN (ether3, 4, 5 - ether2 permanece como gerencia)
+# 14. MIGRAR PORTAS LAN COM DELAYS (evitar perda de conexao)
 :log info "NAVSPOT: Migrando portas LAN para bridge1..."
 
 ${migrationCommands}
 
-# 15. FINALIZACAO
+:log info "NAVSPOT: Portas LAN migradas"
+
+# 15. SYNC INICIAL SUAVE (sem bloquear instalacao)
+:log info "NAVSPOT: Agendando sync inicial em 45 segundos..."
+:delay 200ms
+/system scheduler add name="navspot-first-sync" on-event=":do { /system script run navspot-sync } on-error={}; /system scheduler remove navspot-first-sync" start-time=startup interval=45s
+
 :log info "=========================================="
-:log info "NAVSPOT v6.9.24: INSTALACAO CONCLUIDA!"
-:log info "Portas LAN (ether3-5) ativas no Hotspot"
-:log info "Porta de gerencia (ether2) configurada para Winbox"
-:log info "Sync rodando a cada ${syncIntervalMinutes} minuto(s)"
-:log info "Token fallback embutido no sync e guardian"
-:log info "Startup resilience: delay 30s + start-date fixo"
-:log info "Netwatch: auto-sync quando internet volta"
-:log info "Guardian ativo - auto-recuperacao + version check"
-:log info "Address-List blocking para HTTPS/apps"
-:log info "RouterOS 6.x syntax compatible (v6.9.24)"
+:log info "NAVSPOT v${VERSION}: INSTALACAO CONCLUIDA!"
+:log info "FIX v6.9.25: RouterOS 6.x /import compatible syntax"
+:log info "FIX: Removed all [/ip firewall filter ...] patterns"
+:log info "Hotspot: ${hotspot.nome}"
+:log info "Rede: ${networkCidr}"
+:log info "WAN: ${wanInterface} (${wanType})"
+:log info "Gerencia: ether2 (Winbox/MNDP)"
+:log info "Guardian: ativo (auto-recovery)"
+:log info "Sync: a cada ${syncIntervalMinutes}m + startup + netwatch"
+:log info "Token fallback: embutido no sync e guardian"
+:log info "Walled Garden: Portal + APIs + CDNs + CPD"
 :log info "=========================================="
 `
 }
