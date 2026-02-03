@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "6.9.30"
+const VERSION = "6.9.31"
 const DEPLOYED_AT = new Date().toISOString()
 
 interface Hotspot {
@@ -43,6 +43,8 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /comment~"/, desc: 'comment~ (must use comment= for exact match)' },
     // *.apple.com wildcard breaks RouterOS 6.x parser during /import
     { regex: /dst-host="\*\.apple\.com"/, desc: '*.apple.com (breaks RouterOS 6.x parser during /import)' },
+    // v6.9.31: Block *.supabase.* wildcards - they break RouterOS 6.x parser inside [find ...]
+    { regex: /dst-host="\*\.supabase\.(co|in)"/, desc: '*.supabase.* wildcard (breaks RouterOS 6.x parser - use explicit hostname)' },
     // v6.9.30: Only detect MikroTik variables INSIDE strings (those break /import)
     // Local script variables like $hsprof outside strings are fine and SHOULD NOT be escaped
     { regex: /login-url="\$[a-zA-Z]/, desc: 'login-url="$var... (MikroTik variable in string breaks /import - use escaped \\$)' },
@@ -255,6 +257,8 @@ function generateBootstrapScript(
   supabaseUrl: string
 ): string {
   const syncUrl = `${supabaseUrl}/functions/v1/mikrotik-sync`
+  // v6.9.31: Extract explicit backend hostname (avoids *.supabase.* wildcards that break RouterOS parser)
+  const backendHost = new URL(supabaseUrl).hostname
   const networkParts = hotspot.rede.split('/')
   const networkBase = networkParts[0].replace(/\.\d+$/, '')
   const gateway = `${networkBase}.1`
@@ -741,9 +745,8 @@ ${wanConfig}
 # Portal NAVSPOT
 /ip hotspot walled-garden add dst-host="navspot.lovable.app" action=allow comment="navspot-portal"
 /ip hotspot walled-garden add dst-host="*.lovable.app" action=allow comment="navspot-portal"
-# Backend Supabase
-/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-api"
-/ip hotspot walled-garden add dst-host="*.supabase.in" action=allow comment="navspot-api"
+# Backend (explicit host - v6.9.31: avoids *.supabase.* wildcard parser issues)
+/ip hotspot walled-garden add dst-host="${backendHost}" action=allow comment="navspot-api"
 # CDNs para logos
 /ip hotspot walled-garden add dst-host="*.cloudfront.net" action=allow comment="navspot-cdn"
 /ip hotspot walled-garden add dst-host="*.amazonaws.com" action=allow comment="navspot-cdn"
@@ -768,10 +771,10 @@ ${wanConfig}
 :do { /file remove "navspot-token.txt" } on-error={}
 :delay 500ms
 :local tokenValue "${hotspot.sync_token}"
-/file print file=navspot-token where name="__never__"
+/file print file=navspot-token.txt where name="__never__"
 :delay 1s
-/file set [find name~"navspot-token"] contents=$tokenValue
-:log info "NAVSPOT: Token criado (metodo universal RouterOS 6.x/7.x)"
+/file set [find where name="navspot-token.txt"] contents=$tokenValue
+:log info "NAVSPOT: Token criado (navspot-token.txt)"
 :delay 500ms
 
 # 10. GUARDIAN SCRIPT v6.9.27 (usando variavel local para evitar [:len [...]] aninhado)
@@ -855,13 +858,16 @@ ${migrationCommands}
 
 :log info "=========================================="
 :log info "NAVSPOT v${VERSION}: INSTALACAO CONCLUIDA!"
-:log info "FIX v6.9.29: Escaped variables for /import compatibility"
+:log info "FIX v6.9.31: Replaced *.supabase.* wildcards with explicit host"
+:log info "FIX v6.9.31: Token file uses explicit .txt extension"
+:log info "FIX v6.9.30: Local vars unescaped, runtime vars escaped"
 :log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"
 :log info "FIX: Whitelist/blacklist use direct commands only"
 :log info "FIX: Firewall rules use remove+add with place-before=0"
 :log info "Rede: ${networkCidr} | Gateway: ${gateway}"
 :log info "WAN: ${wanInterface} (${wanType})"
 :log info "Hotspot: hs-navspot | Profile: hsprof-navspot"
+:log info "API: ${backendHost}"
 :log info "Sync: a cada ${syncIntervalMinutes}m | Guardian: a cada 10m"
 :log info "Gerencia: ether2 (Winbox/MNDP via mgmt list)"
 :log info "Token fallback: embutido no sync + guardian"

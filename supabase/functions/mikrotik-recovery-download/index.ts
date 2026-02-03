@@ -6,14 +6,16 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-recovery-download v6.9.30
+ * mikrotik-recovery-download v6.9.31
  * 
  * Minimal recovery endpoint for MikroTik self-healing.
  * Returns a .rsc script that recreates scripts/schedulers and verifies hotspot profile login-url.
  * 
- * v6.9.30: CRITICAL FIX - Local script variables ($hsprof) must NOT be escaped
- *          Only runtime variables like $(mac) inside strings need escaping (\$(mac))
- *          Removed incorrect linter rule that forced escaping local variables
+ * v6.9.31: CRITICAL FIX - Replaced *.supabase.co/in wildcards with explicit backend hostname
+ *          Wildcard patterns in walled-garden [find dst-host="*.supabase.co"] break RouterOS 6.x parser
+ *          Now uses removal by comment ("navspot-api") and explicit host from SUPABASE_URL
+ *          Token file now uses explicit .txt extension throughout
+ * v6.9.30: Fixed local variable escaping ($hsprof not escaped, \$(mac) escaped)
  * v6.9.29: (broken) Over-escaped local variables causing parser errors
  * v6.9.28: Removed *.apple.com wildcard (breaks RouterOS 6.x /import)
  * v6.9.27: Eliminated ALL [:len [/... find ...]] patterns
@@ -29,7 +31,7 @@ const corsHeaders = {
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.30"
+const VERSION = "6.9.31"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -45,6 +47,8 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /:if \(\[:len \[\//, desc: '[:len [/... (nested brackets in conditional)' },
     { regex: /comment~"/, desc: 'comment~ (must use comment= for exact match)' },
     { regex: /dst-host="\*\.apple\.com"/, desc: '*.apple.com (breaks RouterOS 6.x parser during /import)' },
+    // v6.9.31: Block *.supabase.* wildcards - they break RouterOS 6.x parser inside [find ...]
+    { regex: /dst-host="\*\.supabase\.(co|in)"/, desc: '*.supabase.* wildcard (breaks RouterOS 6.x parser - use explicit hostname)' },
     // v6.9.30: Only detect MikroTik variables INSIDE strings (those break /import)
     // Local script variables like $hsprof outside strings are fine and SHOULD NOT be escaped
     { regex: /login-url="\$[a-zA-Z]/, desc: 'login-url="$var... (MikroTik variable in string breaks /import - use escaped \\$)' },
@@ -262,12 +266,14 @@ Deno.serve(async (req) => {
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
     const syncUrl = `${supabaseUrl}/functions/v1/mikrotik-sync`
+    // v6.9.31: Extract explicit backend hostname (avoids *.supabase.* wildcards that break RouterOS parser)
+    const backendHost = new URL(supabaseUrl).hostname
     const syncIntervalMinutes = hotspot!.sync_interval_minutes || 5
 
     console.log(`[mikrotik-recovery-download ${VERSION}] Generating recovery for: ${hotspot!.nome}`)
 
-    // v6.9.27: Recovery script with remove+add pattern - no nested brackets
-    const recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes, syncToken, hotspot!.id)
+    // v6.9.31: Recovery script with explicit backend host - no *.supabase.* wildcards
+    const recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes, syncToken, hotspot!.id, backendHost)
 
     // Validate script before returning
     validateRouterOSScript(recoveryScript, 'mikrotik-recovery-download')
@@ -293,7 +299,7 @@ Deno.serve(async (req) => {
   }
 })
 
-function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, syncToken: string, hotspotId: string): string {
+function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, syncToken: string, hotspotId: string, backendHost: string): string {
   // External portal login URL with escaped variables for runtime expansion
   const loginUrl = `https://navspot.lovable.app/hotspot-login?h=${hotspotId}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)`
   
@@ -574,14 +580,14 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 # It does NOT touch network config (bridge, DHCP, NAT, hotspot)
 :log info "NAVSPOT-RECOVERY v${VERSION}: Iniciando reparacao..."
 
-# 0. RECRIAR TOKEN (metodo RouterOS 6.x compativel)
+# 0. RECRIAR TOKEN (metodo RouterOS 6.x compativel - explicit .txt extension)
 :log info "NAVSPOT-RECOVERY v${VERSION}: Recriando token..."
 :do { /file remove "navspot-token.txt" } on-error={}
 :delay 500ms
-/file print file=navspot-token where name="__never__"
+/file print file=navspot-token.txt where name="__never__"
 :delay 1s
-/file set [find name~"navspot-token"] contents="${syncToken}"
-:log info "NAVSPOT-RECOVERY: Token recriado"
+/file set [find where name="navspot-token.txt"] contents="${syncToken}"
+:log info "NAVSPOT-RECOVERY: Token recriado (navspot-token.txt)"
 
 # 1. ACTION PROCESSOR - set-or-add pattern
 :local apExists [/system script find name="navspot-action-processor"]
@@ -637,11 +643,9 @@ ${syncScriptSource}
 :do { /ip hotspot walled-garden remove [find dst-host="*.lovable.app"] } on-error={}
 /ip hotspot walled-garden add dst-host="*.lovable.app" action=allow comment="navspot-portal"
 
-# Backend Supabase
-:do { /ip hotspot walled-garden remove [find dst-host="*.supabase.co"] } on-error={}
-/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-api"
-:do { /ip hotspot walled-garden remove [find dst-host="*.supabase.in"] } on-error={}
-/ip hotspot walled-garden add dst-host="*.supabase.in" action=allow comment="navspot-api"
+# Backend (explicit host - v6.9.31: avoids *.supabase.* wildcard parser issues)
+:do { /ip hotspot walled-garden remove [find where comment="navspot-api"] } on-error={}
+/ip hotspot walled-garden add dst-host="${backendHost}" action=allow comment="navspot-api"
 
 # CDNs para logos e assets
 :do { /ip hotspot walled-garden remove [find dst-host="*.cloudfront.net"] } on-error={}
@@ -695,6 +699,8 @@ ${syncScriptSource}
 
 :log info "=========================================="
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
+:log info "FIX v6.9.31: Replaced *.supabase.* wildcards with explicit host"
+:log info "FIX v6.9.31: Token file uses explicit .txt extension"
 :log info "FIX v6.9.30: Local vars unescaped, runtime vars escaped"
 :log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"
 :log info "FIX: Uses idempotent remove+add pattern for Walled Garden"
@@ -703,7 +709,7 @@ ${syncScriptSource}
 :log info "Scripts: sync + action-processor v${VERSION} atualizados"
 :log info "Scheduler: sync a cada ${syncIntervalMinutes}m com startup delay"
 :log info "Netwatch: auto-sync quando internet volta"
-:log info "Walled Garden: portal + API + CPD + DNS/ICMP configurados"
+:log info "Walled Garden: portal + API (${backendHost}) + CPD + DNS/ICMP"
 :log info "NOTE: Old firewall rules will be fixed on next sync (hotspot=auth)"
 :log info "=========================================="
 `
