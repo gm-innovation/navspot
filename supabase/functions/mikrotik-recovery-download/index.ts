@@ -689,8 +689,7 @@ ${syncScriptSource}
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial configurado"
 
 # 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.32
-# Using direct set with find + on-error - avoids complex :if do={} blocks with inline escaped vars
-# The problem was: :if ([:len $x] > 0) do={ set ... login-url="...\\$(mac)..." } breaks RouterOS 6.x parser
+# Using direct set with find + on-error - avoids :if do={} blocks with escaped vars
 :log info "NAVSPOT-RECOVERY: Configurando hotspot profile login-url..."
 :do { /ip hotspot profile set [find name="hsprof-navspot"] login-url="${loginUrl}" } on-error={
 :log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
