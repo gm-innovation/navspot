@@ -1,125 +1,138 @@
 
 
-# Plano: Corrigir Portal Captivo - Adicionar Walled Garden Essencial ao Recovery
+## Objetivo
+Restaurar a abertura automática do portal cativo no Android (sem ficar preso no aviso “sem acesso à internet”) e eliminar o “timeout antes do redirecionamento” no login, garantindo que:
+1) o cliente consiga **carregar o portal externo** antes de autenticar; e  
+2) o modo **bloquear_tudo (whitelist)** não derrube o tráfego pré-login.
 
-## Diagnóstico
+---
 
-A página de autenticação do portal não aparece mais porque o **Walled Garden essencial** foi removido/corrompido. O script de **Recovery v6.9.21** atual **NÃO recria** as regras do Walled Garden que permitem acesso ao portal antes da autenticação.
+## O que está acontecendo (diagnóstico com base no código atual)
+Hoje o RouterOS pode estar ficando “sem saída” porque o nosso mecanismo de whitelist cria uma regra **global** de bloqueio no firewall:
 
-### Fluxo do Problema:
-1. Usuário conecta ao WiFi da embarcação
-2. MikroTik tenta redirecionar para `navspot.lovable.app/hotspot-login`
-3. **Walled Garden não permite** acesso a `navspot.lovable.app` (regra removida)
-4. Dispositivo interpreta como "sem internet" e mostra erro
+- No script do action-processor (v6.9.21), quando chega a ação `add_firewall_allow`, ele cria:
+  - `NAVSPOT-ALLOW-ACCEPT` (accept apenas para `dst-address-list=NAVSPOT-ALLOWED`)
+  - `NAVSPOT-ALLOW-MASTER` (**drop sem condição nenhuma**, chain=forward)
 
-### Logs Confirmam:
-- Sync funcionando normalmente (usuário logado aparece)
-- Hash de firewall calculado corretamente
-- **Nenhuma ação de Walled Garden sendo injetada** (só 3 ações de blacklist)
+Isso significa: **se a lista `NAVSPOT-ALLOWED` estiver vazia/incompleta (ou ainda não populada)**, o roteador passa a derrubar praticamente todo tráfego “forward” dos clientes — inclusive o tráfego necessário para o Android fazer o flow de captive portal e abrir a tela de autenticação. Resultado típico no Android: aparece “esta rede não tem acesso à internet” e o portal não abre.
 
-## Causa Raiz
+Esse efeito também explica o seu cenário de “abria e depois parou”: assim que o DROP master entrou (ou voltou a ficar ativo), a rede aparenta “morta” para os clientes.
 
-O Recovery atual (linhas 560-630 de `mikrotik-recovery-download/index.ts`) apenas recria:
-- Token
-- Action Processor
-- Sync Script
-- Scheduler
-- Netwatch
+---
 
-**NÃO recria:**
-- Walled Garden para portal (`navspot.lovable.app`, `*.lovable.app`)
-- Walled Garden para backend (`*.supabase.co`, `*.supabase.in`)
-- Walled Garden para CDNs (`*.cloudfront.net`, `*.amazonaws.com`)
-- Walled Garden para CPD (`*.gstatic.com`, `*.msftconnecttest.com`, `*.apple.com`)
-- Protocolos essenciais (DNS, DHCP, NTP, ICMP)
+## Evidências no repositório
+No `supabase/functions/mikrotik-recovery-download/index.ts`, dentro do action processor embutido, existe:
 
-## Solução Proposta
+- criação de `NAVSPOT-ALLOW-MASTER` com:
+  ```routeros
+  /ip firewall filter add chain=forward action=drop comment="NAVSPOT-ALLOW-MASTER" ...
+  ```
+  sem qualquer filtro (hotspot auth/unauth, interface, etc).
 
-Adicionar **Seção 5: WALLED GARDEN ESSENCIAL** ao script de Recovery que recria todas as regras necessárias para o portal funcionar.
+E no script generator (`supabase/functions/mikrotik-script-generator/index.ts`) o mesmo padrão é gerado.
 
-### Mudanças Técnicas
+---
 
-**Arquivo: `supabase/functions/mikrotik-recovery-download/index.ts`**
+## Estratégia de correção (mudança de arquitetura mínima e segura)
+### A. Corrigir o escopo do “DROP master” (whitelist) para não afetar pré-login
+Em vez de derrubar **tudo** no `chain=forward`, vamos garantir que as regras de whitelist (ACCEPT/DROP) se apliquem **somente ao tráfego de clientes autenticados no hotspot**.
 
-Adicionar antes da mensagem final de conclusão (antes da linha 622):
+Opções técnicas (vamos implementar a mais compatível com RouterOS 6/7):
 
+1) **Preferida**: mover o controle para as chains do Hotspot (ex.: `hs-auth`)  
+   - Isso faz com que o bloqueio whitelist não interfira no captive portal/redirect pré-login.
+2) Alternativa: manter em `chain=forward`, mas adicionar matcher do hotspot (ex.: `hotspot=auth`) e/ou limitar por interface LAN/WAN.
+
+Na implementação, vou:
+- Ajustar `NAVSPOT-ALLOW-ACCEPT` e `NAVSPOT-ALLOW-MASTER` para trabalharem **somente em tráfego auth** (hotspot), eliminando o “mata tudo” pré-login.
+- Adicionar “auto-heal”: se existir regra antiga `NAVSPOT-ALLOW-MASTER` sem escopo, o script corrige (set/remove+recreate) para a versão segura.
+
+### B. Completar o Walled Garden essencial no Recovery
+O bootstrap script (script-generator) já tem DNS UDP/TCP + ICMP no walled garden. O Recovery recém-atualizado adicionou DNS UDP, DHCP e NTP, mas ainda faltam itens que podem ajudar na robustez (ex.: DNS TCP e ICMP) em cenários reais.
+
+Vou padronizar o Recovery para ficar alinhado com o bootstrap:
+- adicionar DNS TCP 53
+- adicionar ICMP
+- manter cache-control no download (já existe)
+- padronizar “version string” para não gerar dúvida visual
+
+### C. Tirar a dúvida de versão (consistência)
+Atualmente o Recovery **contém** o log final “v6.9.22”, mas o cabeçalho e logs iniciais ainda dizem “v6.9.21”, e os logs do backend também registram “Generating recovery v6.9.21…”. Isso confunde.
+
+Vou:
+- atualizar os textos/logs do backend para refletirem a versão real
+- opcionalmente colocar a versão no nome do arquivo (ex.: `navspot-recovery-v6.9.23.rsc`) para ficar impossível baixar “o errado” sem perceber
+- (se fizer sentido) ajustar o modal do painel para exibir essa versão de forma clara
+
+---
+
+## Mudanças planejadas (arquivos)
+### 1) `supabase/functions/mikrotik-recovery-download/index.ts`
+- Bump de versão (ex.: v6.9.23)
+- Ajustar logs “Generating recovery…” e cabeçalhos para a versão correta
+- Recovery: completar walled garden IP com DNS TCP + ICMP
+- Principal: **corrigir a lógica do action processor** para:
+  - criar `NAVSPOT-ALLOW-*` com escopo de hotspot auth (ou chain correta)
+  - auto-corrigir regras antigas existentes (evitar que um roteador “quebrado” continue quebrado após importar)
+
+### 2) `supabase/functions/mikrotik-script-generator/index.ts`
+- Atualizar o action processor embutido com a mesma correção do item acima (para novas instalações/gerações de script)
+- Garantir consistência de versão/strings se exibidas ao usuário
+
+(Se necessário para clareza visual)
+### 3) `src/components/modals/ScriptModal.tsx` e/ou `src/hooks/useHotspots.ts`
+- Exibir versão do recovery no UI e/ou baixar com filename contendo a versão
+
+---
+
+## Plano de validação (passo a passo)
+### Validação rápida no MikroTik (confirmação da causa raiz)
+Antes (ou enquanto) implementamos, você consegue confirmar em 30s com um teste:
+
+1) No MikroTik, rode:
 ```routeros
-# 5. WALLED GARDEN ESSENCIAL v6.9.21 (recria se estiver faltando)
-# Portal NAVSPOT
-:if ([:len [/ip hotspot walled-garden find dst-host="navspot.lovable.app"]] = 0) do={
-/ip hotspot walled-garden add dst-host="navspot.lovable.app" action=allow comment="navspot-portal"
-:log info "NAVSPOT-RECOVERY: Walled Garden - navspot.lovable.app"
-}
-:if ([:len [/ip hotspot walled-garden find dst-host="*.lovable.app"]] = 0) do={
-/ip hotspot walled-garden add dst-host="*.lovable.app" action=allow comment="navspot-portal"
-}
-# Backend Supabase
-:if ([:len [/ip hotspot walled-garden find dst-host="*.supabase.co"]] = 0) do={
-/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-api"
-}
-:if ([:len [/ip hotspot walled-garden find dst-host="*.supabase.in"]] = 0) do={
-/ip hotspot walled-garden add dst-host="*.supabase.in" action=allow comment="navspot-api"
-}
-# CDNs para logos
-:if ([:len [/ip hotspot walled-garden find dst-host="*.cloudfront.net"]] = 0) do={
-/ip hotspot walled-garden add dst-host="*.cloudfront.net" action=allow comment="navspot-cdn"
-}
-:if ([:len [/ip hotspot walled-garden find dst-host="*.amazonaws.com"]] = 0) do={
-/ip hotspot walled-garden add dst-host="*.amazonaws.com" action=allow comment="navspot-cdn"
-}
-# Captive Portal Detection - Android
-:if ([:len [/ip hotspot walled-garden find dst-host="connectivitycheck.gstatic.com"]] = 0) do={
-/ip hotspot walled-garden add dst-host="connectivitycheck.gstatic.com" action=allow comment="navspot-cpd-android"
-}
-:if ([:len [/ip hotspot walled-garden find dst-host="*.gstatic.com"]] = 0) do={
-/ip hotspot walled-garden add dst-host="*.gstatic.com" action=allow comment="navspot-cpd-android"
-}
-# Captive Portal Detection - Windows
-:if ([:len [/ip hotspot walled-garden find dst-host="*.msftconnecttest.com"]] = 0) do={
-/ip hotspot walled-garden add dst-host="*.msftconnecttest.com" action=allow comment="navspot-cpd-windows"
-}
-:if ([:len [/ip hotspot walled-garden find dst-host="*.msftncsi.com"]] = 0) do={
-/ip hotspot walled-garden add dst-host="*.msftncsi.com" action=allow comment="navspot-cpd-windows"
-}
-# Captive Portal Detection - Apple
-:if ([:len [/ip hotspot walled-garden find dst-host="captive.apple.com"]] = 0) do={
-/ip hotspot walled-garden add dst-host="captive.apple.com" action=allow comment="navspot-cpd-apple"
-}
-:if ([:len [/ip hotspot walled-garden find dst-host="*.apple.com"]] = 0) do={
-/ip hotspot walled-garden add dst-host="*.apple.com" action=allow comment="navspot-cpd-apple"
-}
-# Protocolos essenciais
-:if ([:len [/ip hotspot walled-garden ip find dst-port=53 protocol=udp]] = 0) do={
-/ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
-}
-:if ([:len [/ip hotspot walled-garden ip find dst-port=67 protocol=udp]] = 0) do={
-/ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
-}
-:if ([:len [/ip hotspot walled-garden ip find dst-port=123 protocol=udp]] = 0) do={
-/ip hotspot walled-garden ip add dst-port=123 protocol=udp action=accept comment="navspot-ntp"
-}
-:log info "NAVSPOT-RECOVERY: Walled Garden essencial verificado/restaurado"
+/ip firewall filter print where comment~"NAVSPOT-ALLOW"
+```
+2) Se existir `NAVSPOT-ALLOW-MASTER`, **desabilite temporariamente** e teste conectar no Android:
+```routeros
+/ip firewall filter disable [find comment="NAVSPOT-ALLOW-MASTER"]
 ```
 
-## Arquivos a Modificar
+Se o portal voltar a abrir após isso, confirma 100% que o DROP master sem escopo é o vilão.
 
-| Arquivo | Mudança |
-|---------|---------|
-| `supabase/functions/mikrotik-recovery-download/index.ts` | Adicionar Seção 5 com Walled Garden essencial |
+### Depois da correção (quando implementado)
+1) Baixar o novo Recovery no painel (arquivo com versão no nome)
+2) Importar no MikroTik:
+```routeros
+/import navspot-recovery-v6.9.23.rsc
+```
+3) Validar no MikroTik:
+```routeros
+/ip firewall filter print where comment~"NAVSPOT-ALLOW"
+```
+Esperado: as regras de whitelist não podem ser “drop-all” genéricas; devem ter escopo de hotspot auth/chain correta.
 
-## Resultado Esperado
+4) Validar walled garden:
+```routeros
+/ip hotspot walled-garden print where comment~"navspot"
+/ip hotspot walled-garden ip print where comment~"navspot"
+```
+5) Teste end-to-end no Android:
+- conectar no Wi-Fi
+- portal abrir
+- login concluir sem timeout e redirecionar corretamente
 
-Após a implementação:
-1. O Recovery v6.9.22 recriará automaticamente as regras de Walled Garden faltantes
-2. O portal `navspot.lovable.app` ficará acessível antes do login
-3. O popup de Captive Portal aparecerá corretamente no Android/iOS/Windows
-4. A tela de login do hotspot funcionará normalmente
+---
 
-## Passos Após Implementação
+## Riscos e cuidados
+- Essa mudança mexe no “modo bloqueio total (whitelist)”. Vamos manter o comportamento pós-login igual (bloquear tudo exceto permitido), mas **sem matar o tráfego pré-login**.
+- Vamos restringir as alterações apenas às regras com comentários `NAVSPOT-*` para não tocar em firewall do cliente fora do escopo.
 
-1. Fazer deploy da Edge Function atualizada
-2. Baixar novo Recovery no painel
-3. Importar no MikroTik: `/import navspot-recovery.rsc`
-4. Verificar Walled Garden: `/ip hotspot walled-garden print`
-5. Testar conexão com dispositivo Android
+---
+
+## Resultado esperado
+- Android deixa de travar em “sem internet” sem abrir portal
+- Portal abre de forma consistente
+- Login deixa de “timeout antes do redirecionamento” porque o backend/portal volta a ser alcançável no pré-login
+- Whitelist continua funcionando pós-login, mas sem quebrar o captive portal
 
