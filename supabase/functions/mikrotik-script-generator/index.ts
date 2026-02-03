@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.9.21 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.9.23 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -176,7 +176,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.9.21 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.9.23 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -186,7 +186,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.9.21'
+        version: '6.9.23'
       }),
       { 
         status: 200, 
@@ -303,7 +303,7 @@ function generateBootstrapScript(
 } on-error={:log warning "NAVSPOT-SYNC: Falha"}
 :log info "NAVSPOT-SYNC: OK"`
 
-  // v6.8: Action Processor v2 - robusto com lock, auto-criação de perfil, validação e idempotência
+  // v6.9.23: Action Processor with hotspot=auth scoped whitelist rules
   const actionProcessorSource = `:global navspotActions
 :global navspotLock
 :if ($navspotLock = "1") do={
@@ -317,7 +317,7 @@ function generateBootstrapScript(
 :log info "NAVSPOT: Sem acoes pendentes"
 :return
 }
-:log info ("NAVSPOT-ACTION v6.9.21: Iniciando - " . $rawData)
+:log info ("NAVSPOT-ACTION v6.9.23: Iniciando - " . $rawData)
 :local pos 0
 :do {
 :while ([:find $rawData ";" $pos] >= 0) do={
@@ -487,21 +487,32 @@ function generateBootstrapScript(
 }
 }
 }
-# v6.9.21: add_firewall_allow - Whitelist for "bloquear_tudo" mode (FIXED ORDER + Walled Garden)
+# v6.9.23: add_firewall_allow - Whitelist for "bloquear_tudo" mode (SCOPED to hotspot=auth)
 :if ($cmd = "add_firewall_allow") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# v6.9.21: Ensure master rules exist with CORRECT ORDER (ACCEPT before DROP)
+# v6.9.23: Ensure master rules exist ONLY for authenticated hotspot users
+# v6.9.23: FIX - Remove old unscoped rules that block pre-login traffic
+:local oldMaster [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
+:if ([:len $oldMaster] > 0) do={
+:local existingRuleSrc [/ip firewall filter get $oldMaster]
+:if ([:typeof ($existingRuleSrc->"hotspot")] = "nothing" || ($existingRuleSrc->"hotspot") != "auth") do={
+:log warning "NAVSPOT: Removendo regra ALLOW-MASTER antiga (sem escopo hotspot)"
+/ip firewall filter remove $oldMaster
+:do { /ip firewall filter remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
+}
+}
+# v6.9.23: Create scoped rules if they don't exist
 :if ([:len [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]] = 0) do={
 :local ftPos [/ip firewall filter find where action=fasttrack-connection]
 :if ([:len $ftPos] = 0) do={:set ftPos 0}
-# v6.9.21: FIRST create DROP (master block)
-/ip firewall filter add chain=forward action=drop comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
-:log info "NAVSPOT: Allow master drop rule created (v6.9.21)"
-# THEN add ACCEPT BEFORE the drop (so it's processed first)
+# v6.9.23: DROP only for AUTHENTICATED hotspot users (pre-login traffic passes through)
+/ip firewall filter add chain=forward action=drop hotspot=auth comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
+:log info "NAVSPOT: Allow master drop rule created (v6.9.23 - hotspot=auth scoped)"
+# ACCEPT rule for allowed destinations - also scoped to auth users
 :local dropPos [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
-/ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED comment="NAVSPOT-ALLOW-ACCEPT" place-before=$dropPos
-:log info "NAVSPOT: Allow accept rule created BEFORE drop (v6.9.21)"
+/ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED hotspot=auth comment="NAVSPOT-ALLOW-ACCEPT" place-before=$dropPos
+:log info "NAVSPOT: Allow accept rule created BEFORE drop (v6.9.23)"
 }
 # v6.9.21: DUAL APPROACH - Walled Garden (robust for hostnames) + Address-List (backup)
 # 1. Add to Walled Garden with action=allow (works pre-login and with CDNs)
@@ -543,7 +554,7 @@ function generateBootstrapScript(
 }
 :set navspotActions ""
 :set navspotLock "0"
-:log info "NAVSPOT-ACTION v6.9.21: Processamento concluido"`
+:log info "NAVSPOT-ACTION v6.9.23: Processamento concluido"`
 
   // Configuração WAN com remoção prévia do DHCP client existente
   const wanConfig = wanType === 'dhcp' 
@@ -625,11 +636,11 @@ function generateBootstrapScript(
 }
 }
 } else={
-:log info "NAVSPOT-GUARDIAN: Sistema integro v6.9.21"
+:log info "NAVSPOT-GUARDIAN: Sistema integro v6.9.23"
 }`
 
-  // Bootstrap script v6.9.21 - Safe Update + Guardian + Netwatch + Startup Resilience + Token Fallback
-  return `:log info "NAVSPOT v6.9.21: Iniciando instalacao..."
+  // Bootstrap script v6.9.23 - Safe Update + Guardian + Netwatch + Startup Resilience + Token Fallback + hotspot=auth scoped whitelist
+  return `:log info "NAVSPOT v6.9.23: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -639,7 +650,7 @@ function generateBootstrapScript(
 :log info "NAVSPOT: Interface WAN (${wanInterface}) validada"
 
 # 1. LIMPEZA INICIAL (configs de fabrica + rede navspot - NAO remove scripts!)
-# v6.9.21: Scripts/schedulers sao atualizados via set-or-add, nao removidos aqui
+# v6.9.23: Scripts/schedulers sao atualizados via set-or-add, nao removidos aqui
 :do { /ip address remove [find address="${gateway}/24"] } on-error={}
 :do { /ip dhcp-server remove [find name="defconf"] } on-error={}
 :do { /ip dhcp-server remove [find name="dhcp1"] } on-error={}

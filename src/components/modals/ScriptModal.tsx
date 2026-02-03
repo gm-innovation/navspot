@@ -83,7 +83,7 @@ export function ScriptModal({
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "navspot-recovery.rsc";
+      a.download = "navspot-recovery-v6.9.23.rsc";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -97,7 +97,7 @@ export function ScriptModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[800px] max-h-[90vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>Script MikroTik v6.9.21 - {hotspotName}</DialogTitle>
+          <DialogTitle>Script MikroTik v6.9.23 - {hotspotName}</DialogTitle>
           <DialogDescription>
             Instalação resiliente com auto-recuperação e token fallback embutido. A porta ether2 será configurada como gerência fixa (Winbox).
           </DialogDescription>
@@ -157,7 +157,7 @@ export function ScriptModal({
           <Alert className="bg-green-500/10 border-green-500/50">
             <Shield className="h-4 w-4 text-green-600" />
             <AlertTitle className="text-green-700 dark:text-green-400">
-              Auto-Recuperação v6.9.21
+              Auto-Recuperação v6.9.23
             </AlertTitle>
             <AlertDescription className="text-green-600/80 dark:text-green-400/80">
               <p className="mb-2">
@@ -167,7 +167,7 @@ export function ScriptModal({
                 <li>• <strong>Token Fallback:</strong> Token embutido no sync e guardian</li>
                 <li>• <strong>navspot-guardian:</strong> Verifica integridade a cada 10 minutos</li>
                 <li>• <strong>Safe Update:</strong> Atualiza scripts sem remover antes</li>
-                <li>• <strong>Método RouterOS 6.x:</strong> Compatível com todas as versões</li>
+                <li>• <strong>Whitelist Fix:</strong> Regras de firewall não bloqueiam mais o portal (hotspot=auth)</li>
               </ul>
             </AlertDescription>
           </Alert>
@@ -177,7 +177,7 @@ export function ScriptModal({
             <h4 className="font-semibold mb-2">Verificação pós-instalação:</h4>
             <p className="text-muted-foreground mb-2">Após a importação, verifique no terminal:</p>
             <code className="block bg-muted p-2 rounded text-xs font-mono">/log print where message~"NAVSPOT"</code>
-            <p className="text-muted-foreground mt-2">Deve aparecer: <code className="bg-muted px-1 rounded">NAVSPOT v6.9.21: INSTALACAO CONCLUIDA!</code></p>
+            <p className="text-muted-foreground mt-2">Deve aparecer: <code className="bg-muted px-1 rounded">NAVSPOT v6.9.23: INSTALACAO CONCLUIDA!</code></p>
             
             <div className="mt-4 pt-3 border-t border-border">
               <h5 className="font-medium text-sm mb-2">Configuração de portas:</h5>

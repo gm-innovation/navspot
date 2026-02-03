@@ -6,16 +6,18 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-recovery-download v6.9.21
+ * mikrotik-recovery-download v6.9.23
  * 
  * Minimal recovery endpoint for MikroTik self-healing.
  * Returns a .rsc script that ONLY recreates scripts/schedulers without touching
  * bridge, DHCP, NAT, hotspot config - to avoid network disruption.
  * 
+ * v6.9.23: CRITICAL FIX - Whitelist firewall rules now scoped to hotspot=auth only
+ *          Pre-login traffic no longer blocked, fixing Android "no internet" captive portal issue
+ *          Auto-removes old unscoped NAVSPOT-ALLOW-MASTER rules on sync
+ * v6.9.22: Added essential Walled Garden recreation (portal, API, CDNs, CPD) + DNS TCP + ICMP
  * v6.9.21: Fixed firewall rule order (ACCEPT before DROP) + Walled Garden for whitelists + timeout=none
  * v6.9.20: Token fallback embutido nos scripts + suporte a hotspot_id autenticado
- * v6.9.19: Startup resilience - delay in schedulers + Netwatch for auto-sync
- * v6.9.15: Added add_firewall_block handler with Address-List + DNS resolution
  * 
  * Called by navspot-guardian when it detects missing components or outdated scripts.
  * Also called by authenticated users from the admin panel to download recovery scripts.
@@ -231,19 +233,19 @@ Deno.serve(async (req) => {
     const syncUrl = `${supabaseUrl}/functions/v1/mikrotik-sync`
     const syncIntervalMinutes = hotspot!.sync_interval_minutes || 5
 
-    console.log(`[mikrotik-recovery-download] Generating recovery v6.9.21 for: ${hotspot!.nome}`)
+    console.log(`[mikrotik-recovery-download] Generating recovery v6.9.23 for: ${hotspot!.nome}`)
 
-    // v6.9.21: Recovery script with embedded token fallback + Address-List blocking + startup resilience + Walled Garden
+    // v6.9.23: Recovery script with hotspot=auth scoped whitelist + embedded token fallback + Walled Garden
     const recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes, syncToken)
 
-    console.log(`[mikrotik-recovery-download] Recovery script v6.9.21 generated for ${hotspot!.nome} (${recoveryScript.length} bytes)`)
+    console.log(`[mikrotik-recovery-download] Recovery script v6.9.23 generated for ${hotspot!.nome} (${recoveryScript.length} bytes)`)
 
     return new Response(recoveryScript, {
       status: 200,
       headers: {
         ...corsHeaders,
         'Content-Type': 'text/plain; charset=utf-8',
-        'Content-Disposition': 'attachment; filename="navspot-recovery.rsc"',
+        'Content-Disposition': 'attachment; filename="navspot-recovery-v6.9.23.rsc"',
         'Cache-Control': 'no-store, no-cache, must-revalidate',
       },
     })
@@ -258,7 +260,7 @@ Deno.serve(async (req) => {
 })
 
 function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, syncToken: string): string {
-  // v6.9.21 sync script source with embedded token fallback
+  // v6.9.23 sync script source with embedded token fallback
   const syncScriptSource = `:local token ""
 :do { :set token [/file get "navspot-token.txt" contents] } on-error={}
 :if ([:len $token] < 10) do={
@@ -318,7 +320,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 } on-error={:log warning "NAVSPOT-SYNC: Falha"}
 :log info "NAVSPOT-SYNC: OK"`
 
-  // v6.9.21 action processor source with Address-List blocking + Walled Garden for whitelists
+  // v6.9.23 action processor source with hotspot=auth scoped whitelist rules
   const actionProcessorSource = `:global navspotActions
 :global navspotLock
 :if ($navspotLock = "1") do={
@@ -332,7 +334,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :log info "NAVSPOT: Sem acoes pendentes"
 :return
 }
-:log info ("NAVSPOT-ACTION v6.9.21: Iniciando - " . $rawData)
+:log info ("NAVSPOT-ACTION v6.9.23: Iniciando - " . $rawData)
 :local pos 0
 :do {
 :while ([:find $rawData ";" $pos] >= 0) do={
@@ -501,21 +503,32 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 }
 }
 }
-# v6.9.21: add_firewall_allow - Whitelist for "bloquear_tudo" mode (FIXED ORDER + Walled Garden)
+# v6.9.23: add_firewall_allow - Whitelist for "bloquear_tudo" mode (SCOPED to hotspot=auth)
 :if ($cmd = "add_firewall_allow") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# v6.9.21: Ensure master rules exist with CORRECT ORDER (ACCEPT before DROP)
+# v6.9.23: Ensure master rules exist ONLY for authenticated hotspot users
+# v6.9.23: FIX - Remove old unscoped rules that block pre-login traffic
+:local oldMaster [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
+:if ([:len $oldMaster] > 0) do={
+:local existingRuleSrc [/ip firewall filter get $oldMaster]
+:if ([:typeof ($existingRuleSrc->"hotspot")] = "nothing" || ($existingRuleSrc->"hotspot") != "auth") do={
+:log warning "NAVSPOT: Removendo regra ALLOW-MASTER antiga (sem escopo hotspot)"
+/ip firewall filter remove $oldMaster
+:do { /ip firewall filter remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
+}
+}
+# v6.9.23: Create scoped rules if they don't exist
 :if ([:len [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]] = 0) do={
 :local ftPos [/ip firewall filter find where action=fasttrack-connection]
 :if ([:len $ftPos] = 0) do={:set ftPos 0}
-# v6.9.21: FIRST create DROP (master block)
-/ip firewall filter add chain=forward action=drop comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
-:log info "NAVSPOT: Allow master drop rule created (v6.9.21)"
-# THEN add ACCEPT BEFORE the drop (so it's processed first)
+# v6.9.23: DROP only for AUTHENTICATED hotspot users (pre-login traffic passes through)
+/ip firewall filter add chain=forward action=drop hotspot=auth comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
+:log info "NAVSPOT: Allow master drop rule created (v6.9.23 - hotspot=auth scoped)"
+# ACCEPT rule for allowed destinations - also scoped to auth users
 :local dropPos [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
-/ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED comment="NAVSPOT-ALLOW-ACCEPT" place-before=$dropPos
-:log info "NAVSPOT: Allow accept rule created BEFORE drop (v6.9.21)"
+/ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED hotspot=auth comment="NAVSPOT-ALLOW-ACCEPT" place-before=$dropPos
+:log info "NAVSPOT: Allow accept rule created BEFORE drop (v6.9.23)"
 }
 # v6.9.21: DUAL APPROACH - Walled Garden (robust for hostnames) + Address-List (backup)
 # 1. Add to Walled Garden with action=allow (works pre-login and with CDNs)
@@ -556,16 +569,17 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 }
 :set navspotActions ""
 :set navspotLock "0"
-:log info "NAVSPOT-ACTION v6.9.21: Processamento concluido"`
+:log info "NAVSPOT-ACTION v6.9.23: Processamento concluido"`
 
-  // v6.9.21: Recovery script with set-or-add pattern + startup resilience + netwatch + token recreation + embedded fallback
-  return `# NAVSPOT Recovery Script v6.9.21
+  // v6.9.23: Recovery script with set-or-add pattern + startup resilience + netwatch + token recreation + hotspot=auth scoped whitelist
+  return `# NAVSPOT Recovery Script v6.9.23
 # This script recreates missing scripts/schedulers + token
+# v6.9.23: CRITICAL FIX - Whitelist rules now scoped to hotspot=auth (pre-login traffic no longer blocked)
 # It does NOT touch network config (bridge, DHCP, NAT, hotspot)
-:log info "NAVSPOT-RECOVERY v6.9.21: Iniciando reparacao..."
+:log info "NAVSPOT-RECOVERY v6.9.23: Iniciando reparacao..."
 
 # 0. RECRIAR TOKEN (metodo RouterOS 6.x compativel)
-:log info "NAVSPOT-RECOVERY v6.9.21: Recriando token..."
+:log info "NAVSPOT-RECOVERY v6.9.23: Recriando token..."
 :do { /file remove "navspot-token.txt" } on-error={}
 :delay 500ms
 /file print file=navspot-token where name="__never__"
@@ -576,12 +590,12 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 # 1. ACTION PROCESSOR - set-or-add pattern
 :local apExists [/system script find name="navspot-action-processor"]
 :if ([:len $apExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando navspot-action-processor v6.9.21..."
+:log info "NAVSPOT-RECOVERY: Atualizando navspot-action-processor v6.9.23..."
 /system script set $apExists policy=read,write,test source={
 ${actionProcessorSource}
 }
 } else={
-:log info "NAVSPOT-RECOVERY: Criando navspot-action-processor v6.9.21..."
+:log info "NAVSPOT-RECOVERY: Criando navspot-action-processor v6.9.23..."
 /system script add name="navspot-action-processor" policy=read,write,test source={
 ${actionProcessorSource}
 }
@@ -591,35 +605,35 @@ ${actionProcessorSource}
 # 2. SYNC SCRIPT - set-or-add pattern with token fallback embutido
 :local syncExists [/system script find name="navspot-sync"]
 :if ([:len $syncExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando navspot-sync v6.9.21 (token fallback embutido)..."
+:log info "NAVSPOT-RECOVERY: Atualizando navspot-sync v6.9.23 (token fallback embutido)..."
 /system script set $syncExists policy=read,write,test source={
 ${syncScriptSource}
 }
 } else={
-:log info "NAVSPOT-RECOVERY: Criando navspot-sync v6.9.21 (token fallback embutido)..."
+:log info "NAVSPOT-RECOVERY: Criando navspot-sync v6.9.23 (token fallback embutido)..."
 /system script add name="navspot-sync" policy=read,write,test source={
 ${syncScriptSource}
 }
 }
 :delay 200ms
 
-# 3. SCHEDULER - set-or-add pattern v6.9.21: delay para aguardar rede + start-date fixo
+# 3. SCHEDULER - set-or-add pattern v6.9.23: delay para aguardar rede + start-date fixo
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando scheduler v6.9.21..."
+:log info "NAVSPOT-RECOVERY: Atualizando scheduler v6.9.23..."
 /system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
-:log info "NAVSPOT-RECOVERY: Criando scheduler v6.9.21..."
+:log info "NAVSPOT-RECOVERY: Criando scheduler v6.9.23..."
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
 }
 
-# 4. NETWATCH v6.9.21 - Dispara sync quando internet volta
+# 4. NETWATCH v6.9.23 - Dispara sync quando internet volta
 :if ([:len [/tool netwatch find comment="navspot-netwatch"]] = 0) do={
 /tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script=":delay 5s; :do { /system script run navspot-sync } on-error={}" comment="navspot-netwatch"
 :log info "NAVSPOT-RECOVERY: Netwatch configurado para auto-sync"
 }
 
-# 5. WALLED GARDEN ESSENCIAL v6.9.22 (recria regras criticas se estiverem faltando)
+# 5. WALLED GARDEN ESSENCIAL v6.9.23 (recria regras criticas se estiverem faltando)
 :log info "NAVSPOT-RECOVERY: Verificando Walled Garden essencial..."
 
 # Portal NAVSPOT
@@ -671,9 +685,12 @@ ${syncScriptSource}
 /ip hotspot walled-garden add dst-host="*.apple.com" action=allow comment="navspot-cpd-apple"
 }
 
-# Protocolos essenciais (DNS, DHCP, NTP)
+# v6.9.23: Protocolos essenciais (DNS UDP + TCP, DHCP, NTP, ICMP)
 :if ([:len [/ip hotspot walled-garden ip find dst-port=53 protocol=udp comment~"navspot-dns"]] = 0) do={
-/ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
+/ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns-udp"
+}
+:if ([:len [/ip hotspot walled-garden ip find dst-port=53 protocol=tcp comment~"navspot-dns"]] = 0) do={
+/ip hotspot walled-garden ip add dst-port=53 protocol=tcp action=accept comment="navspot-dns-tcp"
 }
 :if ([:len [/ip hotspot walled-garden ip find dst-port=67 protocol=udp comment~"navspot-dhcp"]] = 0) do={
 /ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
@@ -681,16 +698,32 @@ ${syncScriptSource}
 :if ([:len [/ip hotspot walled-garden ip find dst-port=123 protocol=udp comment~"navspot-ntp"]] = 0) do={
 /ip hotspot walled-garden ip add dst-port=123 protocol=udp action=accept comment="navspot-ntp"
 }
+:if ([:len [/ip hotspot walled-garden ip find protocol=icmp comment~"navspot-icmp"]] = 0) do={
+/ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
+}
+
+# v6.9.23: AUTO-FIX - Remove old unscoped NAVSPOT-ALLOW-MASTER rules
+:local oldMaster [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
+:if ([:len $oldMaster] > 0) do={
+:local ruleInfo [/ip firewall filter get $oldMaster]
+:if ([:typeof ($ruleInfo->"hotspot")] = "nothing") do={
+:log warning "NAVSPOT-RECOVERY: Removendo NAVSPOT-ALLOW-MASTER sem escopo (causa do bloqueio pre-login)"
+/ip firewall filter remove $oldMaster
+:do { /ip firewall filter remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
+:log info "NAVSPOT-RECOVERY: Regras de firewall antigas removidas - proximo sync recriara com hotspot=auth"
+}
+}
 
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial verificado/restaurado"
 
 :log info "=========================================="
-:log info "NAVSPOT-RECOVERY v6.9.22: REPARACAO CONCLUIDA!"
+:log info "NAVSPOT-RECOVERY v6.9.23: REPARACAO CONCLUIDA!"
+:log info "FIX CRITICO: Whitelist agora usa hotspot=auth (pre-login nao bloqueado)"
 :log info "Token: recriado e fallback embutido no sync"
-:log info "Scripts: sync + action-processor v6.9.21 atualizados"
+:log info "Scripts: sync + action-processor v6.9.23 atualizados"
 :log info "Scheduler: sync a cada ${syncIntervalMinutes}m com startup delay"
 :log info "Netwatch: auto-sync quando internet volta"
-:log info "Walled Garden: portal + API + CPD verificados"
+:log info "Walled Garden: portal + API + CPD + DNS/ICMP verificados"
 :log info "=========================================="
 `
 }
