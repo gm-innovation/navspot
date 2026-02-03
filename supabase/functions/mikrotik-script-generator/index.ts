@@ -419,7 +419,8 @@ function generateBootstrapScript(
 :if ([:len $uName] = 0) do={
 :log warning "NAVSPOT: create_user sem nome, ignorando"
 } else={
-:if ([:len [/ip hotspot user profile find name=$uProf]] = 0) do={
+ :local profExists [/ip hotspot user profile find name=$uProf]
+ :if ([:len $profExists] = 0) do={
 :log warning ("NAVSPOT: Perfil " . $uProf . " nao existe. Criando com defaults...")
 /ip hotspot user profile add name=$uProf
 }
@@ -656,8 +657,18 @@ function generateBootstrapScript(
 :do { /ip pool remove [find name="hs-pool-navspot"] } on-error={}
 :do { /ip address remove [find comment="navspot"] } on-error={}
 :do { /ip firewall nat remove [find comment="navspot-nat"] } on-error={}
-:do { /ip hotspot walled-garden remove [find comment~"navspot"] } on-error={}
-:do { /ip hotspot walled-garden ip remove [find comment~"navspot"] } on-error={}
+ # v6.9.27: Cleanup walled-garden entries using EXACT comment match (avoid comment~)
+ :do { /ip hotspot walled-garden remove [find comment="navspot-portal"] } on-error={}
+ :do { /ip hotspot walled-garden remove [find comment="navspot-api"] } on-error={}
+ :do { /ip hotspot walled-garden remove [find comment="navspot-cdn"] } on-error={}
+ :do { /ip hotspot walled-garden remove [find comment="navspot-cpd-android"] } on-error={}
+ :do { /ip hotspot walled-garden remove [find comment="navspot-cpd-windows"] } on-error={}
+ :do { /ip hotspot walled-garden remove [find comment="navspot-cpd-apple"] } on-error={}
+ :do { /ip hotspot walled-garden ip remove [find comment="navspot-dns-udp"] } on-error={}
+ :do { /ip hotspot walled-garden ip remove [find comment="navspot-dns-tcp"] } on-error={}
+ :do { /ip hotspot walled-garden ip remove [find comment="navspot-dhcp"] } on-error={}
+ :do { /ip hotspot walled-garden ip remove [find comment="navspot-ntp"] } on-error={}
+ :do { /ip hotspot walled-garden ip remove [find comment="navspot-icmp"] } on-error={}
 :do { /interface bridge port remove [find comment="navspot-lan"] } on-error={}
 :do { /interface bridge remove [find name="bridge1"] } on-error={}
 :do { /file remove "navspot-token.txt" } on-error={}
