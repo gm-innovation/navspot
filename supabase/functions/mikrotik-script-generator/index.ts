@@ -734,9 +734,9 @@ ${wanConfig}
 
 # 7. HOTSPOT v6.9.13 (external portal + keepalive)
 # login-by=http-pap,http-chap para compatibilidade
-# html-directory="" para forcar portal externo
+# html-directory default ("hotspot") mantido para compatibilidade RouterOS 6.x
 # login-url com variaveis escaped para substituicao em runtime
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory="" login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m login-url="https://navspot.lovable.app/hotspot-login?h=${hotspot.id}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
+/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m login-url="https://navspot.lovable.app/hotspot-login?h=${hotspot.id}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
 :log info "NAVSPOT: Hotspot v6.9.13 com portal externo ativo"
 

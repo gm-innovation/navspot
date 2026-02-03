@@ -736,7 +736,8 @@ ${syncScriptSource}
 :if ([:len $hsprof] > 0) do={
 :local currentLoginUrl [/ip hotspot profile get $hsprof login-url]
 :if ($currentLoginUrl != $correctLoginUrl) do={
-/ip hotspot profile set $hsprof login-url=$correctLoginUrl html-directory=""
+# RouterOS 6.x: manter URL sempre como string (caracteres como '&' podem quebrar sem aspas)
+/ip hotspot profile set $hsprof login-url="$correctLoginUrl"
 :log info "NAVSPOT-RECOVERY: login-url corrigida no hotspot profile"
 } else={
 :log info "NAVSPOT-RECOVERY: login-url ja esta correta"
