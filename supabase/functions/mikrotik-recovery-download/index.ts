@@ -515,9 +515,11 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 # v6.9.23: FIX - Remove old unscoped rules that block pre-login traffic
 :local oldMaster [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
 :if ([:len $oldMaster] > 0) do={
-:local existingRuleSrc [/ip firewall filter get $oldMaster]
-:if ([:typeof ($existingRuleSrc->"hotspot")] = "nothing" || ($existingRuleSrc->"hotspot") != "auth") do={
-:log warning "NAVSPOT: Removendo regra ALLOW-MASTER antiga (sem escopo hotspot)"
+# v6.9.24: RouterOS 6.x compatible check (no -> operator)
+:local oldHotspot ""
+:do { :set oldHotspot [/ip firewall filter get $oldMaster hotspot] } on-error={ :set oldHotspot "" }
+:if ($oldHotspot != "auth") do={
+:log warning "NAVSPOT: Removendo regra ALLOW-MASTER antiga (sem escopo hotspot=auth)"
 /ip firewall filter remove $oldMaster
 :do { /ip firewall filter remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
 }
@@ -573,17 +575,21 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 }
 :set navspotActions ""
 :set navspotLock "0"
-:log info "NAVSPOT-ACTION v6.9.23: Processamento concluido"`
+:log info "NAVSPOT-ACTION v6.9.24: Processamento concluido"`
 
-  // v6.9.23: Recovery script with set-or-add pattern + startup resilience + netwatch + token recreation + hotspot=auth scoped whitelist
-  return `# NAVSPOT Recovery Script v6.9.23
+  const deployedAt = new Date().toISOString()
+  
+  // v6.9.24: Recovery script with RouterOS 6.x compatible syntax
+  return `# NAVSPOT Recovery Script v6.9.24
+# _build: 6.9.24 | deployed_at=${deployedAt}
 # This script recreates missing scripts/schedulers + token
+# v6.9.24: RouterOS 6.x compatible syntax (no -> operator, proper get with property)
 # v6.9.23: CRITICAL FIX - Whitelist rules now scoped to hotspot=auth (pre-login traffic no longer blocked)
 # It does NOT touch network config (bridge, DHCP, NAT, hotspot)
-:log info "NAVSPOT-RECOVERY v6.9.23: Iniciando reparacao..."
+:log info "NAVSPOT-RECOVERY v6.9.24: Iniciando reparacao..."
 
 # 0. RECRIAR TOKEN (metodo RouterOS 6.x compativel)
-:log info "NAVSPOT-RECOVERY v6.9.23: Recriando token..."
+:log info "NAVSPOT-RECOVERY v6.9.24: Recriando token..."
 :do { /file remove "navspot-token.txt" } on-error={}
 :delay 500ms
 /file print file=navspot-token where name="__never__"
@@ -594,12 +600,12 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 # 1. ACTION PROCESSOR - set-or-add pattern
 :local apExists [/system script find name="navspot-action-processor"]
 :if ([:len $apExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando navspot-action-processor v6.9.23..."
+:log info "NAVSPOT-RECOVERY: Atualizando navspot-action-processor v6.9.24..."
 /system script set $apExists policy=read,write,test source={
 ${actionProcessorSource}
 }
 } else={
-:log info "NAVSPOT-RECOVERY: Criando navspot-action-processor v6.9.23..."
+:log info "NAVSPOT-RECOVERY: Criando navspot-action-processor v6.9.24..."
 /system script add name="navspot-action-processor" policy=read,write,test source={
 ${actionProcessorSource}
 }
@@ -706,11 +712,12 @@ ${syncScriptSource}
 /ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
 }
 
-# v6.9.24: AUTO-FIX - Remove old unscoped NAVSPOT-ALLOW-MASTER rules
+# v6.9.24: AUTO-FIX - Remove old unscoped NAVSPOT-ALLOW-MASTER rules (RouterOS 6.x compatible)
 :local oldMaster [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
 :if ([:len $oldMaster] > 0) do={
-:local ruleInfo [/ip firewall filter get $oldMaster]
-:if ([:typeof ($ruleInfo->"hotspot")] = "nothing") do={
+:local oldHotspot ""
+:do { :set oldHotspot [/ip firewall filter get $oldMaster hotspot] } on-error={ :set oldHotspot "" }
+:if ($oldHotspot != "auth") do={
 :log warning "NAVSPOT-RECOVERY: Removendo NAVSPOT-ALLOW-MASTER sem escopo (causa do bloqueio pre-login)"
 /ip firewall filter remove $oldMaster
 :do { /ip firewall filter remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
@@ -740,6 +747,7 @@ ${syncScriptSource}
 
 :log info "=========================================="
 :log info "NAVSPOT-RECOVERY v6.9.24: REPARACAO CONCLUIDA!"
+:log info "FIX v6.9.24: RouterOS 6.x syntax compatible (no -> operator)"
 :log info "FIX NOVO: login-url do hotspot profile verificada/corrigida"
 :log info "FIX CRITICO: Whitelist agora usa hotspot=auth (pre-login nao bloqueado)"
 :log info "Token: recriado e fallback embutido no sync"

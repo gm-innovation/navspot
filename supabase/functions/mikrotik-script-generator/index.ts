@@ -495,9 +495,11 @@ function generateBootstrapScript(
 # v6.9.23: FIX - Remove old unscoped rules that block pre-login traffic
 :local oldMaster [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
 :if ([:len $oldMaster] > 0) do={
-:local existingRuleSrc [/ip firewall filter get $oldMaster]
-:if ([:typeof ($existingRuleSrc->"hotspot")] = "nothing" || ($existingRuleSrc->"hotspot") != "auth") do={
-:log warning "NAVSPOT: Removendo regra ALLOW-MASTER antiga (sem escopo hotspot)"
+# v6.9.24: RouterOS 6.x compatible check (no -> operator)
+:local oldHotspot ""
+:do { :set oldHotspot [/ip firewall filter get $oldMaster hotspot] } on-error={ :set oldHotspot "" }
+:if ($oldHotspot != "auth") do={
+:log warning "NAVSPOT: Removendo regra ALLOW-MASTER antiga (sem escopo hotspot=auth)"
 /ip firewall filter remove $oldMaster
 :do { /ip firewall filter remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
 }
@@ -554,7 +556,7 @@ function generateBootstrapScript(
 }
 :set navspotActions ""
 :set navspotLock "0"
-:log info "NAVSPOT-ACTION v6.9.23: Processamento concluido"`
+:log info "NAVSPOT-ACTION v6.9.24: Processamento concluido"`
 
   // Configuração WAN com remoção prévia do DHCP client existente
   const wanConfig = wanType === 'dhcp' 
@@ -636,11 +638,15 @@ function generateBootstrapScript(
 }
 }
 } else={
-:log info "NAVSPOT-GUARDIAN: Sistema integro v6.9.23"
+:log info "NAVSPOT-GUARDIAN: Sistema integro v6.9.24"
 }`
 
-  // Bootstrap script v6.9.23 - Safe Update + Guardian + Netwatch + Startup Resilience + Token Fallback + hotspot=auth scoped whitelist
-  return `:log info "NAVSPOT v6.9.23: Iniciando instalacao..."
+  const deployedAt = new Date().toISOString()
+  
+  // Bootstrap script v6.9.24 - Safe Update + Guardian + Netwatch + Startup Resilience + Token Fallback + RouterOS 6.x compatible syntax
+  return `# NAVSPOT Bootstrap Script v6.9.24
+# _build: 6.9.24 | deployed_at=${deployedAt}
+:log info "NAVSPOT v6.9.24: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -673,7 +679,7 @@ function generateBootstrapScript(
 :do { /ip dhcp-client remove [find comment="navspot-wan"] } on-error={}
 :do { /tool netwatch remove [find comment="navspot-netwatch"] } on-error={}
 :delay 2s
-:log info "NAVSPOT: Limpeza concluida (scripts preservados) v6.9.21"
+:log info "NAVSPOT: Limpeza concluida (scripts preservados) v6.9.24"
 
 # 2. CONFIGURAR WAN (antes de criar bridge)
 ${wanConfig}
@@ -792,7 +798,7 @@ ${guardianScriptSource}
 } else={
 /system scheduler add name="navspot-guardian-scheduler" interval=10m on-event=":delay 20s; :do { /system script run navspot-guardian } on-error={}" start-time=startup start-date=jan/01/1970
 }
-:log info "NAVSPOT: Guardian v6.9.21 ativo (startup delay + token fallback + version check)"
+:log info "NAVSPOT: Guardian v6.9.24 ativo (startup delay + token fallback + version check)"
 
 # 11. ACTION PROCESSOR v6.9.21 - set-or-add pattern (nunca remove antes)
 :local apExists [/system script find name="navspot-action-processor"]
@@ -831,7 +837,7 @@ ${syncScriptSource}
 } else={
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
 }
-:log info "NAVSPOT: Sync v6.9.21 + Action Processor configurados (startup delay + token fallback)"
+:log info "NAVSPOT: Sync v6.9.24 + Action Processor configurados (startup delay + token fallback)"
 
 # 13. NETWATCH v6.9.21 - Dispara sync quando internet volta
 :if ([:len [/tool netwatch find comment="navspot-netwatch"]] = 0) do={
@@ -846,7 +852,7 @@ ${migrationCommands}
 
 # 15. FINALIZACAO
 :log info "=========================================="
-:log info "NAVSPOT v6.9.21: INSTALACAO CONCLUIDA!"
+:log info "NAVSPOT v6.9.24: INSTALACAO CONCLUIDA!"
 :log info "Portas LAN (ether3-5) ativas no Hotspot"
 :log info "Porta de gerencia (ether2) configurada para Winbox"
 :log info "Sync rodando a cada ${syncIntervalMinutes} minuto(s)"
@@ -855,6 +861,7 @@ ${migrationCommands}
 :log info "Netwatch: auto-sync quando internet volta"
 :log info "Guardian ativo - auto-recuperacao + version check"
 :log info "Address-List blocking para HTTPS/apps"
+:log info "RouterOS 6.x syntax compatible (v6.9.24)"
 :log info "=========================================="
 `
 }
