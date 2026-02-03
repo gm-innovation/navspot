@@ -28,10 +28,18 @@ interface Embarcacao {
 
 /**
  * Validate RouterOS script for forbidden patterns that break during /import
+ * 
+ * v6.9.27: The problematic pattern is `:if ([:len [/...` where a command is INSIDE
+ * a [:len [...]] construct INSIDE an :if condition. This breaks RouterOS 6.x parser.
+ * 
+ * SAFE pattern: `:local varName [/... find ...]` followed by `:if ([:len $varName]...`
+ * This works because the command is executed BEFORE the conditional check.
  */
 function validateRouterOSScript(script: string, context: string): void {
   const forbiddenPatterns = [
+    // Nested brackets with command inside conditional - THIS BREAKS RouterOS 6.x
     { regex: /:if \(\[:len \[\//, desc: '[:len [/... (nested brackets in conditional)' },
+    // comment~ instead of comment= for partial matching (often causes issues)
     { regex: /comment~"/, desc: 'comment~ (must use comment= for exact match)' },
   ]
   
@@ -541,35 +549,40 @@ function generateBootstrapScript(
   // v6.9.21: Recovery URL for guardian
   const recoveryUrl = `${supabaseUrl}/functions/v1/mikrotik-recovery-download`
 
-  // v6.9.27: Guardian script source - self-healing mechanism with version check + token fallback verification
+  // v6.9.27: Guardian script source - RUNTIME script, no /import restrictions apply here
+  // NOTE: Since this is a runtime script (executed by scheduler, not by /import),
+  // the [:len [/...]] pattern works fine. But for consistency and safety, we still
+  // use direct find with local variable assignment to avoid any potential issues.
   const guardianScriptSource = `:log info "NAVSPOT-GUARDIAN v${VERSION}: Verificando integridade..."
 :local needsRepair 0
 :local missing ""
-# Verificar scripts essenciais
-:if ([:len [/system script find name="navspot-sync"]] = 0) do={
+# v6.9.27: Verificar scripts essenciais usando find direto
+:local syncScript [/system script find name="navspot-sync"]
+:local apScript [/system script find name="navspot-action-processor"]
+:local syncSched [/system scheduler find name="navspot-sync-scheduler"]
+:if ([:len $syncScript] = 0) do={
 :set needsRepair 1
 :set missing ($missing . "navspot-sync ")
 }
-:if ([:len [/system script find name="navspot-action-processor"]] = 0) do={
+:if ([:len $apScript] = 0) do={
 :set needsRepair 1
 :set missing ($missing . "navspot-action-processor ")
 }
-:if ([:len [/system scheduler find name="navspot-sync-scheduler"]] = 0) do={
+:if ([:len $syncSched] = 0) do={
 :set needsRepair 1
 :set missing ($missing . "navspot-sync-scheduler ")
 }
-# v6.9.21: Check if action-processor has add_firewall_block handler (version marker)
-:if ($needsRepair = 0) do={
-:local apSource [/system script get [find name="navspot-action-processor"] source]
+# v6.9.27: Check version markers using pre-fetched script handles
+:if (($needsRepair = 0) && ([:len $apScript] > 0)) do={
+:local apSource [/system script get $apScript source]
 :if ([:find $apSource "NAVSPOT-BLACKLIST"] < 0) do={
 :set needsRepair 1
 :set missing ($missing . "action-processor-outdated ")
 :log warning "NAVSPOT-GUARDIAN: action-processor desatualizado (falta NAVSPOT-BLACKLIST)"
 }
 }
-# v6.9.21: Check if sync has embedded token fallback
-:if ($needsRepair = 0) do={
-:local syncSource [/system script get [find name="navspot-sync"] source]
+:if (($needsRepair = 0) && ([:len $syncScript] > 0)) do={
+:local syncSource [/system script get $syncScript source]
 :if ([:find $syncSource "token fallback embutido"] < 0) do={
 :set needsRepair 1
 :set missing ($missing . "sync-outdated-no-fallback ")
@@ -578,7 +591,6 @@ function generateBootstrapScript(
 }
 :if ($needsRepair = 1) do={
 :log warning ("NAVSPOT-GUARDIAN: Componentes faltando: " . $missing)
-# Cooldown check - evitar loops
 :global navspotLastRepair
 :local now [/system clock get time]
 :local canRepair 1
@@ -598,7 +610,8 @@ function generateBootstrapScript(
 :local body ("{\\"sync_token\\":\\"" . $token . "\\"}")
 /tool fetch url=$recoveryUrl mode=https http-method=post http-data=$body http-header-field="Content-Type: application/json" dst-path="navspot-recovery.rsc"
 :delay 2s
-:if ([:len [/file find name~"navspot-recovery.rsc"]] > 0) do={
+:local recoveryFile [/file find name~"navspot-recovery.rsc"]
+:if ([:len $recoveryFile] > 0) do={
 /import navspot-recovery.rsc
 :set navspotLastRepair $now
 :log info "NAVSPOT-GUARDIAN: Reparo concluido com sucesso!"
@@ -619,8 +632,9 @@ function generateBootstrapScript(
 # _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
 :log info "NAVSPOT v${VERSION}: Iniciando instalacao..."
 
-# 0. VALIDACAO INICIAL
-:if ([:len [/interface find name="${wanInterface}"]] = 0) do={
+# 0. VALIDACAO INICIAL (v6.9.27: using local variable to avoid nested brackets)
+:local wanIf [/interface find name="${wanInterface}"]
+:if ([:len $wanIf] = 0) do={
   :log error "NAVSPOT: ERRO CRITICO - Interface ${wanInterface} nao existe!"
   :error "Abortando: WAN inexistente"
 }
@@ -744,7 +758,7 @@ ${wanConfig}
 :log info "NAVSPOT: Token criado (metodo universal RouterOS 6.x/7.x)"
 :delay 500ms
 
-# 10. GUARDIAN SCRIPT v6.9.27 (criado PRIMEIRO para auto-recuperacao + token fallback)
+# 10. GUARDIAN SCRIPT v6.9.27 (usando variavel local para evitar [:len [...]] aninhado)
 :local guardianExists [/system script find name="navspot-guardian"]
 :if ([:len $guardianExists] > 0) do={
 :log info "NAVSPOT: Atualizando guardian..."
@@ -758,7 +772,7 @@ ${guardianScriptSource}
 }
 }
 
-# Guardian scheduler (startup + a cada 10 min) v6.9.27: delay para aguardar rede
+# Guardian scheduler (startup + a cada 10 min) v6.9.27: usando variavel local
 :local guardianSchedExists [/system scheduler find name="navspot-guardian-scheduler"]
 :if ([:len $guardianSchedExists] > 0) do={
 /system scheduler set $guardianSchedExists interval=10m on-event=":delay 20s; :do { /system script run navspot-guardian } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
