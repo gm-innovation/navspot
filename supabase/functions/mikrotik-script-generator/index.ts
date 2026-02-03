@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "6.9.27"
+const VERSION = "6.9.28"
 const DEPLOYED_AT = new Date().toISOString()
 
 interface Hotspot {
@@ -41,6 +41,8 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /:if \(\[:len \[\//, desc: '[:len [/... (nested brackets in conditional)' },
     // comment~ instead of comment= for partial matching (often causes issues)
     { regex: /comment~"/, desc: 'comment~ (must use comment= for exact match)' },
+    // *.apple.com wildcard breaks RouterOS 6.x parser during /import
+    { regex: /dst-host="\*\.apple\.com"/, desc: '*.apple.com (breaks RouterOS 6.x parser during /import)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
@@ -748,9 +750,9 @@ ${wanConfig}
 # Captive Portal Detection - Windows
 /ip hotspot walled-garden add dst-host="*.msftconnecttest.com" action=allow comment="navspot-cpd-windows"
 /ip hotspot walled-garden add dst-host="*.msftncsi.com" action=allow comment="navspot-cpd-windows"
-# Captive Portal Detection - Apple
+# Captive Portal Detection - Apple (v6.9.28: explicit hosts instead of *.apple.com wildcard)
 /ip hotspot walled-garden add dst-host="captive.apple.com" action=allow comment="navspot-cpd-apple"
-/ip hotspot walled-garden add dst-host="*.apple.com" action=allow comment="navspot-cpd-apple"
+/ip hotspot walled-garden add dst-host="www.apple.com" action=allow comment="navspot-cpd-apple"
 # Protocolos de rede essenciais
 /ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns-udp"
 /ip hotspot walled-garden ip add dst-port=53 protocol=tcp action=accept comment="navspot-dns-tcp"
@@ -850,7 +852,7 @@ ${migrationCommands}
 
 :log info "=========================================="
 :log info "NAVSPOT v${VERSION}: INSTALACAO CONCLUIDA!"
-:log info "FIX v6.9.27: Eliminated ALL [:len [/...]] nested patterns"
+:log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"
 :log info "FIX: Whitelist/blacklist use direct commands only"
 :log info "FIX: Firewall rules use remove+add with place-before=0"
 :log info "Rede: ${networkCidr} | Gateway: ${gateway}"
