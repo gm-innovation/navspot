@@ -31,7 +31,7 @@ const corsHeaders = {
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.32"
+const VERSION = "6.9.33"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -55,6 +55,8 @@ function validateRouterOSScript(script: string, context: string): void {
     // v6.9.32: Block :if ... do={} with escaped vars - the conditional inline block breaks parser
     // This is MORE SPECIFIC than matching any do={} - only :if conditions are problematic
     { regex: /:if [^;]*do=\{[^}]*\\\$\(/, desc: ':if...do={...\\$(...} (escaped var inside if-do block breaks RouterOS 6.x - use :do { } on-error={})' },
+    // v6.9.33: Block [find ...] + \$(...) inside same :do block - use two-step pattern
+    { regex: /:do\s*\{\s*[^}]*\[find[^\]]*\][^}]*\\\$\([^\)]*\)[^}]*\}/, desc: '[find ...] + \\$(...) in same :do block (breaks RouterOS 6.x - use two-step pattern: assign find to local, then set)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
@@ -688,17 +690,24 @@ ${syncScriptSource}
 
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial configurado"
 
-# 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.32
-# Using direct set with find + on-error - avoids :if do={} blocks with escaped vars
+# 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.33
+# Two-step pattern: assign [find] to local var, then set with escaped vars in separate :do block
 :log info "NAVSPOT-RECOVERY: Configurando hotspot profile login-url..."
-:do { /ip hotspot profile set [find name="hsprof-navspot"] login-url="${loginUrl}" } on-error={
+:local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
+:if ([:len \$_hsprof] > 0) do={ :global _hsprof_id \$_hsprof }
+:do {
+:if ([:len \$_hsprof_id] > 0) do={
+/ip hotspot profile set \$_hsprof_id login-url="${loginUrl}"
+:log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
+}
+} on-error={
 :log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
 }
 :log info "NAVSPOT-RECOVERY: login-url verificada"
 
 :log info "=========================================="
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
-:log info "FIX v6.9.32: Hotspot profile set uses :do { } on-error={} pattern"
+:log info "FIX v6.9.33: Hotspot profile set uses two-step pattern (find -> local -> set)"
 :log info "FIX v6.9.31: Replaced *.supabase.* wildcards with explicit host"
 :log info "FIX v6.9.31: Token file uses explicit .txt extension"
 :log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"
