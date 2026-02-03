@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "6.9.29"
+const VERSION = "6.9.30"
 const DEPLOYED_AT = new Date().toISOString()
 
 interface Hotspot {
@@ -43,9 +43,9 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /comment~"/, desc: 'comment~ (must use comment= for exact match)' },
     // *.apple.com wildcard breaks RouterOS 6.x parser during /import
     { regex: /dst-host="\*\.apple\.com"/, desc: '*.apple.com (breaks RouterOS 6.x parser during /import)' },
-    // MikroTik variables in strings break /import (parser tries to expand before execution)
-    { regex: /login-url="\$/, desc: 'login-url="$... (MikroTik variable in string breaks /import - use escaped \\$)' },
-    { regex: /set \$[a-zA-Z]+ login-url/, desc: 'set $var login-url (unescaped variable breaks /import - use \\$var)' },
+    // v6.9.30: Only detect MikroTik variables INSIDE strings (those break /import)
+    // Local script variables like $hsprof outside strings are fine and SHOULD NOT be escaped
+    { regex: /login-url="\$[a-zA-Z]/, desc: 'login-url="$var... (MikroTik variable in string breaks /import - use escaped \\$)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
