@@ -1,96 +1,144 @@
 
-# Plano: Correção Definitiva v6.9.29 — Fix do /import para Variáveis RouterOS
 
-## Problema Identificado
+# Plano: Correção v6.9.30 — Fix Final do Escape de Variáveis
 
-O erro `expected end of command (line 644 column 33)` ocorre porque o RouterOS 6.x **parseia variáveis dentro de strings** durante o `/import`, antes de executar o script.
+## Diagnóstico Confirmado
 
-Linha problemática:
-```routeros
-/ip hotspot profile set $hsprof login-url="$correctLoginUrl"
+O problema está claro agora. A regra é:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ REGRA DE ESCAPE PARA ROUTEROS 6.x /import                               │
+├───────────────────────┬──────────────────┬──────────────────────────────┤
+│ Tipo                  │ No TypeScript    │ No .rsc Final                │
+├───────────────────────┼──────────────────┼──────────────────────────────┤
+│ Variável LOCAL        │ $hsprof          │ $hsprof                      │
+│ (lógica do script)    │ (sem escape)     │ (parser reconhece)           │
+├───────────────────────┼──────────────────┼──────────────────────────────┤
+│ Variável RUNTIME      │ \\$(mac)         │ \$(mac)                      │
+│ (expansão do hotspot) │ (escape duplo)   │ (literal para MikroTik)      │
+└───────────────────────┴──────────────────┴──────────────────────────────┘
 ```
-
-O parser vê `$hsprof` e `$correctLoginUrl` e tenta expandi-las no momento do parse, mas elas não existem ainda — gerando erro de sintaxe.
 
 ---
 
-## Solução Implementada (v6.9.29) ✅
+## Problema Atual (v6.9.29)
 
-### Estratégia
+### Código TypeScript (linhas 688-689)
+```typescript
+:if ([:len \\$hsprof] > 0) do={
+/ip hotspot profile set \\$hsprof login-url="${loginUrl}"
+```
 
-1. **Eliminar `$correctLoginUrl`** — não usar variável intermediária para a URL
-2. **Escapar variável `$hsprof`** — usar `\\$hsprof` no TypeScript para gerar `\$hsprof` no .rsc
-3. **Escrever URL diretamente** no comando `set`, já interpolada pelo TypeScript
-
-### Código Corrigido (no .rsc final)
-
+### Arquivo .rsc Gerado (ERRADO)
 ```routeros
-# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.29
+:if ([:len \$hsprof] > 0) do={
+/ip hotspot profile set \$hsprof login-url="...&mac=\$(mac)..."
+```
+
+O `\$hsprof` quebra o parser do `/import` porque ele não reconhece como variável válida.
+
+### Linter Problemático (linha 49)
+```typescript
+{ regex: /set \$[a-zA-Z]+ login-url/, desc: '...unescaped variable breaks /import...' }
+```
+
+Este linter está **forçando** o padrão errado! Ele bloqueia `set $hsprof` que é o correto.
+
+---
+
+## Correções a Implementar
+
+### 1. Arquivo `mikrotik-recovery-download/index.ts`
+
+**Linha 32 — Versão:**
+```typescript
+const VERSION = "6.9.30"
+```
+
+**Linhas 48-49 — Linter (REMOVER regra incorreta):**
+```typescript
+// REMOVER ESTA LINHA:
+{ regex: /set \$[a-zA-Z]+ login-url/, desc: 'set $var login-url (unescaped variable breaks /import - use \\$var)' },
+
+// MANTER ESTA LINHA (detecta variável DENTRO de string):
+{ regex: /login-url="\$/, desc: 'login-url="$... (MikroTik variable in string breaks /import - use escaped \\$)' },
+```
+
+**Linhas 683-693 — Bloco do Hotspot Profile:**
+```typescript
+# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.30
+# NOTE: $hsprof is a LOCAL script variable - NO escape needed
+# Runtime vars like $(mac) ARE escaped in loginUrl as \\$(mac) -> \$(mac)
 :log info "NAVSPOT-RECOVERY: Verificando hotspot profile login-url..."
 :local hsprof [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len \$hsprof] > 0) do={
-/ip hotspot profile set \$hsprof login-url="https://navspot.lovable.app/hotspot-login?h=XXXX&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)"
-:log info "NAVSPOT-RECOVERY: login-url configurada"
+:if ([:len $hsprof] > 0) do={
+/ip hotspot profile set $hsprof login-url="${loginUrl}"
+:log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
 } else={
-:log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado"
+:log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
 }
 ```
 
-**Como funciona o escape:**
-- TypeScript `\\$hsprof` → arquivo .rsc `\$hsprof` → RouterOS runtime expande para o valor
-- TypeScript `\\$(mac)` → arquivo .rsc `\$(mac)` → MikroTik expande em runtime do hotspot
-
----
-
-## Arquivos Modificados
-
-### 1. `supabase/functions/mikrotik-recovery-download/index.ts` ✅
-
-- Versão atualizada para 6.9.29
-- Removida variável `$correctLoginUrl` 
-- Adicionado escape `\\$hsprof` para compatibilidade com /import
-- URL agora é escrita inline (interpolada pelo TypeScript)
-- Linter expandido com 2 novos padrões proibidos
-
-### 2. `supabase/functions/mikrotik-script-generator/index.ts` ✅
-
-- Versão atualizada para 6.9.29
-- Linter expandido com mesmos padrões do recovery
-- Bootstrap já estava correto (usa URL inline na linha 733)
-
-### 3. Linter Atualizado ✅
-
-Novos padrões detectados:
+**Linha 697 — Atualizar mensagem de fix:**
 ```typescript
-{ regex: /login-url="\$/, desc: 'login-url="$... (variable in string breaks /import)' },
-{ regex: /set \$[a-zA-Z]+ login-url/, desc: 'set $var login-url (unescaped variable breaks /import)' },
+:log info "FIX v6.9.30: Local vars unescaped, runtime vars escaped"
 ```
 
-### 4. Frontend ✅
+### 2. Arquivo `mikrotik-script-generator/index.ts`
 
-- ScriptModal: versão padrão atualizada para 6.9.29
+Mesmas correções:
+- Atualizar versão para 6.9.30
+- Remover regra incorreta do linter (linha 49)
+- Verificar se há o mesmo padrão no bootstrap (provavelmente não tem, pois usa URL inline)
+
+### 3. Arquivo `ScriptModal.tsx`
+
+Atualizar versão padrão para 6.9.30.
 
 ---
 
-## Resultado Esperado
+## Resultado Esperado no .rsc (v6.9.30)
 
-Após v6.9.29:
-1. O `/import navspot-recovery-v6.9.29.rsc` deve completar sem erros
-2. O hotspot profile terá a `login-url` correta
-3. O linter bloqueará futuras regressões com variáveis em strings
+```routeros
+# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.30
+:log info "NAVSPOT-RECOVERY: Verificando hotspot profile login-url..."
+:local hsprof [/ip hotspot profile find name="hsprof-navspot"]
+:if ([:len $hsprof] > 0) do={
+/ip hotspot profile set $hsprof login-url="https://navspot.lovable.app/hotspot-login?h=XXXX&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)"
+:log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
+} else={
+:log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
+}
+```
+
+Observe:
+- `$hsprof` — **sem** escape (variável local do script)
+- `\$(mac)` — **com** escape (variável de runtime do hotspot)
+
+---
+
+## Arquivos a Modificar
+
+| Arquivo | Mudanças |
+|---------|----------|
+| `supabase/functions/mikrotik-recovery-download/index.ts` | VERSION, linter, bloco hotspot profile |
+| `supabase/functions/mikrotik-script-generator/index.ts` | VERSION, linter |
+| `src/components/modals/ScriptModal.tsx` | Versão padrão |
+| `.lovable/plan.md` | Documentar correção |
 
 ---
 
 ## Teste no MikroTik
 
 ```routeros
-/import navspot-recovery-v6.9.29.rsc
-# Deve completar sem "expected end of command"
+/import navspot-recovery-v6.9.30.rsc
+# Deve completar SEM "expected end of command"
 
-# Verificar hotspot profile
 /ip hotspot profile print where name="hsprof-navspot"
-# login-url deve mostrar: https://navspot.lovable.app/hotspot-login?h=...&mac=$(mac)&ip=$(ip)...
+# login-url: https://navspot.lovable.app/hotspot-login?h=...&mac=$(mac)&ip=$(ip)...
 
-# Verificar logs
 /log print where message~"NAVSPOT-RECOVERY"
+# Deve mostrar "login-url configurada no hotspot profile"
 ```
+
