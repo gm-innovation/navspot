@@ -6,12 +6,13 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-recovery-download v6.9.23
+ * mikrotik-recovery-download v6.9.24
  * 
  * Minimal recovery endpoint for MikroTik self-healing.
- * Returns a .rsc script that ONLY recreates scripts/schedulers without touching
- * bridge, DHCP, NAT, hotspot config - to avoid network disruption.
+ * Returns a .rsc script that recreates scripts/schedulers and verifies hotspot profile login-url.
  * 
+ * v6.9.24: NEW - Verifies/corrects hotspot profile login-url for external portal redirection
+ *          Fixes issue where captive portal doesn't open on mobile devices
  * v6.9.23: CRITICAL FIX - Whitelist firewall rules now scoped to hotspot=auth only
  *          Pre-login traffic no longer blocked, fixing Android "no internet" captive portal issue
  *          Auto-removes old unscoped NAVSPOT-ALLOW-MASTER rules on sync
@@ -233,19 +234,19 @@ Deno.serve(async (req) => {
     const syncUrl = `${supabaseUrl}/functions/v1/mikrotik-sync`
     const syncIntervalMinutes = hotspot!.sync_interval_minutes || 5
 
-    console.log(`[mikrotik-recovery-download] Generating recovery v6.9.23 for: ${hotspot!.nome}`)
+    console.log(`[mikrotik-recovery-download] Generating recovery v6.9.24 for: ${hotspot!.nome}`)
 
-    // v6.9.23: Recovery script with hotspot=auth scoped whitelist + embedded token fallback + Walled Garden
-    const recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes, syncToken)
+    // v6.9.24: Recovery script with hotspot profile login-url verification + hotspot=auth scoped whitelist + embedded token fallback + Walled Garden
+    const recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes, syncToken, hotspot!.id)
 
-    console.log(`[mikrotik-recovery-download] Recovery script v6.9.23 generated for ${hotspot!.nome} (${recoveryScript.length} bytes)`)
+    console.log(`[mikrotik-recovery-download] Recovery script v6.9.24 generated for ${hotspot!.nome} (${recoveryScript.length} bytes)`)
 
     return new Response(recoveryScript, {
       status: 200,
       headers: {
         ...corsHeaders,
         'Content-Type': 'text/plain; charset=utf-8',
-        'Content-Disposition': 'attachment; filename="navspot-recovery-v6.9.23.rsc"',
+        'Content-Disposition': 'attachment; filename="navspot-recovery-v6.9.24.rsc"',
         'Cache-Control': 'no-store, no-cache, must-revalidate',
       },
     })
@@ -259,8 +260,11 @@ Deno.serve(async (req) => {
   }
 })
 
-function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, syncToken: string): string {
-  // v6.9.23 sync script source with embedded token fallback
+function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, syncToken: string, hotspotId: string): string {
+  // External portal login URL with escaped variables for runtime expansion
+  const loginUrl = `https://navspot.lovable.app/hotspot-login?h=${hotspotId}&mac=\\\\\\$(mac)&ip=\\\\\\$(ip)&link-login-only=\\\\\\$(link-login-only)`
+  
+  // v6.9.24 sync script source with embedded token fallback
   const syncScriptSource = `:local token ""
 :do { :set token [/file get "navspot-token.txt" contents] } on-error={}
 :if ([:len $token] < 10) do={
@@ -334,7 +338,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :log info "NAVSPOT: Sem acoes pendentes"
 :return
 }
-:log info ("NAVSPOT-ACTION v6.9.23: Iniciando - " . $rawData)
+:log info ("NAVSPOT-ACTION v6.9.24: Iniciando - " . $rawData)
 :local pos 0
 :do {
 :while ([:find $rawData ";" $pos] >= 0) do={
@@ -605,35 +609,35 @@ ${actionProcessorSource}
 # 2. SYNC SCRIPT - set-or-add pattern with token fallback embutido
 :local syncExists [/system script find name="navspot-sync"]
 :if ([:len $syncExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando navspot-sync v6.9.23 (token fallback embutido)..."
+:log info "NAVSPOT-RECOVERY: Atualizando navspot-sync v6.9.24 (token fallback embutido)..."
 /system script set $syncExists policy=read,write,test source={
 ${syncScriptSource}
 }
 } else={
-:log info "NAVSPOT-RECOVERY: Criando navspot-sync v6.9.23 (token fallback embutido)..."
+:log info "NAVSPOT-RECOVERY: Criando navspot-sync v6.9.24 (token fallback embutido)..."
 /system script add name="navspot-sync" policy=read,write,test source={
 ${syncScriptSource}
 }
 }
 :delay 200ms
 
-# 3. SCHEDULER - set-or-add pattern v6.9.23: delay para aguardar rede + start-date fixo
+# 3. SCHEDULER - set-or-add pattern v6.9.24: delay para aguardar rede + start-date fixo
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando scheduler v6.9.23..."
+:log info "NAVSPOT-RECOVERY: Atualizando scheduler v6.9.24..."
 /system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
-:log info "NAVSPOT-RECOVERY: Criando scheduler v6.9.23..."
+:log info "NAVSPOT-RECOVERY: Criando scheduler v6.9.24..."
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
 }
 
-# 4. NETWATCH v6.9.23 - Dispara sync quando internet volta
+# 4. NETWATCH v6.9.24 - Dispara sync quando internet volta
 :if ([:len [/tool netwatch find comment="navspot-netwatch"]] = 0) do={
 /tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script=":delay 5s; :do { /system script run navspot-sync } on-error={}" comment="navspot-netwatch"
 :log info "NAVSPOT-RECOVERY: Netwatch configurado para auto-sync"
 }
 
-# 5. WALLED GARDEN ESSENCIAL v6.9.23 (recria regras criticas se estiverem faltando)
+# 5. WALLED GARDEN ESSENCIAL v6.9.24 (recria regras criticas se estiverem faltando)
 :log info "NAVSPOT-RECOVERY: Verificando Walled Garden essencial..."
 
 # Portal NAVSPOT
@@ -685,7 +689,7 @@ ${syncScriptSource}
 /ip hotspot walled-garden add dst-host="*.apple.com" action=allow comment="navspot-cpd-apple"
 }
 
-# v6.9.23: Protocolos essenciais (DNS UDP + TCP, DHCP, NTP, ICMP)
+# v6.9.24: Protocolos essenciais (DNS UDP + TCP, DHCP, NTP, ICMP)
 :if ([:len [/ip hotspot walled-garden ip find dst-port=53 protocol=udp comment~"navspot-dns"]] = 0) do={
 /ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns-udp"
 }
@@ -702,7 +706,7 @@ ${syncScriptSource}
 /ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
 }
 
-# v6.9.23: AUTO-FIX - Remove old unscoped NAVSPOT-ALLOW-MASTER rules
+# v6.9.24: AUTO-FIX - Remove old unscoped NAVSPOT-ALLOW-MASTER rules
 :local oldMaster [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
 :if ([:len $oldMaster] > 0) do={
 :local ruleInfo [/ip firewall filter get $oldMaster]
@@ -716,14 +720,34 @@ ${syncScriptSource}
 
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial verificado/restaurado"
 
+# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.24
+:log info "NAVSPOT-RECOVERY: Verificando hotspot profile login-url..."
+:local hsprofName "hsprof-navspot"
+:local correctLoginUrl "${loginUrl}"
+
+:local hsprof [/ip hotspot profile find name=$hsprofName]
+:if ([:len $hsprof] > 0) do={
+:local currentLoginUrl [/ip hotspot profile get $hsprof login-url]
+:if ($currentLoginUrl != $correctLoginUrl) do={
+/ip hotspot profile set $hsprof login-url=$correctLoginUrl html-directory=""
+:log info "NAVSPOT-RECOVERY: login-url corrigida no hotspot profile"
+} else={
+:log info "NAVSPOT-RECOVERY: login-url ja esta correta"
+}
+} else={
+:log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
+}
+
 :log info "=========================================="
-:log info "NAVSPOT-RECOVERY v6.9.23: REPARACAO CONCLUIDA!"
+:log info "NAVSPOT-RECOVERY v6.9.24: REPARACAO CONCLUIDA!"
+:log info "FIX NOVO: login-url do hotspot profile verificada/corrigida"
 :log info "FIX CRITICO: Whitelist agora usa hotspot=auth (pre-login nao bloqueado)"
 :log info "Token: recriado e fallback embutido no sync"
-:log info "Scripts: sync + action-processor v6.9.23 atualizados"
+:log info "Scripts: sync + action-processor v6.9.24 atualizados"
 :log info "Scheduler: sync a cada ${syncIntervalMinutes}m com startup delay"
 :log info "Netwatch: auto-sync quando internet volta"
 :log info "Walled Garden: portal + API + CPD + DNS/ICMP verificados"
 :log info "=========================================="
 `
 }
+
