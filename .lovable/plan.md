@@ -1,65 +1,81 @@
 
+# Plano: Corrigir Blacklist e Clarificar Fluxo de Cadastro
 
-## ✅ IMPLEMENTADO - v6.9.23
+## Diagnóstico
 
-### Correção Crítica: Whitelist agora usa `hotspot=auth`
+### Problema 1: Formulário de cadastro
+**NÃO é um bug** - o usuário `alexandre.silva` já está com status `ativo`, então o sistema corretamente redireciona para autenticação no MikroTik. O formulário de cadastro só aparece para usuários com status `pendente_cadastro`.
 
-O problema "Esta rede não tem acesso à internet" no Android foi causado pela regra `NAVSPOT-ALLOW-MASTER` que bloqueava **todo** o tráfego forward, incluindo o tráfego pré-login necessário para o captive portal funcionar.
+**Para testar o formulário**: Crie um novo tripulante com status `pendente_cadastro` e tente logar com ele.
 
-### Mudanças Implementadas
+### Problema 2: Blacklist não funciona
+Este é o bug real. Analisando os logs:
+- Apenas `create_whitelist_domain` está sendo processado
+- Nenhuma ação `create_blacklist_domain` aparece no pipe
+- Motivo: O hash de firewall não mudou, então o sync não reinjecta as regras
 
-1. **`supabase/functions/mikrotik-recovery-download/index.ts`**
-   - Regras `NAVSPOT-ALLOW-MASTER` e `NAVSPOT-ALLOW-ACCEPT` agora incluem `hotspot=auth`
-   - Auto-remoção de regras antigas sem escopo
-   - Adicionado DNS TCP (porta 53) e ICMP ao Walled Garden
-   - Versão atualizada para v6.9.23 em todos os logs
+**Causa raiz**: O mecanismo de hash-caching impede que as regras sejam reaplicadas quando necessário. Além disso, no MikroTik as Address-Lists têm `timeout=1d`, então os IPs expiram após 24h e o bloqueio para de funcionar.
 
-2. **`supabase/functions/mikrotik-script-generator/index.ts`**
-   - Mesma correção do action processor com `hotspot=auth`
-   - Auto-detecção e correção de regras antigas
-   - Versão atualizada para v6.9.23
+## Soluções Propostas
 
-3. **`src/components/modals/ScriptModal.tsx`**
-   - Versão atualizada para v6.9.23
-   - Arquivo de Recovery baixa como `navspot-recovery-v6.9.23.rsc`
+### Correção 1: Forçar resync do firewall
+Resetar o `firewall_rules_hash` do hotspot para forçar o backend a reinjetar todas as regras de blacklist/whitelist.
 
-### Como a Correção Funciona
+**Ação SQL**:
+```sql
+UPDATE hotspots 
+SET firewall_rules_hash = NULL 
+WHERE nome = 'Engenharia Googlemarine';
+```
 
-**Antes (v6.9.21):**
+### Correção 2: Corrigir timeout das Address-Lists (código)
+Atualmente o código usa `timeout=1d` (linha 490), o que faz os IPs expirarem. Precisa mudar para `timeout=none` para blacklist também (já está correto para whitelist).
+
+**Arquivo**: `supabase/functions/mikrotik-recovery-download/index.ts`
+
+**Mudança na linha 490**:
 ```routeros
-/ip firewall filter add chain=forward action=drop comment="NAVSPOT-ALLOW-MASTER"
-# Bloqueia TODO o tráfego forward, incluindo pré-login
+# DE:
+/ip firewall address-list add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=1d comment=("navspot-" . $domain)
+
+# PARA:
+/ip firewall address-list add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=none comment=("navspot-" . $domain)
 ```
 
-**Depois (v6.9.23):**
-```routeros
-/ip firewall filter add chain=forward action=drop hotspot=auth comment="NAVSPOT-ALLOW-MASTER"
-# Só bloqueia tráfego de usuários AUTENTICADOS no hotspot
-# Tráfego pré-login (redirect para portal) passa normalmente
-```
+### Correção 3: Mesmo fix no script-generator
+Garantir que o script de bootstrap também use `timeout=none`.
 
-### Passos para Aplicar a Correção
+**Arquivo**: `supabase/functions/mikrotik-script-generator/index.ts`
 
-1. **Baixar Recovery v6.9.23** no painel (arquivo `navspot-recovery-v6.9.23.rsc`)
-2. **Importar no MikroTik:**
+## Arquivos a Modificar
+
+| Arquivo | Mudança |
+|---------|---------|
+| `supabase/functions/mikrotik-recovery-download/index.ts` | Mudar `timeout=1d` para `timeout=none` na Address-List BLACKLIST (linha 490) |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Mesma correção para consistência |
+
+## Passos Após Implementação
+
+1. **Resetar hash no banco** (executar SQL acima ou via painel)
+2. **Deploy das Edge Functions atualizadas**
+3. **Aguardar próximo sync** (1 minuto) - as regras serão reinjetadas
+4. **Verificar no MikroTik**:
    ```routeros
-   /import navspot-recovery-v6.9.23.rsc
+   /ip hotspot walled-garden print where comment~"navspot-blacklist"
+   /ip firewall address-list print where list="NAVSPOT-BLACKLIST"
    ```
-3. **Verificar que as regras antigas foram removidas:**
-   ```routeros
-   /ip firewall filter print where comment~"NAVSPOT-ALLOW"
-   ```
-   Esperado: regras com `hotspot=auth` ou nenhuma regra (será recriada no próximo sync)
+5. **Testar**: Acessar facebook.com ou instagram.com - deve bloquear
 
-4. **Testar no Android:**
-   - Conectar ao WiFi
-   - Portal deve abrir automaticamente
-   - Login deve funcionar sem timeout
+## Sobre o Formulário de Cadastro
 
-### Logs Esperados
+Para testar se o formulário funciona:
+1. Acesse o painel → Tripulantes
+2. Crie um novo tripulante com status "Pendente de Cadastro"
+3. Conecte ao WiFi com as credenciais desse novo tripulante
+4. O formulário de cadastro deve aparecer
 
-No MikroTik após importar o Recovery:
-```
-NAVSPOT-RECOVERY v6.9.23: REPARACAO CONCLUIDA!
-FIX CRITICO: Whitelist agora usa hotspot=auth (pre-login nao bloqueado)
-```
+## Resultado Esperado
+
+- **Blacklist funcionando**: Facebook, Instagram, YouTube, Netflix bloqueados
+- **Whitelist funcionando**: Gmail, Google, Office365 liberados
+- **Formulário de cadastro**: Aparece apenas para tripulantes com status `pendente_cadastro`
