@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.9.20 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.9.21 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -176,7 +176,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.9.20 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.9.21 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -186,7 +186,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.9.20'
+        version: '6.9.21'
       }),
       { 
         status: 200, 
@@ -317,7 +317,7 @@ function generateBootstrapScript(
 :log info "NAVSPOT: Sem acoes pendentes"
 :return
 }
-:log info ("NAVSPOT-ACTION v6.9.20: Iniciando - " . $rawData)
+:log info ("NAVSPOT-ACTION v6.9.21: Iniciando - " . $rawData)
 :local pos 0
 :do {
 :while ([:find $rawData ";" $pos] >= 0) do={
@@ -487,34 +487,39 @@ function generateBootstrapScript(
 }
 }
 }
-# v6.9.17: add_firewall_allow - Whitelist for "bloquear_tudo" mode
+# v6.9.21: add_firewall_allow - Whitelist for "bloquear_tudo" mode (FIXED ORDER + Walled Garden)
 :if ($cmd = "add_firewall_allow") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# Ensure master deny-all rule exists (must be AFTER allow rules)
+# v6.9.21: Ensure master rules exist with CORRECT ORDER (ACCEPT before DROP)
 :if ([:len [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]] = 0) do={
 :local ftPos [/ip firewall filter find where action=fasttrack-connection]
 :if ([:len $ftPos] = 0) do={:set ftPos 0}
-# Create ACCEPT rule for allowed list first
-/ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED comment="NAVSPOT-ALLOW-ACCEPT" place-before=$ftPos
-:log info "NAVSPOT: Allow accept rule created"
-# Then create DROP for everything else (will be after the accept due to place-before logic)
+# v6.9.21: FIRST create DROP (master block)
 /ip firewall filter add chain=forward action=drop comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
-:log info "NAVSPOT: Allow master drop rule created"
+:log info "NAVSPOT: Allow master drop rule created (v6.9.21)"
+# THEN add ACCEPT BEFORE the drop (so it's processed first)
+:local dropPos [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
+/ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED comment="NAVSPOT-ALLOW-ACCEPT" place-before=$dropPos
+:log info "NAVSPOT: Allow accept rule created BEFORE drop (v6.9.21)"
 }
-# Resolve domain to IP and add to allowed list
+# v6.9.21: DUAL APPROACH - Walled Garden (robust for hostnames) + Address-List (backup)
+# 1. Add to Walled Garden with action=allow (works pre-login and with CDNs)
+:if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
+/ip hotspot walled-garden add dst-host=$domain action=allow comment=("navspot-allow-" . $domain)
+:log info ("NAVSPOT: Walled Garden allow - " . $domain)
+}
+# 2. Try DNS resolution for address-list (backup for post-login firewall)
 :do {
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
 :if ([:len [/ip firewall address-list find list="NAVSPOT-ALLOWED" address=$resolvedIp]] = 0) do={
-/ip firewall address-list add list="NAVSPOT-ALLOWED" address=$resolvedIp timeout=1d comment=("navspot-allow-" . $domain)
+/ip firewall address-list add list="NAVSPOT-ALLOWED" address=$resolvedIp timeout=none comment=("navspot-allow-" . $domain)
 :log info ("NAVSPOT: Firewall allow - " . $domain . " -> " . $resolvedIp)
-} else={
-:log info ("NAVSPOT: IP already in allowed list - " . $resolvedIp)
 }
 }
 } on-error={
-:log warning ("NAVSPOT: Failed to resolve allowed domain " . $domain)
+:log warning ("NAVSPOT: DNS failed for " . $domain . " - using Walled Garden only")
 }
 }
 }
@@ -538,7 +543,7 @@ function generateBootstrapScript(
 }
 :set navspotActions ""
 :set navspotLock "0"
-:log info "NAVSPOT-ACTION v6.9.20: Processamento concluido"`
+:log info "NAVSPOT-ACTION v6.9.21: Processamento concluido"`
 
   // Configuração WAN com remoção prévia do DHCP client existente
   const wanConfig = wanType === 'dhcp' 
