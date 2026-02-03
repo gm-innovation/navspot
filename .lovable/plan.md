@@ -14,104 +14,61 @@ O parser vê `$hsprof` e `$correctLoginUrl` e tenta expandi-las no momento do pa
 
 ---
 
-## Solução: Inline URL + Escape de Variáveis
+## Solução Implementada (v6.9.29) ✅
 
 ### Estratégia
 
 1. **Eliminar `$correctLoginUrl`** — não usar variável intermediária para a URL
-2. **Escrever URL diretamente** no comando `set`, com escapes corretos:
-   - `\$hsprof` — impede expansão pelo import, mantém para runtime
-   - `\$(mac)` etc — já vem escapado corretamente do TypeScript (`\\$(mac)`)
+2. **Escapar variável `$hsprof`** — usar `\\$hsprof` no TypeScript para gerar `\$hsprof` no .rsc
+3. **Escrever URL diretamente** no comando `set`, já interpolada pelo TypeScript
 
-### Código Corrigido
+### Código Corrigido (no .rsc final)
 
 ```routeros
 # 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.29
 :log info "NAVSPOT-RECOVERY: Verificando hotspot profile login-url..."
 :local hsprof [/ip hotspot profile find name="hsprof-navspot"]
 :if ([:len \$hsprof] > 0) do={
-  /ip hotspot profile set \$hsprof login-url="https://navspot.lovable.app/hotspot-login?h=${hotspotId}&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)"
-  :log info "NAVSPOT-RECOVERY: login-url configurada"
-} else={
-  :log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
-}
-```
-
-**Nota sobre escapes no TypeScript:**
-- Para gerar `\$hsprof` no .rsc, usamos `\\$hsprof` no TypeScript
-- Para gerar `\$(mac)` no .rsc (que o MikroTik expande em runtime), usamos `\\$(mac)` no TypeScript
-
----
-
-## Arquivos a Modificar
-
-### 1. `supabase/functions/mikrotik-recovery-download/index.ts`
-
-**Seção do Hotspot Profile (linhas ~679-695):**
-
-Remover:
-```typescript
-:local correctLoginUrl "${loginUrl}"
-...
-/ip hotspot profile set $hsprof login-url="$correctLoginUrl"
-```
-
-Substituir por (com escapes corretos):
-```typescript
-:local hsprof [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len \\$hsprof] > 0) do={
-/ip hotspot profile set \\$hsprof login-url="${loginUrl}"
+/ip hotspot profile set \$hsprof login-url="https://navspot.lovable.app/hotspot-login?h=XXXX&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)"
 :log info "NAVSPOT-RECOVERY: login-url configurada"
 } else={
 :log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado"
 }
 ```
 
-**Onde `loginUrl` já contém os escapes corretos:**
-```typescript
-const loginUrl = `https://navspot.lovable.app/hotspot-login?h=${hotspotId}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)`
-```
-
-### 2. `supabase/functions/mikrotik-script-generator/index.ts`
-
-Verificar se há o mesmo padrão problemático no bootstrap. Se houver, aplicar a mesma correção.
-
-### 3. Atualizar Linter
-
-Adicionar detecção de `login-url="$` para prevenir regressões:
-
-```typescript
-{ regex: /login-url="\$/, desc: 'login-url="$... (variable in string breaks /import)' },
-```
-
-### 4. Atualizar Versão
-
-- Recovery e Bootstrap: `6.9.29`
-- Frontend: ScriptModal e Embarcacoes.tsx
+**Como funciona o escape:**
+- TypeScript `\\$hsprof` → arquivo .rsc `\$hsprof` → RouterOS runtime expande para o valor
+- TypeScript `\\$(mac)` → arquivo .rsc `\$(mac)` → MikroTik expande em runtime do hotspot
 
 ---
 
-## Auditoria de Outros Padrões de Risco
+## Arquivos Modificados
 
-### Variáveis Usadas Dentro de Strings (potencialmente problemáticas)
+### 1. `supabase/functions/mikrotik-recovery-download/index.ts` ✅
 
-| Arquivo | Linha | Código | Status |
-|---------|-------|--------|--------|
-| recovery | ~578 | `contents="${syncToken}"` | OK — `syncToken` é substituído pelo TypeScript |
-| recovery | ~688 | `login-url="$correctLoginUrl"` | **ERRO** — variável MikroTik dentro de string |
-| bootstrap | ~733 | `login-url="...\\$(mac)..."` | OK — escapes corretos |
-| bootstrap | ~770 | `contents=$tokenValue` | OK — sem aspas na atribuição |
+- Versão atualizada para 6.9.29
+- Removida variável `$correctLoginUrl` 
+- Adicionado escape `\\$hsprof` para compatibilidade com /import
+- URL agora é escrita inline (interpolada pelo TypeScript)
+- Linter expandido com 2 novos padrões proibidos
 
-### Wildcards no Walled Garden
+### 2. `supabase/functions/mikrotik-script-generator/index.ts` ✅
 
-| Padrão | Risco |
-|--------|-------|
-| `*.lovable.app` | Baixo (funciona na maioria dos 6.x) |
-| `*.supabase.co` | Baixo |
-| `*.cloudfront.net` | Baixo |
-| `*.amazonaws.com` | Baixo |
-| `*.gstatic.com` | Baixo |
-| `*.apple.com` | **REMOVIDO** v6.9.28 |
+- Versão atualizada para 6.9.29
+- Linter expandido com mesmos padrões do recovery
+- Bootstrap já estava correto (usa URL inline na linha 733)
+
+### 3. Linter Atualizado ✅
+
+Novos padrões detectados:
+```typescript
+{ regex: /login-url="\$/, desc: 'login-url="$... (variable in string breaks /import)' },
+{ regex: /set \$[a-zA-Z]+ login-url/, desc: 'set $var login-url (unescaped variable breaks /import)' },
+```
+
+### 4. Frontend ✅
+
+- ScriptModal: versão padrão atualizada para 6.9.29
 
 ---
 

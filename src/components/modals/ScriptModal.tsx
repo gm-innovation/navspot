@@ -31,7 +31,7 @@ export function ScriptModal({
   bootstrapScript,
   hotspotName,
   hotspotId,
-  scriptVersion = "6.9.27",
+  scriptVersion = "6.9.29",
   onRegenerate,
   isRegenerating,
 }: ScriptModalProps) {
