@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "6.9.32"
+const VERSION = "6.9.33"
 const DEPLOYED_AT = new Date().toISOString()
 
 interface Hotspot {
@@ -51,6 +51,8 @@ function validateRouterOSScript(script: string, context: string): void {
     // v6.9.32: Block :if ... do={} with escaped vars - the conditional inline block breaks parser
     // This is MORE SPECIFIC than matching any do={} - only :if conditions are problematic
     { regex: /:if [^;]*do=\{[^}]*\\\$\(/, desc: ':if...do={...\\$(...} (escaped var inside if-do block breaks RouterOS 6.x - use :do { } on-error={})' },
+    // v6.9.33: Block [find ...] + \$(...) inside same :do block - use two-step pattern
+    { regex: /:do\s*\{\s*[^}]*\[find[^\]]*\][^}]*\\\$\([^\)]*\)[^}]*\}/, desc: '[find ...] + \\$(...) in same :do block (breaks RouterOS 6.x - use two-step pattern: assign find to local, then set)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
