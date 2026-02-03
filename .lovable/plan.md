@@ -1,223 +1,125 @@
 
-# Plano: Diagnóstico e Resolução dos Problemas do Hotspot
 
-## Diagnóstico Completo
+# Plano: Corrigir Portal Captivo - Adicionar Walled Garden Essencial ao Recovery
 
-Após análise detalhada do código, logs e fluxo do sistema, identifiquei as causas raiz de cada problema:
+## Diagnóstico
 
----
+A página de autenticação do portal não aparece mais porque o **Walled Garden essencial** foi removido/corrompido. O script de **Recovery v6.9.21** atual **NÃO recria** as regras do Walled Garden que permitem acesso ao portal antes da autenticação.
 
-## Problema 1: Tela de Autenticação do Hotspot Não Aparece
+### Fluxo do Problema:
+1. Usuário conecta ao WiFi da embarcação
+2. MikroTik tenta redirecionar para `navspot.lovable.app/hotspot-login`
+3. **Walled Garden não permite** acesso a `navspot.lovable.app` (regra removida)
+4. Dispositivo interpreta como "sem internet" e mostra erro
 
-### Causa Raiz
-O script de Recovery v6.9.21 **não foi importado corretamente** (houve erro de sintaxe na linha 20). O MikroTik continua rodando a versão antiga que pode ter:
-- Walled Garden incompleto
-- login-url incorreta
-- Hotspot Profile não configurado
+### Logs Confirmam:
+- Sync funcionando normalmente (usuário logado aparece)
+- Hash de firewall calculado corretamente
+- **Nenhuma ação de Walled Garden sendo injetada** (só 3 ações de blacklist)
 
-### Verificação Necessária
+## Causa Raiz
+
+O Recovery atual (linhas 560-630 de `mikrotik-recovery-download/index.ts`) apenas recria:
+- Token
+- Action Processor
+- Sync Script
+- Scheduler
+- Netwatch
+
+**NÃO recria:**
+- Walled Garden para portal (`navspot.lovable.app`, `*.lovable.app`)
+- Walled Garden para backend (`*.supabase.co`, `*.supabase.in`)
+- Walled Garden para CDNs (`*.cloudfront.net`, `*.amazonaws.com`)
+- Walled Garden para CPD (`*.gstatic.com`, `*.msftconnecttest.com`, `*.apple.com`)
+- Protocolos essenciais (DNS, DHCP, NTP, ICMP)
+
+## Solução Proposta
+
+Adicionar **Seção 5: WALLED GARDEN ESSENCIAL** ao script de Recovery que recria todas as regras necessárias para o portal funcionar.
+
+### Mudanças Técnicas
+
+**Arquivo: `supabase/functions/mikrotik-recovery-download/index.ts`**
+
+Adicionar antes da mensagem final de conclusão (antes da linha 622):
+
 ```routeros
-/ip hotspot profile print
-/ip hotspot print
-/log print where message~"NAVSPOT"
-```
-
-### Solução
-1. Corrigir o script de Recovery v6.9.21 (já corrigido no último deploy)
-2. Baixar novo Recovery e importar no MikroTik
-3. Verificar que o hotspot profile tem `login-url` apontando para `navspot.lovable.app`
-
----
-
-## Problema 2: Formulário de Cadastro Não Abre
-
-### Causa Raiz
-O redirecionamento para `/completar-cadastro` depende de:
-1. **login-url** estar configurada corretamente no hotspot profile
-2. **Status do tripulante** ser `pendente_cadastro`
-3. **Walled Garden** permitir acesso ao `navspot.lovable.app`
-
-### Verificação
-A login-url está configurada como:
-```routeros
-login-url="https://navspot.lovable.app/hotspot-login?h=${hotspot.id}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
-```
-
-O fluxo é:
-1. Usuário conecta na WiFi
-2. MikroTik redireciona para `navspot.lovable.app/hotspot-login`
-3. Usuário faz login com credenciais
-4. Se status = `pendente_cadastro`, redireciona para `/completar-cadastro`
-5. Após completar, faz auto-login e libera acesso
-
-### Solução
-Reimportar o script v6.9.21 que configura o hotspot profile corretamente.
-
----
-
-## Problema 3: Whitelists Não Funcionam (Apenas Templates)
-
-### Causa Raiz Principal
-Os logs mostram claramente:
-```
-v6.9.17: Firewall rules unchanged, skipping injection (loop prevention)
-```
-
-O sistema coleta corretamente **17 domínios** da whitelist, mas **não injeta os comandos** porque:
-1. O hash das regras não mudou desde a última vez
-2. Os comandos foram enviados anteriormente, mas o MikroTik não os processou corretamente (script v6.9.20)
-3. O action processor v6.9.20 **não tinha** a lógica de Walled Garden + ordem correta
-
-### Solução em 3 Etapas
-
-#### Etapa 1: Forçar Re-injeção das Regras
-Limpar o hash para forçar o backend a reenviar todos os comandos de whitelist:
-
-```sql
-UPDATE hotspots SET firewall_rules_hash = NULL 
-WHERE id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1';
-```
-
-#### Etapa 2: Atualizar o Script no MikroTik
-Importar o Recovery v6.9.21 que tem:
-- Action processor com ordem correta (ACCEPT antes de DROP)
-- Lógica de Walled Garden para whitelists
-- timeout=none nos address-list
-
-#### Etapa 3: Verificar Resultado
-```routeros
-# Verificar Walled Garden
-/ip hotspot walled-garden print where comment~"navspot-allow"
-
-# Verificar Address-List
-/ip firewall address-list print where list=NAVSPOT-ALLOWED
-
-# Verificar ordem do Firewall
-/ip firewall filter print where comment~"NAVSPOT-ALLOW"
-```
-
----
-
-## Problema 4: Sugestão de Mudança de Abordagem
-
-### Análise da Sugestão
-A abordagem "liberar tudo + blacklist" é mais simples, mas o sistema **já suporta ambos os modos**:
-
-| Modo | Configuração | Comportamento |
-|------|--------------|---------------|
-| `liberar_tudo` | modo_acesso=liberar_tudo + blacklist | Tudo liberado, apenas blacklist bloqueada |
-| `bloquear_tudo` | modo_acesso=bloquear_tudo + whitelist | Tudo bloqueado, apenas whitelist liberada |
-
-### Problema Atual
-O perfil "Tripulação Googlemarine" está em modo `bloquear_tudo`, que requer whitelist funcional.
-
-### Opções
-
-**Opção A: Manter modo atual e corrigir whitelist**
-- Implementar as correções acima
-- Resultado: Sistema funciona como projetado
-
-**Opção B: Mudar para modo permissivo**
-- Alterar perfil para `liberar_tudo`
-- Criar blacklists robustas (streaming, redes sociais, etc)
-- Mais simples de manter, menos falsos positivos
-
----
-
-## Plano de Implementação
-
-### 1. Limpar Hash para Forçar Re-injeção
-Executar no banco de dados:
-```sql
-UPDATE hotspots SET firewall_rules_hash = NULL;
-```
-
-Isso fará o próximo sync enviar todos os comandos `add_firewall_allow` novamente.
-
-### 2. Corrigir Erro de Sintaxe no Recovery (se ainda existir)
-Verificar se há algum problema remanescente no arquivo gerado.
-
-### 3. Melhorar Logging no Action Processor
-Adicionar logs mais detalhados para debug quando comandos são processados.
-
-### 4. Considerar Opção de "Limpar e Reaplicar" no Painel
-Criar um botão no painel que:
-- Limpa o hash
-- Limpa regras NAVSPOT no MikroTik (via action)
-- Força re-sincronização completa
-
----
-
-## Mudanças de Código Necessárias
-
-### Arquivo 1: Limpar Hash via SQL
-```sql
--- Forçar re-injeção de regras de firewall
-UPDATE hotspots 
-SET firewall_rules_hash = NULL, firewall_rules_updated_at = NULL;
-```
-
-### Arquivo 2: Adicionar Logging Detalhado (Opcional)
-Em `mikrotik-sync/index.ts`, melhorar logs quando hash muda:
-
-```typescript
-if (currentHash !== newHash) {
-  console.log(`[mikrotik-sync] v6.9.21: Firewall rules changed!`)
-  console.log(`[mikrotik-sync] v6.9.21: Old hash: ${currentHash || 'none'}`)
-  console.log(`[mikrotik-sync] v6.9.21: New hash: ${newHash}`)
-  console.log(`[mikrotik-sync] v6.9.21: Domains to inject: ${allDomains.join(', ')}`)
-  // ... inject actions
+# 5. WALLED GARDEN ESSENCIAL v6.9.21 (recria se estiver faltando)
+# Portal NAVSPOT
+:if ([:len [/ip hotspot walled-garden find dst-host="navspot.lovable.app"]] = 0) do={
+/ip hotspot walled-garden add dst-host="navspot.lovable.app" action=allow comment="navspot-portal"
+:log info "NAVSPOT-RECOVERY: Walled Garden - navspot.lovable.app"
 }
+:if ([:len [/ip hotspot walled-garden find dst-host="*.lovable.app"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.lovable.app" action=allow comment="navspot-portal"
+}
+# Backend Supabase
+:if ([:len [/ip hotspot walled-garden find dst-host="*.supabase.co"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-api"
+}
+:if ([:len [/ip hotspot walled-garden find dst-host="*.supabase.in"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.supabase.in" action=allow comment="navspot-api"
+}
+# CDNs para logos
+:if ([:len [/ip hotspot walled-garden find dst-host="*.cloudfront.net"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.cloudfront.net" action=allow comment="navspot-cdn"
+}
+:if ([:len [/ip hotspot walled-garden find dst-host="*.amazonaws.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.amazonaws.com" action=allow comment="navspot-cdn"
+}
+# Captive Portal Detection - Android
+:if ([:len [/ip hotspot walled-garden find dst-host="connectivitycheck.gstatic.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="connectivitycheck.gstatic.com" action=allow comment="navspot-cpd-android"
+}
+:if ([:len [/ip hotspot walled-garden find dst-host="*.gstatic.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.gstatic.com" action=allow comment="navspot-cpd-android"
+}
+# Captive Portal Detection - Windows
+:if ([:len [/ip hotspot walled-garden find dst-host="*.msftconnecttest.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.msftconnecttest.com" action=allow comment="navspot-cpd-windows"
+}
+:if ([:len [/ip hotspot walled-garden find dst-host="*.msftncsi.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.msftncsi.com" action=allow comment="navspot-cpd-windows"
+}
+# Captive Portal Detection - Apple
+:if ([:len [/ip hotspot walled-garden find dst-host="captive.apple.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="captive.apple.com" action=allow comment="navspot-cpd-apple"
+}
+:if ([:len [/ip hotspot walled-garden find dst-host="*.apple.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.apple.com" action=allow comment="navspot-cpd-apple"
+}
+# Protocolos essenciais
+:if ([:len [/ip hotspot walled-garden ip find dst-port=53 protocol=udp]] = 0) do={
+/ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
+}
+:if ([:len [/ip hotspot walled-garden ip find dst-port=67 protocol=udp]] = 0) do={
+/ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
+}
+:if ([:len [/ip hotspot walled-garden ip find dst-port=123 protocol=udp]] = 0) do={
+/ip hotspot walled-garden ip add dst-port=123 protocol=udp action=accept comment="navspot-ntp"
+}
+:log info "NAVSPOT-RECOVERY: Walled Garden essencial verificado/restaurado"
 ```
-
----
-
-## Resumo das Ações
-
-| # | Ação | Responsável |
-|---|------|-------------|
-| 1 | Limpar `firewall_rules_hash` no banco | Sistema |
-| 2 | Baixar novo Recovery v6.9.21 | Usuário |
-| 3 | Importar Recovery no MikroTik | Usuário |
-| 4 | Aguardar próximo sync (1 minuto) | Automático |
-| 5 | Verificar logs e regras aplicadas | Usuário |
-
----
-
-## Testes de Validação
-
-### No MikroTik:
-```routeros
-# 1. Verificar versão
-/log print where message~"v6.9.21"
-
-# 2. Verificar Hotspot Profile
-/ip hotspot profile print where name~"navspot"
-
-# 3. Verificar Walled Garden
-/ip hotspot walled-garden print where comment~"navspot-allow"
-
-# 4. Verificar Address-List
-/ip firewall address-list print where list=NAVSPOT-ALLOWED
-
-# 5. Verificar ordem do Firewall
-/ip firewall filter print where comment~"NAVSPOT-ALLOW"
-
-# 6. Testar acesso
-/tool fetch url="https://uol.com.br" output=none
-```
-
-### No Painel:
-1. Verificar que o consumo foi resetado
-2. Verificar logs de sincronização
-
----
 
 ## Arquivos a Modificar
 
-Apenas limpeza de dados no banco (não requer código novo).
+| Arquivo | Mudança |
+|---------|---------|
+| `supabase/functions/mikrotik-recovery-download/index.ts` | Adicionar Seção 5 com Walled Garden essencial |
 
-A implementação anterior da v6.9.21 já contém todas as correções necessárias no código. O problema é que:
-1. O hash impede re-injeção das regras
-2. O MikroTik não recebeu o script atualizado
+## Resultado Esperado
+
+Após a implementação:
+1. O Recovery v6.9.22 recriará automaticamente as regras de Walled Garden faltantes
+2. O portal `navspot.lovable.app` ficará acessível antes do login
+3. O popup de Captive Portal aparecerá corretamente no Android/iOS/Windows
+4. A tela de login do hotspot funcionará normalmente
+
+## Passos Após Implementação
+
+1. Fazer deploy da Edge Function atualizada
+2. Baixar novo Recovery no painel
+3. Importar no MikroTik: `/import navspot-recovery.rsc`
+4. Verificar Walled Garden: `/ip hotspot walled-garden print`
+5. Testar conexão com dispositivo Android
 
