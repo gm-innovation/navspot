@@ -449,6 +449,7 @@ export default function Embarcacoes() {
         bootstrapScript={bootstrapScript}
         finalizeScript={finalizeScript}
         hotspotName={currentHotspotName}
+        hotspotId={currentHotspotId}
         onRegenerate={handleRegenerateScript}
         isRegenerating={generateScript.isPending}
       />
