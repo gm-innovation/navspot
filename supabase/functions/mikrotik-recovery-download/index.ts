@@ -487,7 +487,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
 :if ([:len [/ip firewall address-list find list="NAVSPOT-BLACKLIST" address=$resolvedIp]] = 0) do={
-/ip firewall address-list add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=1d comment=("navspot-" . $domain)
+/ip firewall address-list add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=none comment=("navspot-" . $domain)
 :log info ("NAVSPOT: Firewall block - " . $domain . " -> " . $resolvedIp)
 } else={
 :log info ("NAVSPOT: IP already in blacklist - " . $resolvedIp)
