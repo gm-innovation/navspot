@@ -6,12 +6,13 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-recovery-download v6.9.15
+ * mikrotik-recovery-download v6.9.19
  * 
  * Minimal recovery endpoint for MikroTik self-healing.
  * Returns a .rsc script that ONLY recreates scripts/schedulers without touching
  * bridge, DHCP, NAT, hotspot config - to avoid network disruption.
  * 
+ * v6.9.19: Startup resilience - delay in schedulers + Netwatch for auto-sync
  * v6.9.15: Added add_firewall_block handler with Address-List + DNS resolution
  * 
  * Called by navspot-guardian when it detects missing components or outdated scripts.
@@ -90,12 +91,12 @@ Deno.serve(async (req) => {
     const syncUrl = `${supabaseUrl}/functions/v1/mikrotik-sync`
     const syncIntervalMinutes = hotspot.sync_interval_minutes || 5
 
-    console.log(`[mikrotik-recovery-download] Generating recovery v6.9.15 for: ${hotspot.nome}`)
+    console.log(`[mikrotik-recovery-download] Generating recovery v6.9.19 for: ${hotspot.nome}`)
 
-    // v6.9.15: Recovery script with Address-List blocking
+    // v6.9.19: Recovery script with Address-List blocking + startup resilience
     const recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes)
 
-    console.log(`[mikrotik-recovery-download] Recovery script v6.9.15 generated for ${hotspot.nome} (${recoveryScript.length} bytes)`)
+    console.log(`[mikrotik-recovery-download] Recovery script v6.9.19 generated for ${hotspot.nome} (${recoveryScript.length} bytes)`)
 
     return new Response(recoveryScript, {
       status: 200,
@@ -117,7 +118,7 @@ Deno.serve(async (req) => {
 })
 
 function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number): string {
-  // v6.9.9 sync script source (same as main generator)
+  // v6.9.19 sync script source (same as main generator)
   const syncScriptSource = `:local token [/file get "navspot-token.txt" contents]
 :local syncUrl "${syncUrl}"
 :local users ""
@@ -172,7 +173,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number): s
 } on-error={:log warning "NAVSPOT-SYNC: Falha"}
 :log info "NAVSPOT-SYNC: OK"`
 
-  // v6.9.15 action processor source with Address-List blocking
+  // v6.9.19 action processor source with Address-List blocking
   const actionProcessorSource = `:global navspotActions
 :global navspotLock
 :if ($navspotLock = "1") do={
@@ -186,7 +187,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number): s
 :log info "NAVSPOT: Sem acoes pendentes"
 :return
 }
-:log info ("NAVSPOT-ACTION v6.9.15: Iniciando - " . $rawData)
+:log info ("NAVSPOT-ACTION v6.9.19: Iniciando - " . $rawData)
 :local pos 0
 :do {
 :while ([:find $rawData ";" $pos] >= 0) do={
@@ -327,14 +328,14 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number): s
 :if ($cmd = "add_firewall_block") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# v6.9.15: Ensure master drop rule exists before fasttrack
+# v6.9.19: Ensure master drop rule exists before fasttrack
 :if ([:len [/ip firewall filter find comment="NAVSPOT-BLOCK-MASTER"]] = 0) do={
 :local ftPos [/ip firewall filter find where action=fasttrack-connection]
 :if ([:len $ftPos] = 0) do={:set ftPos 0}
 /ip firewall filter add chain=forward action=drop dst-address-list=NAVSPOT-BLACKLIST comment="NAVSPOT-BLOCK-MASTER" place-before=$ftPos
 :log info "NAVSPOT: Master firewall rule created"
 }
-# v6.9.15: Resolve domain to IP and add to address-list
+# v6.9.19: Resolve domain to IP and add to address-list
 :do {
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
@@ -405,23 +406,23 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number): s
 }
 :set navspotActions ""
 :set navspotLock "0"
-:log info "NAVSPOT-ACTION v6.9.15: Processamento concluido"`
+:log info "NAVSPOT-ACTION v6.9.19: Processamento concluido"`
 
-  // v6.9.15: Recovery script with set-or-add pattern
-  return `# NAVSPOT Recovery Script v6.9.15
+  // v6.9.19: Recovery script with set-or-add pattern + startup resilience + netwatch
+  return `# NAVSPOT Recovery Script v6.9.19
 # This script ONLY recreates missing scripts/schedulers
 # It does NOT touch network config (bridge, DHCP, NAT, hotspot)
-:log info "NAVSPOT-RECOVERY v6.9.15: Iniciando reparacao..."
+:log info "NAVSPOT-RECOVERY v6.9.19: Iniciando reparacao..."
 
 # 1. ACTION PROCESSOR - set-or-add pattern
 :local apExists [/system script find name="navspot-action-processor"]
 :if ([:len $apExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando navspot-action-processor v6.9.15..."
+:log info "NAVSPOT-RECOVERY: Atualizando navspot-action-processor v6.9.19..."
 /system script set $apExists policy=read,write,test source={
 ${actionProcessorSource}
 }
 } else={
-:log info "NAVSPOT-RECOVERY: Criando navspot-action-processor v6.9.15..."
+:log info "NAVSPOT-RECOVERY: Criando navspot-action-processor v6.9.19..."
 /system script add name="navspot-action-processor" policy=read,write,test source={
 ${actionProcessorSource}
 }
@@ -443,18 +444,26 @@ ${syncScriptSource}
 }
 :delay 200ms
 
-# 3. SCHEDULER - set-or-add pattern
+# 3. SCHEDULER - set-or-add pattern v6.9.19: delay para aguardar rede + start-date fixo
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando scheduler..."
-/system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync"
+:log info "NAVSPOT-RECOVERY: Atualizando scheduler v6.9.19..."
+/system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
-:log info "NAVSPOT-RECOVERY: Criando scheduler..."
-/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup
+:log info "NAVSPOT-RECOVERY: Criando scheduler v6.9.19..."
+/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
+}
+
+# 4. NETWATCH v6.9.19 - Dispara sync quando internet volta
+:if ([:len [/tool netwatch find comment="navspot-netwatch"]] = 0) do={
+/tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script=":delay 5s; :do { /system script run navspot-sync } on-error={}" comment="navspot-netwatch"
+:log info "NAVSPOT-RECOVERY: Netwatch configurado para auto-sync"
 }
 
 :log info "=========================================="
-:log info "NAVSPOT-RECOVERY v6.9.15: REPARACAO CONCLUIDA!"
+:log info "NAVSPOT-RECOVERY v6.9.19: REPARACAO CONCLUIDA!"
+:log info "Startup resilience: delay 30s + start-date fixo"
+:log info "Netwatch: auto-sync quando internet volta"
 :log info "Address-List blocking enabled"
 :log info "=========================================="
 `

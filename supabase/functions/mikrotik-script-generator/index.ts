@@ -67,7 +67,7 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[script-generator] Generating bootstrap script v6.9.15 for hotspot: ${hotspot_id}`)
+    console.log(`[script-generator] Generating bootstrap script v6.9.19 for hotspot: ${hotspot_id}`)
 
     // Fetch hotspot with embarcacao
     const { data: hotspot, error: hotspotError } = await supabase
@@ -171,7 +171,7 @@ Deno.serve(async (req) => {
       .replace(/\t/g, '  ')
       .replace(/\n{3,}/g, '\n\n')
 
-    console.log(`[script-generator] Bootstrap script v6.9.15 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
+    console.log(`[script-generator] Bootstrap script v6.9.19 generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'}, Type: ${hotspot.wan_type || 'dhcp'})`)
 
     return new Response(
       JSON.stringify({
@@ -181,7 +181,7 @@ Deno.serve(async (req) => {
         hotspot_name: hotspot.nome,
         wan_interface: hotspot.wan_interface || 'ether1',
         wan_type: hotspot.wan_type || 'dhcp',
-        version: '6.9.15'
+        version: '6.9.19'
       }),
       { 
         status: 200, 
@@ -540,8 +540,8 @@ function generateBootstrapScript(
   // v6.9.12: Recovery URL for guardian
   const recoveryUrl = `${supabaseUrl}/functions/v1/mikrotik-recovery-download`
 
-  // v6.9.15: Guardian script source - self-healing mechanism with version check
-  const guardianScriptSource = `:log info "NAVSPOT-GUARDIAN v6.9.15: Verificando integridade..."
+  // v6.9.19: Guardian script source - self-healing mechanism with version check
+  const guardianScriptSource = `:log info "NAVSPOT-GUARDIAN v6.9.19: Verificando integridade..."
 :local needsRepair 0
 :local missing ""
 # Verificar scripts essenciais
@@ -557,7 +557,7 @@ function generateBootstrapScript(
 :set needsRepair 1
 :set missing ($missing . "navspot-sync-scheduler ")
 }
-# v6.9.15: Check if action-processor has add_firewall_block handler (version marker)
+# v6.9.19: Check if action-processor has add_firewall_block handler (version marker)
 :if ($needsRepair = 0) do={
 :local apSource [/system script get [find name="navspot-action-processor"] source]
 :if ([:find $apSource "NAVSPOT-BLACKLIST"] < 0) do={
@@ -596,11 +596,11 @@ function generateBootstrapScript(
 }
 }
 } else={
-:log info "NAVSPOT-GUARDIAN: Sistema integro v6.9.15"
+:log info "NAVSPOT-GUARDIAN: Sistema integro v6.9.19"
 }`
 
-  // Bootstrap script v6.9.15 - Safe Update + Guardian + Token via /file print file=
-  return `:log info "NAVSPOT v6.9.15: Iniciando instalacao..."
+  // Bootstrap script v6.9.19 - Safe Update + Guardian + Netwatch + Startup Resilience
+  return `:log info "NAVSPOT v6.9.19: Iniciando instalacao..."
 
 # 0. VALIDACAO INICIAL
 :if ([:len [/interface find name="${wanInterface}"]] = 0) do={
@@ -631,8 +631,9 @@ function generateBootstrapScript(
 :do { /interface bridge remove [find name="bridge1"] } on-error={}
 :do { /file remove "navspot-token.txt" } on-error={}
 :do { /ip dhcp-client remove [find comment="navspot-wan"] } on-error={}
+:do { /tool netwatch remove [find comment="navspot-netwatch"] } on-error={}
 :delay 2s
-:log info "NAVSPOT: Limpeza concluida (scripts preservados) v6.9.15"
+:log info "NAVSPOT: Limpeza concluida (scripts preservados) v6.9.19"
 
 # 2. CONFIGURAR WAN (antes de criar bridge)
 ${wanConfig}
@@ -750,14 +751,14 @@ ${guardianScriptSource}
 }
 }
 
-# Guardian scheduler (startup + a cada 10 min)
+# Guardian scheduler (startup + a cada 10 min) v6.9.19: delay para aguardar rede
 :local guardianSchedExists [/system scheduler find name="navspot-guardian-scheduler"]
 :if ([:len $guardianSchedExists] > 0) do={
-/system scheduler set $guardianSchedExists interval=10m on-event="/system script run navspot-guardian"
+/system scheduler set $guardianSchedExists interval=10m on-event=":delay 20s; :do { /system script run navspot-guardian } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
-/system scheduler add name="navspot-guardian-scheduler" interval=10m on-event="/system script run navspot-guardian" start-time=startup
+/system scheduler add name="navspot-guardian-scheduler" interval=10m on-event=":delay 20s; :do { /system script run navspot-guardian } on-error={}" start-time=startup start-date=jan/01/1970
 }
-:log info "NAVSPOT: Guardian v6.9.15 ativo (version check enabled)"
+:log info "NAVSPOT: Guardian v6.9.19 ativo (startup delay + version check)"
 
 # 11. ACTION PROCESSOR v2 - set-or-add pattern (nunca remove antes)
 :local apExists [/system script find name="navspot-action-processor"]
@@ -789,26 +790,34 @@ ${syncScriptSource}
 }
 :delay 100ms
 
-# Scheduler - set-or-add pattern
+# Scheduler - set-or-add pattern v6.9.19: delay para aguardar rede + start-date fixo
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
-/system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync"
+/system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
-/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup
+/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
 }
-:log info "NAVSPOT: Sync v6.9.15 + Action Processor v2 configurados"
+:log info "NAVSPOT: Sync v6.9.19 + Action Processor v2 configurados (startup delay)"
 
-# 13. MIGRACAO DE PORTAS LAN (ether3, 4, 5 - ether2 permanece como gerencia)
+# 13. NETWATCH v6.9.19 - Dispara sync quando internet volta
+:if ([:len [/tool netwatch find comment="navspot-netwatch"]] = 0) do={
+/tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script=":delay 5s; :do { /system script run navspot-sync } on-error={}" comment="navspot-netwatch"
+:log info "NAVSPOT: Netwatch configurado para auto-sync quando internet volta"
+}
+
+# 14. MIGRACAO DE PORTAS LAN (ether3, 4, 5 - ether2 permanece como gerencia)
 :log info "NAVSPOT: Migrando portas LAN para bridge1..."
 
 ${migrationCommands}
 
-# 14. FINALIZACAO
+# 15. FINALIZACAO
 :log info "=========================================="
-:log info "NAVSPOT v6.9.15: INSTALACAO CONCLUIDA!"
+:log info "NAVSPOT v6.9.19: INSTALACAO CONCLUIDA!"
 :log info "Portas LAN (ether3-5) ativas no Hotspot"
 :log info "Porta de gerencia (ether2) configurada para Winbox"
 :log info "Sync rodando a cada ${syncIntervalMinutes} minuto(s)"
+:log info "Startup resilience: delay 30s + start-date fixo"
+:log info "Netwatch: auto-sync quando internet volta"
 :log info "Guardian ativo - auto-recuperacao + version check"
 :log info "Address-List blocking para HTTPS/apps"
 :log info "=========================================="
