@@ -181,6 +181,69 @@ function shouldResetQuota(
   }
 }
 
+// v6.9.21: Reset expired quotas for ALL tripulantes, not just active ones
+async function resetExpiredQuotas(
+  supabase: ReturnType<typeof createClient>,
+  embarcacaoId: string,
+  timezone: string
+): Promise<number> {
+  const now = new Date().toISOString()
+  
+  // Fetch tripulantes with consumption that might need reset
+  const { data: tripulantes, error } = await supabase
+    .from('tripulantes')
+    .select(`
+      id, bytes_consumidos, quota_reset_at, status, bloqueio_motivo,
+      perfis_velocidade(limite_dados_mb, quota_periodo)
+    `)
+    .eq('embarcacao_id', embarcacaoId)
+    .gt('bytes_consumidos', 0) // Only check those with consumption
+  
+  if (error || !tripulantes || tripulantes.length === 0) {
+    return 0
+  }
+  
+  let resetCount = 0
+  
+  for (const t of tripulantes) {
+    const perfil = t.perfis_velocidade as { limite_dados_mb: number | null; quota_periodo: string } | null
+    if (!perfil?.limite_dados_mb || !perfil.quota_periodo) continue
+    
+    if (shouldResetQuota(t.quota_reset_at, perfil.quota_periodo, timezone)) {
+      // If blocked due to quota, reactivate
+      if (t.status === 'bloqueado' && t.bloqueio_motivo === 'quota_exceeded') {
+        await supabase
+          .from('tripulantes')
+          .update({
+            bytes_consumidos: 0,
+            quota_reset_at: now,
+            status: 'ativo',
+            bloqueio_motivo: null,
+            bloqueado_at: null
+          })
+          .eq('id', t.id)
+        
+        console.log(`[mikrotik-sync] v6.9.21: Reset quota AND reactivated blocked user: ${t.id}`)
+      } else {
+        // Just reset consumption
+        await supabase
+          .from('tripulantes')
+          .update({
+            bytes_consumidos: 0,
+            quota_reset_at: now
+          })
+          .eq('id', t.id)
+        
+        console.log(`[mikrotik-sync] v6.9.21: Reset quota for user: ${t.id}`)
+      }
+      
+      resetCount++
+    }
+  }
+  
+  return resetCount
+}
+
 // Helper to create alerts without duplicating recent ones
 async function createAlertIfNotRecent(
   supabase: ReturnType<typeof createClient>,
@@ -459,6 +522,14 @@ Deno.serve(async (req) => {
 
     // Use timezone from embarcacao only (no empresa fallback)
     const effectiveTimezone = embarcacao?.timezone || 'America/Sao_Paulo'
+    
+    // v6.9.21: Reset expired quotas for ALL tripulantes (not just active ones)
+    if (embarcacao) {
+      const resetCount = await resetExpiredQuotas(supabase, hotspot.embarcacao_id, effectiveTimezone)
+      if (resetCount > 0) {
+        console.log(`[mikrotik-sync] v6.9.21: Reset quota for ${resetCount} tripulante(s) in ${effectiveTimezone}`)
+      }
+    }
     console.log(`[mikrotik-sync] Using timezone: ${effectiveTimezone}`)
 
     if (hotspot.status === 'offline') {
