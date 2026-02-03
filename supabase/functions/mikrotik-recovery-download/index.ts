@@ -435,7 +435,8 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :if ([:len $uName] = 0) do={
 :log warning "NAVSPOT: create_user sem nome, ignorando"
 } else={
-:if ([:len [/ip hotspot user profile find name=$uProf]] = 0) do={
+:local profExists [/ip hotspot user profile find name=$uProf]
+:if ([:len $profExists] = 0) do={
 :log warning ("NAVSPOT: Perfil " . $uProf . " nao existe. Criando com defaults...")
 /ip hotspot user profile add name=$uProf
 }
