@@ -6,18 +6,17 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-recovery-download v6.9.25
+ * mikrotik-recovery-download v6.9.26
  * 
  * Minimal recovery endpoint for MikroTik self-healing.
  * Returns a .rsc script that recreates scripts/schedulers and verifies hotspot profile login-url.
  * 
- * v6.9.25: CRITICAL FIX - RouterOS 6.x /import compatible syntax
- *          Removed all [/ip firewall filter ...] patterns that break during /import
- *          Uses menu-context approach: /ip firewall filter + [find ...] + [get ...]
+ * v6.9.26: CRITICAL FIX - Removed AUTO-FIX firewall block completely
+ *          RouterOS 6.x loses menu context inside :do { } blocks during /import
+ *          Action-processor now uses direct commands only (no [find ...] after menu change)
+ * v6.9.25: CRITICAL FIX - RouterOS 6.x /import compatible syntax (partial fix - still had issues)
  * v6.9.24: RouterOS 6.x compatible check (no -> operator)
  * v6.9.23: CRITICAL FIX - Whitelist firewall rules now scoped to hotspot=auth only
- *          Pre-login traffic no longer blocked, fixing Android "no internet" captive portal issue
- *          Auto-removes old unscoped NAVSPOT-ALLOW-MASTER rules on sync
  * v6.9.22: Added essential Walled Garden recreation (portal, API, CDNs, CPD) + DNS TCP + ICMP
  * v6.9.21: Fixed firewall rule order (ACCEPT before DROP) + Walled Garden for whitelists + timeout=none
  * v6.9.20: Token fallback embutido nos scripts + suporte a hotspot_id autenticado
@@ -26,8 +25,8 @@ const corsHeaders = {
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.25"
-const DEPLOYED_AT = "2026-02-03T17:00:00.000Z"
+const VERSION = "6.9.26"
+const DEPLOYED_AT = "2026-02-03T18:00:00.000Z"
 
 function maskToken(token: string): string {
   if (!token || token.length < 10) return '***'
@@ -241,7 +240,7 @@ Deno.serve(async (req) => {
 
     console.log(`[mikrotik-recovery-download ${VERSION}] Generating recovery for: ${hotspot!.nome}`)
 
-    // v6.9.25: Recovery script with RouterOS 6.x /import compatible syntax
+    // v6.9.26: Recovery script with simplified syntax - no AUTO-FIX block
     const recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes, syncToken, hotspot!.id)
 
     console.log(`[mikrotik-recovery-download ${VERSION}] Recovery script generated for ${hotspot!.nome} (${recoveryScript.length} bytes)`)
@@ -269,7 +268,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
   // External portal login URL with escaped variables for runtime expansion
   const loginUrl = `https://navspot.lovable.app/hotspot-login?h=${hotspotId}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)`
   
-  // v6.9.25 sync script source with embedded token fallback
+  // v6.9.26 sync script source with embedded token fallback
   const syncScriptSource = `:local token ""
 :do { :set token [/file get "navspot-token.txt" contents] } on-error={}
 :if ([:len $token] < 10) do={
@@ -329,8 +328,8 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 } on-error={:log warning "NAVSPOT-SYNC: Falha"}
 :log info "NAVSPOT-SYNC: OK"`
 
-  // v6.9.25 action processor source with RouterOS 6.x /import compatible syntax
-  // CRITICAL: No more [/ip firewall filter ...] patterns - use menu-context approach
+  // v6.9.26 action processor source - SIMPLIFIED - no [find ...] after menu context change
+  // Uses direct commands with on-error={} to handle duplicates silently
   const actionProcessorSource = `:global navspotActions
 :global navspotLock
 :if ($navspotLock = "1") do={
@@ -482,72 +481,35 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 }
 }
 }
+# v6.9.26: add_firewall_block - Direct commands only, no [find] after menu change
 :if ($cmd = "add_firewall_block") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# v6.9.25: Menu-context approach for RouterOS 6.x /import compatibility
-/ip firewall filter
-:if ([:len [find comment="NAVSPOT-BLOCK-MASTER"]] = 0) do={
-:local ftPos [find action=fasttrack-connection]
-:if ([:len $ftPos] = 0) do={:set ftPos 0}
-add chain=forward action=drop dst-address-list=NAVSPOT-BLACKLIST comment="NAVSPOT-BLOCK-MASTER" place-before=$ftPos
-:log info "NAVSPOT: Master firewall rule created (v6.9.25)"
-}
-# Resolve domain and add to address-list
+# Resolve domain and add to address-list directly (on-error handles duplicates)
 :do {
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
-/ip firewall address-list
-:if ([:len [find list="NAVSPOT-BLACKLIST" address=$resolvedIp]] = 0) do={
-add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=none comment=("navspot-" . $domain)
+:do { /ip firewall address-list add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=none comment=("navspot-" . $domain) } on-error={}
 :log info ("NAVSPOT: Firewall block - " . $domain . " -> " . $resolvedIp)
-}
 }
 } on-error={
 :log warning ("NAVSPOT: Failed to resolve " . $domain)
 }
 }
 }
-# v6.9.25: add_firewall_allow - Menu-context approach for RouterOS 6.x compatibility
+# v6.9.26: add_firewall_allow - Direct commands only, no [find] after menu change
 :if ($cmd = "add_firewall_allow") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# v6.9.25: Use menu-context approach - enter /ip firewall filter first
-/ip firewall filter
-:local oldMaster [find comment="NAVSPOT-ALLOW-MASTER"]
-:if ([:len $oldMaster] > 0) do={
-:local oldHotspot ""
-:do { :set oldHotspot [get $oldMaster hotspot] } on-error={ :set oldHotspot "" }
-:if ($oldHotspot != "auth") do={
-:log warning "NAVSPOT: Removendo regra ALLOW-MASTER antiga (sem escopo hotspot=auth)"
-remove $oldMaster
-:do { remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
-}
-}
-# Create scoped rules if they don't exist
-:if ([:len [find comment="NAVSPOT-ALLOW-MASTER"]] = 0) do={
-:local ftPos [find action=fasttrack-connection]
-:if ([:len $ftPos] = 0) do={:set ftPos 0}
-add chain=forward action=drop hotspot=auth comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
-:log info "NAVSPOT: Allow master drop rule created (v6.9.25 - hotspot=auth scoped)"
-:local dropPos [find comment="NAVSPOT-ALLOW-MASTER"]
-add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED hotspot=auth comment="NAVSPOT-ALLOW-ACCEPT" place-before=$dropPos
-:log info "NAVSPOT: Allow accept rule created BEFORE drop (v6.9.25)"
-}
-# Walled Garden (robust for hostnames)
-:if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
-/ip hotspot walled-garden add dst-host=$domain action=allow comment=("navspot-allow-" . $domain)
+# Walled Garden (robust for hostnames - always works)
+:do { /ip hotspot walled-garden add dst-host=$domain action=allow comment=("navspot-allow-" . $domain) } on-error={}
 :log info ("NAVSPOT: Walled Garden allow - " . $domain)
-}
 # Try DNS resolution for address-list
 :do {
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
-/ip firewall address-list
-:if ([:len [find list="NAVSPOT-ALLOWED" address=$resolvedIp]] = 0) do={
-add list="NAVSPOT-ALLOWED" address=$resolvedIp timeout=none comment=("navspot-allow-" . $domain)
+:do { /ip firewall address-list add list="NAVSPOT-ALLOWED" address=$resolvedIp timeout=none comment=("navspot-allow-" . $domain) } on-error={}
 :log info ("NAVSPOT: Firewall allow - " . $domain . " -> " . $resolvedIp)
-}
 }
 } on-error={
 :log warning ("NAVSPOT: DNS failed for " . $domain . " - using Walled Garden only")
@@ -575,14 +537,15 @@ add list="NAVSPOT-ALLOWED" address=$resolvedIp timeout=none comment=("navspot-al
 :set navspotLock "0"
 :log info "NAVSPOT-ACTION v${VERSION}: Processamento concluido"`
 
-  // v6.9.25: Recovery script with RouterOS 6.x /import compatible syntax
+  // v6.9.26: Recovery script - REMOVED AUTO-FIX firewall block completely
+  // The sync will recreate rules correctly with hotspot=auth on next run
   return `# NAVSPOT Recovery Script v${VERSION}
 # _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
 # This script recreates missing scripts/schedulers + token
-# v6.9.25: CRITICAL FIX - RouterOS 6.x /import compatible syntax
-#          Removed all [/ip firewall filter ...] patterns
-#          Uses menu-context approach: /ip firewall filter + [find ...] + [get ...]
-# v6.9.23: CRITICAL FIX - Whitelist rules now scoped to hotspot=auth (pre-login traffic no longer blocked)
+# v6.9.26: CRITICAL FIX - Removed AUTO-FIX firewall block completely
+#          RouterOS 6.x loses menu context inside :do { } blocks during /import
+#          Action-processor now uses direct commands only (no [find ...] after menu change)
+# v6.9.23: Whitelist rules now scoped to hotspot=auth (pre-login traffic no longer blocked)
 # It does NOT touch network config (bridge, DHCP, NAT, hotspot)
 :log info "NAVSPOT-RECOVERY v${VERSION}: Iniciando reparacao..."
 
@@ -625,7 +588,7 @@ ${syncScriptSource}
 }
 :delay 200ms
 
-# 3. SCHEDULER - set-or-add pattern v6.9.25: delay para aguardar rede + start-date fixo
+# 3. SCHEDULER - set-or-add pattern v6.9.26: delay para aguardar rede + start-date fixo
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
 :log info "NAVSPOT-RECOVERY: Atualizando scheduler v${VERSION}..."
@@ -635,13 +598,13 @@ ${syncScriptSource}
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
 }
 
-# 4. NETWATCH v6.9.25 - Dispara sync quando internet volta
+# 4. NETWATCH v6.9.26 - Dispara sync quando internet volta
 :if ([:len [/tool netwatch find comment="navspot-netwatch"]] = 0) do={
 /tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script=":delay 5s; :do { /system script run navspot-sync } on-error={}" comment="navspot-netwatch"
 :log info "NAVSPOT-RECOVERY: Netwatch configurado para auto-sync"
 }
 
-# 5. WALLED GARDEN ESSENCIAL v6.9.25 (recria regras criticas se estiverem faltando)
+# 5. WALLED GARDEN ESSENCIAL v6.9.26 (recria regras criticas se estiverem faltando)
 :log info "NAVSPOT-RECOVERY: Verificando Walled Garden essencial..."
 
 # Portal NAVSPOT
@@ -693,7 +656,7 @@ ${syncScriptSource}
 /ip hotspot walled-garden add dst-host="*.apple.com" action=allow comment="navspot-cpd-apple"
 }
 
-# v6.9.25: Protocolos essenciais (DNS UDP + TCP, DHCP, NTP, ICMP)
+# v6.9.26: Protocolos essenciais (DNS UDP + TCP, DHCP, NTP, ICMP)
 :if ([:len [/ip hotspot walled-garden ip find dst-port=53 protocol=udp comment~"navspot-dns"]] = 0) do={
 /ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns-udp"
 }
@@ -710,28 +673,9 @@ ${syncScriptSource}
 /ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
 }
 
-# v6.9.25: AUTO-FIX - Remove old unscoped NAVSPOT-ALLOW-MASTER rules
-# CRITICAL: Use menu-context approach for RouterOS 6.x /import compatibility
-:do {
-/ip firewall filter
-:local oldMaster [find comment="NAVSPOT-ALLOW-MASTER"]
-:if ([:len $oldMaster] > 0) do={
-:local oldHotspot ""
-:do { :set oldHotspot [get $oldMaster hotspot] } on-error={ :set oldHotspot "" }
-:if ($oldHotspot != "auth") do={
-:log warning "NAVSPOT-RECOVERY: Removendo NAVSPOT-ALLOW-MASTER sem escopo (causa do bloqueio pre-login)"
-remove $oldMaster
-:do { remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
-:log info "NAVSPOT-RECOVERY: Regras de firewall antigas removidas - proximo sync recriara com hotspot=auth"
-}
-}
-} on-error={
-:log warning "NAVSPOT-RECOVERY: Falha ao verificar/remover regras antigas NAVSPOT-ALLOW (seguindo sem auto-fix)"
-}
-
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial verificado/restaurado"
 
-# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.25
+# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.26
 :log info "NAVSPOT-RECOVERY: Verificando hotspot profile login-url..."
 :local hsprofName "hsprof-navspot"
 :local correctLoginUrl "${loginUrl}"
@@ -751,16 +695,15 @@ remove $oldMaster
 
 :log info "=========================================="
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
-:log info "FIX v6.9.25: RouterOS 6.x /import compatible syntax"
-:log info "FIX: Removed all [/ip firewall filter ...] patterns"
-:log info "FIX: Uses menu-context: /ip firewall filter + [find ...]"
+:log info "FIX v6.9.26: Removed AUTO-FIX firewall block (caused /import errors)"
+:log info "FIX: Action-processor now uses direct commands only"
 :log info "FIX: login-url do hotspot profile verificada/corrigida"
-:log info "FIX CRITICO: Whitelist agora usa hotspot=auth (pre-login nao bloqueado)"
 :log info "Token: recriado e fallback embutido no sync"
 :log info "Scripts: sync + action-processor v${VERSION} atualizados"
 :log info "Scheduler: sync a cada ${syncIntervalMinutes}m com startup delay"
 :log info "Netwatch: auto-sync quando internet volta"
 :log info "Walled Garden: portal + API + CPD + DNS/ICMP verificados"
+:log info "NOTE: Old firewall rules will be fixed on next sync (hotspot=auth)"
 :log info "=========================================="
 `
 }
