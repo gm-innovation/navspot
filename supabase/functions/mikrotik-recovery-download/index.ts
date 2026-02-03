@@ -52,8 +52,9 @@ function validateRouterOSScript(script: string, context: string): void {
     // v6.9.30: Only detect MikroTik variables INSIDE strings (those break /import)
     // Local script variables like $hsprof outside strings are fine and SHOULD NOT be escaped
     { regex: /login-url="\$[a-zA-Z]/, desc: 'login-url="$var... (MikroTik variable in string breaks /import - use escaped \\$)' },
-    // v6.9.32: Block do={...} blocks containing escaped variables - breaks parser on single line
-    { regex: /do=\{[^}]*\\\$\(/, desc: 'do={...\\$(...} (escaped var inside do block breaks parser - use :do { } on-error={} pattern)' },
+    // v6.9.32: Block :if ... do={} with escaped vars - the conditional inline block breaks parser
+    // This is MORE SPECIFIC than matching any do={} - only :if conditions are problematic
+    { regex: /:if [^;]*do=\{[^}]*\\\$\(/, desc: ':if...do={...\\$(...} (escaped var inside if-do block breaks RouterOS 6.x - use :do { } on-error={})' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
