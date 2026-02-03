@@ -619,12 +619,78 @@ ${syncScriptSource}
 :log info "NAVSPOT-RECOVERY: Netwatch configurado para auto-sync"
 }
 
+# 5. WALLED GARDEN ESSENCIAL v6.9.22 (recria regras criticas se estiverem faltando)
+:log info "NAVSPOT-RECOVERY: Verificando Walled Garden essencial..."
+
+# Portal NAVSPOT
+:if ([:len [/ip hotspot walled-garden find dst-host="navspot.lovable.app"]] = 0) do={
+/ip hotspot walled-garden add dst-host="navspot.lovable.app" action=allow comment="navspot-portal"
+:log info "NAVSPOT-RECOVERY: Walled Garden - navspot.lovable.app"
+}
+:if ([:len [/ip hotspot walled-garden find dst-host="*.lovable.app"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.lovable.app" action=allow comment="navspot-portal"
+}
+
+# Backend Supabase
+:if ([:len [/ip hotspot walled-garden find dst-host="*.supabase.co"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-api"
+}
+:if ([:len [/ip hotspot walled-garden find dst-host="*.supabase.in"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.supabase.in" action=allow comment="navspot-api"
+}
+
+# CDNs para logos e assets
+:if ([:len [/ip hotspot walled-garden find dst-host="*.cloudfront.net"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.cloudfront.net" action=allow comment="navspot-cdn"
+}
+:if ([:len [/ip hotspot walled-garden find dst-host="*.amazonaws.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.amazonaws.com" action=allow comment="navspot-cdn"
+}
+
+# Captive Portal Detection - Android
+:if ([:len [/ip hotspot walled-garden find dst-host="connectivitycheck.gstatic.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="connectivitycheck.gstatic.com" action=allow comment="navspot-cpd-android"
+}
+:if ([:len [/ip hotspot walled-garden find dst-host="*.gstatic.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.gstatic.com" action=allow comment="navspot-cpd-android"
+}
+
+# Captive Portal Detection - Windows
+:if ([:len [/ip hotspot walled-garden find dst-host="*.msftconnecttest.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.msftconnecttest.com" action=allow comment="navspot-cpd-windows"
+}
+:if ([:len [/ip hotspot walled-garden find dst-host="*.msftncsi.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.msftncsi.com" action=allow comment="navspot-cpd-windows"
+}
+
+# Captive Portal Detection - Apple
+:if ([:len [/ip hotspot walled-garden find dst-host="captive.apple.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="captive.apple.com" action=allow comment="navspot-cpd-apple"
+}
+:if ([:len [/ip hotspot walled-garden find dst-host="*.apple.com"]] = 0) do={
+/ip hotspot walled-garden add dst-host="*.apple.com" action=allow comment="navspot-cpd-apple"
+}
+
+# Protocolos essenciais (DNS, DHCP, NTP)
+:if ([:len [/ip hotspot walled-garden ip find dst-port=53 protocol=udp comment~"navspot-dns"]] = 0) do={
+/ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
+}
+:if ([:len [/ip hotspot walled-garden ip find dst-port=67 protocol=udp comment~"navspot-dhcp"]] = 0) do={
+/ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
+}
+:if ([:len [/ip hotspot walled-garden ip find dst-port=123 protocol=udp comment~"navspot-ntp"]] = 0) do={
+/ip hotspot walled-garden ip add dst-port=123 protocol=udp action=accept comment="navspot-ntp"
+}
+
+:log info "NAVSPOT-RECOVERY: Walled Garden essencial verificado/restaurado"
+
 :log info "=========================================="
-:log info "NAVSPOT-RECOVERY v6.9.21: REPARACAO CONCLUIDA!"
+:log info "NAVSPOT-RECOVERY v6.9.22: REPARACAO CONCLUIDA!"
 :log info "Token: recriado e fallback embutido no sync"
 :log info "Scripts: sync + action-processor v6.9.21 atualizados"
 :log info "Scheduler: sync a cada ${syncIntervalMinutes}m com startup delay"
 :log info "Netwatch: auto-sync quando internet volta"
+:log info "Walled Garden: portal + API + CPD verificados"
 :log info "=========================================="
 `
 }
