@@ -9,8 +9,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Copy, Download, Check, RefreshCw, Upload, Shield } from "lucide-react";
+import { Copy, Download, Check, RefreshCw, Upload, Shield, RotateCcw } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
+import { useDownloadRecoveryScript } from "@/hooks/useHotspots";
 
 interface ScriptModalProps {
   open: boolean;
@@ -18,6 +19,7 @@ interface ScriptModalProps {
   bootstrapScript: string;
   finalizeScript?: string;
   hotspotName: string;
+  hotspotId?: string;
   onRegenerate?: () => void;
   isRegenerating?: boolean;
 }
@@ -27,10 +29,12 @@ export function ScriptModal({
   onOpenChange,
   bootstrapScript,
   hotspotName,
+  hotspotId,
   onRegenerate,
   isRegenerating,
 }: ScriptModalProps) {
   const [copied, setCopied] = useState(false);
+  const downloadRecovery = useDownloadRecoveryScript();
 
   const handleCopy = async () => {
     try {
@@ -68,13 +72,34 @@ export function ScriptModal({
     });
   };
 
+  const handleDownloadRecovery = async () => {
+    if (!hotspotId) return;
+    
+    try {
+      const script = await downloadRecovery.mutateAsync(hotspotId);
+      
+      // Download do arquivo
+      const blob = new Blob([script], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "navspot-recovery.rsc";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      // Erro tratado pelo hook
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[800px] max-h-[90vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>Script MikroTik v6.9.12 - {hotspotName}</DialogTitle>
+          <DialogTitle>Script MikroTik v6.9.20 - {hotspotName}</DialogTitle>
           <DialogDescription>
-            Instalação resiliente com auto-recuperação. A porta ether2 será configurada como gerência fixa (Winbox).
+            Instalação resiliente com auto-recuperação e token fallback embutido. A porta ether2 será configurada como gerência fixa (Winbox).
           </DialogDescription>
         </DialogHeader>
         
@@ -132,15 +157,17 @@ export function ScriptModal({
           <Alert className="bg-green-500/10 border-green-500/50">
             <Shield className="h-4 w-4 text-green-600" />
             <AlertTitle className="text-green-700 dark:text-green-400">
-              Auto-Recuperação v6.9.12
+              Auto-Recuperação v6.9.20
             </AlertTitle>
             <AlertDescription className="text-green-600/80 dark:text-green-400/80">
               <p className="mb-2">
-                Este script inclui um sistema de auto-reparo. Se o script de sincronização desaparecer após um reboot ou queda de energia, o roteador tentará se recuperar automaticamente.
+                Este script inclui um sistema de auto-reparo com token fallback embutido. Mesmo se o arquivo de token sumir após um reboot ou queda de energia, o sistema continuará funcionando.
               </p>
               <ul className="text-xs space-y-1">
+                <li>• <strong>Token Fallback:</strong> Token embutido no sync e guardian</li>
                 <li>• <strong>navspot-guardian:</strong> Verifica integridade a cada 10 minutos</li>
                 <li>• <strong>Safe Update:</strong> Atualiza scripts sem remover antes</li>
+                <li>• <strong>Método RouterOS 6.x:</strong> Compatível com todas as versões</li>
               </ul>
             </AlertDescription>
           </Alert>
@@ -150,7 +177,7 @@ export function ScriptModal({
             <h4 className="font-semibold mb-2">Verificação pós-instalação:</h4>
             <p className="text-muted-foreground mb-2">Após a importação, verifique no terminal:</p>
             <code className="block bg-muted p-2 rounded text-xs font-mono">/log print where message~"NAVSPOT"</code>
-            <p className="text-muted-foreground mt-2">Deve aparecer: <code className="bg-muted px-1 rounded">NAVSPOT v6.9.12: INSTALACAO CONCLUIDA!</code></p>
+            <p className="text-muted-foreground mt-2">Deve aparecer: <code className="bg-muted px-1 rounded">NAVSPOT v6.9.20: INSTALACAO CONCLUIDA!</code></p>
             
             <div className="mt-4 pt-3 border-t border-border">
               <h5 className="font-medium text-sm mb-2">Configuração de portas:</h5>
@@ -163,9 +190,23 @@ export function ScriptModal({
           </div>
         </div>
 
-        {/* Footer fixo com botão de regenerar */}
-        {onRegenerate && (
-          <div className="pt-4 border-t">
+        {/* Footer fixo com botões de ação */}
+        <div className="pt-4 border-t space-y-3">
+          {/* Botão de Recovery (se hotspotId disponível) */}
+          {hotspotId && (
+            <Button
+              variant="outline"
+              onClick={handleDownloadRecovery}
+              disabled={downloadRecovery.isPending}
+              className="w-full"
+            >
+              <RotateCcw className={`h-4 w-4 mr-2 ${downloadRecovery.isPending ? 'animate-spin' : ''}`} />
+              {downloadRecovery.isPending ? 'Baixando Recovery...' : 'Baixar Recovery (.rsc)'}
+            </Button>
+          )}
+          
+          {/* Botão de Regenerar */}
+          {onRegenerate && (
             <Button
               variant="outline"
               onClick={onRegenerate}
@@ -175,8 +216,8 @@ export function ScriptModal({
               <RefreshCw className={`h-4 w-4 mr-2 ${isRegenerating ? 'animate-spin' : ''}`} />
               Regenerar Script
             </Button>
-          </div>
-        )}
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   );

@@ -187,3 +187,40 @@ export function useGenerateHotspotScript() {
     },
   });
 }
+
+export function useDownloadRecoveryScript() {
+  return useMutation({
+    mutationFn: async (hotspotId: string) => {
+      const { data, error } = await supabase.functions.invoke('mikrotik-recovery-download', {
+        body: { hotspot_id: hotspotId },
+      });
+
+      if (error) throw error;
+      
+      // O response é o script como texto
+      if (typeof data === 'string') {
+        return data;
+      }
+      
+      // Se veio como objeto com script
+      if (data?.script) {
+        return data.script;
+      }
+      
+      throw new Error('Formato de resposta inválido');
+    },
+    onSuccess: () => {
+      toast({
+        title: 'Script de recovery baixado',
+        description: 'Arquivo navspot-recovery.rsc pronto para importar.',
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: 'Erro ao baixar recovery',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+}
