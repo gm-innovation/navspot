@@ -6,15 +6,17 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-recovery-download v6.9.26
+ * mikrotik-recovery-download v6.9.27
  * 
  * Minimal recovery endpoint for MikroTik self-healing.
  * Returns a .rsc script that recreates scripts/schedulers and verifies hotspot profile login-url.
  * 
+ * v6.9.27: CRITICAL FIX - Eliminated ALL [:len [/... find ...]] patterns
+ *          RouterOS 6.x cannot parse nested brackets during /import
+ *          Uses idempotent remove+add pattern for Walled Garden entries
+ *          Action-processor uses direct commands with on-error={}
  * v6.9.26: CRITICAL FIX - Removed AUTO-FIX firewall block completely
- *          RouterOS 6.x loses menu context inside :do { } blocks during /import
- *          Action-processor now uses direct commands only (no [find ...] after menu change)
- * v6.9.25: CRITICAL FIX - RouterOS 6.x /import compatible syntax (partial fix - still had issues)
+ * v6.9.25: CRITICAL FIX - RouterOS 6.x /import compatible syntax (partial fix)
  * v6.9.24: RouterOS 6.x compatible check (no -> operator)
  * v6.9.23: CRITICAL FIX - Whitelist firewall rules now scoped to hotspot=auth only
  * v6.9.22: Added essential Walled Garden recreation (portal, API, CDNs, CPD) + DNS TCP + ICMP
@@ -25,12 +27,30 @@ const corsHeaders = {
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.26"
-const DEPLOYED_AT = "2026-02-03T18:00:00.000Z"
+const VERSION = "6.9.27"
+const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
   if (!token || token.length < 10) return '***'
   return `${token.slice(0, 4)}...${token.slice(-4)}`
+}
+
+/**
+ * Validate RouterOS script for forbidden patterns that break during /import
+ */
+function validateRouterOSScript(script: string, context: string): void {
+  const forbiddenPatterns = [
+    { regex: /:if \(\[:len \[\//, desc: '[:len [/... (nested brackets in conditional)' },
+    { regex: /comment~"/, desc: 'comment~ (must use comment= for exact match)' },
+  ]
+  
+  for (const { regex, desc } of forbiddenPatterns) {
+    if (regex.test(script)) {
+      console.error(`[${context} ${VERSION}] VALIDATION FAILED: Script contains forbidden pattern: ${desc}`)
+      throw new Error(`Script validation failed: contains ${desc}`)
+    }
+  }
+  console.log(`[${context} ${VERSION}] Script validation passed`)
 }
 
 Deno.serve(async (req) => {
@@ -240,8 +260,11 @@ Deno.serve(async (req) => {
 
     console.log(`[mikrotik-recovery-download ${VERSION}] Generating recovery for: ${hotspot!.nome}`)
 
-    // v6.9.26: Recovery script with simplified syntax - no AUTO-FIX block
+    // v6.9.27: Recovery script with remove+add pattern - no nested brackets
     const recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes, syncToken, hotspot!.id)
+
+    // Validate script before returning
+    validateRouterOSScript(recoveryScript, 'mikrotik-recovery-download')
 
     console.log(`[mikrotik-recovery-download ${VERSION}] Recovery script generated for ${hotspot!.nome} (${recoveryScript.length} bytes)`)
 
@@ -268,7 +291,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
   // External portal login URL with escaped variables for runtime expansion
   const loginUrl = `https://navspot.lovable.app/hotspot-login?h=${hotspotId}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)`
   
-  // v6.9.26 sync script source with embedded token fallback
+  // v6.9.27 sync script source with embedded token fallback
   const syncScriptSource = `:local token ""
 :do { :set token [/file get "navspot-token.txt" contents] } on-error={}
 :if ([:len $token] < 10) do={
@@ -328,8 +351,8 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 } on-error={:log warning "NAVSPOT-SYNC: Falha"}
 :log info "NAVSPOT-SYNC: OK"`
 
-  // v6.9.26 action processor source - SIMPLIFIED - no [find ...] after menu context change
-  // Uses direct commands with on-error={} to handle duplicates silently
+  // v6.9.27 action processor source - SIMPLIFIED
+  // Uses direct commands with on-error={} - NO [:len [/... find ...]] patterns
   const actionProcessorSource = `:global navspotActions
 :global navspotLock
 :if ($navspotLock = "1") do={
@@ -459,33 +482,30 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :do { /ip hotspot user set [find name=$uName] password=$uPass } on-error={}
 :log info ("NAVSPOT: Senha atualizada - " . $uName)
 }
+# v6.9.27: create_whitelist_domain - Direct add with on-error (handles duplicates)
 :if ($cmd = "create_whitelist_domain") do={
 :local p2 [:find $rest "|"]
 :local wName [:pick $rest 0 $p2]
 :local domain [:pick $rest ($p2 + 1) [:len $rest]]
-:if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
-/ip hotspot walled-garden add dst-host=$domain action=allow comment=("navspot-" . $wName)
+:if ([:len $domain] > 0) do={
+:do { /ip hotspot walled-garden add dst-host=$domain action=allow comment=("navspot-" . $wName) } on-error={}
 :log info ("NAVSPOT: Whitelist adicionado - " . $domain)
 }
 }
+# v6.9.27: create_blacklist_domain - Direct add with on-error (handles duplicates)
 :if ($cmd = "create_blacklist_domain") do={
 :local p2 [:find $rest "|"]
 :local bName [:pick $rest 0 $p2]
 :local domain [:pick $rest ($p2 + 1) [:len $rest]]
 :if ([:len $domain] > 0) do={
-:if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
-/ip hotspot walled-garden add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
+:do { /ip hotspot walled-garden add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName) } on-error={}
 :log info ("NAVSPOT: Blacklist bloqueado (walled-garden) - " . $domain)
-} else={
-:log info ("NAVSPOT: Blacklist ja existe - " . $domain)
 }
 }
-}
-# v6.9.26: add_firewall_block - Direct commands only, no [find] after menu change
+# v6.9.27: add_firewall_block - Direct commands only
 :if ($cmd = "add_firewall_block") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# Resolve domain and add to address-list directly (on-error handles duplicates)
 :do {
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
@@ -497,14 +517,12 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 }
 }
 }
-# v6.9.26: add_firewall_allow - Direct commands only, no [find] after menu change
+# v6.9.27: add_firewall_allow - Direct commands only
 :if ($cmd = "add_firewall_allow") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# Walled Garden (robust for hostnames - always works)
 :do { /ip hotspot walled-garden add dst-host=$domain action=allow comment=("navspot-allow-" . $domain) } on-error={}
 :log info ("NAVSPOT: Walled Garden allow - " . $domain)
-# Try DNS resolution for address-list
 :do {
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
@@ -537,14 +555,14 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :set navspotLock "0"
 :log info "NAVSPOT-ACTION v${VERSION}: Processamento concluido"`
 
-  // v6.9.26: Recovery script - REMOVED AUTO-FIX firewall block completely
-  // The sync will recreate rules correctly with hotspot=auth on next run
+  // v6.9.27: Recovery script - Uses remove+add pattern (NO nested [:len [/...]] patterns)
   return `# NAVSPOT Recovery Script v${VERSION}
 # _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
 # This script recreates missing scripts/schedulers + token
-# v6.9.26: CRITICAL FIX - Removed AUTO-FIX firewall block completely
-#          RouterOS 6.x loses menu context inside :do { } blocks during /import
-#          Action-processor now uses direct commands only (no [find ...] after menu change)
+# v6.9.27: CRITICAL FIX - Eliminated ALL [:len [/... find ...]] patterns
+#          Uses idempotent remove+add pattern for Walled Garden entries
+#          RouterOS 6.x compatible /import syntax
+# v6.9.26: Removed AUTO-FIX firewall block completely
 # v6.9.23: Whitelist rules now scoped to hotspot=auth (pre-login traffic no longer blocked)
 # It does NOT touch network config (bridge, DHCP, NAT, hotspot)
 :log info "NAVSPOT-RECOVERY v${VERSION}: Iniciando reparacao..."
@@ -588,7 +606,7 @@ ${syncScriptSource}
 }
 :delay 200ms
 
-# 3. SCHEDULER - set-or-add pattern v6.9.26: delay para aguardar rede + start-date fixo
+# 3. SCHEDULER - set-or-add pattern v6.9.27: delay para aguardar rede + start-date fixo
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
 :log info "NAVSPOT-RECOVERY: Atualizando scheduler v${VERSION}..."
@@ -598,84 +616,65 @@ ${syncScriptSource}
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
 }
 
-# 4. NETWATCH v6.9.26 - Dispara sync quando internet volta
-:if ([:len [/tool netwatch find comment="navspot-netwatch"]] = 0) do={
+# 4. NETWATCH v6.9.27 - Dispara sync quando internet volta (remove+add pattern)
+:do { /tool netwatch remove [find comment="navspot-netwatch"] } on-error={}
 /tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script=":delay 5s; :do { /system script run navspot-sync } on-error={}" comment="navspot-netwatch"
 :log info "NAVSPOT-RECOVERY: Netwatch configurado para auto-sync"
-}
 
-# 5. WALLED GARDEN ESSENCIAL v6.9.26 (recria regras criticas se estiverem faltando)
-:log info "NAVSPOT-RECOVERY: Verificando Walled Garden essencial..."
+# 5. WALLED GARDEN ESSENCIAL v6.9.27 (remove+add pattern - idempotent)
+:log info "NAVSPOT-RECOVERY: Reconfigurando Walled Garden essencial..."
 
 # Portal NAVSPOT
-:if ([:len [/ip hotspot walled-garden find dst-host="navspot.lovable.app"]] = 0) do={
+:do { /ip hotspot walled-garden remove [find dst-host="navspot.lovable.app"] } on-error={}
 /ip hotspot walled-garden add dst-host="navspot.lovable.app" action=allow comment="navspot-portal"
-:log info "NAVSPOT-RECOVERY: Walled Garden - navspot.lovable.app"
-}
-:if ([:len [/ip hotspot walled-garden find dst-host="*.lovable.app"]] = 0) do={
+:do { /ip hotspot walled-garden remove [find dst-host="*.lovable.app"] } on-error={}
 /ip hotspot walled-garden add dst-host="*.lovable.app" action=allow comment="navspot-portal"
-}
 
 # Backend Supabase
-:if ([:len [/ip hotspot walled-garden find dst-host="*.supabase.co"]] = 0) do={
+:do { /ip hotspot walled-garden remove [find dst-host="*.supabase.co"] } on-error={}
 /ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-api"
-}
-:if ([:len [/ip hotspot walled-garden find dst-host="*.supabase.in"]] = 0) do={
+:do { /ip hotspot walled-garden remove [find dst-host="*.supabase.in"] } on-error={}
 /ip hotspot walled-garden add dst-host="*.supabase.in" action=allow comment="navspot-api"
-}
 
 # CDNs para logos e assets
-:if ([:len [/ip hotspot walled-garden find dst-host="*.cloudfront.net"]] = 0) do={
+:do { /ip hotspot walled-garden remove [find dst-host="*.cloudfront.net"] } on-error={}
 /ip hotspot walled-garden add dst-host="*.cloudfront.net" action=allow comment="navspot-cdn"
-}
-:if ([:len [/ip hotspot walled-garden find dst-host="*.amazonaws.com"]] = 0) do={
+:do { /ip hotspot walled-garden remove [find dst-host="*.amazonaws.com"] } on-error={}
 /ip hotspot walled-garden add dst-host="*.amazonaws.com" action=allow comment="navspot-cdn"
-}
 
 # Captive Portal Detection - Android
-:if ([:len [/ip hotspot walled-garden find dst-host="connectivitycheck.gstatic.com"]] = 0) do={
+:do { /ip hotspot walled-garden remove [find dst-host="connectivitycheck.gstatic.com"] } on-error={}
 /ip hotspot walled-garden add dst-host="connectivitycheck.gstatic.com" action=allow comment="navspot-cpd-android"
-}
-:if ([:len [/ip hotspot walled-garden find dst-host="*.gstatic.com"]] = 0) do={
+:do { /ip hotspot walled-garden remove [find dst-host="*.gstatic.com"] } on-error={}
 /ip hotspot walled-garden add dst-host="*.gstatic.com" action=allow comment="navspot-cpd-android"
-}
 
 # Captive Portal Detection - Windows
-:if ([:len [/ip hotspot walled-garden find dst-host="*.msftconnecttest.com"]] = 0) do={
+:do { /ip hotspot walled-garden remove [find dst-host="*.msftconnecttest.com"] } on-error={}
 /ip hotspot walled-garden add dst-host="*.msftconnecttest.com" action=allow comment="navspot-cpd-windows"
-}
-:if ([:len [/ip hotspot walled-garden find dst-host="*.msftncsi.com"]] = 0) do={
+:do { /ip hotspot walled-garden remove [find dst-host="*.msftncsi.com"] } on-error={}
 /ip hotspot walled-garden add dst-host="*.msftncsi.com" action=allow comment="navspot-cpd-windows"
-}
 
 # Captive Portal Detection - Apple
-:if ([:len [/ip hotspot walled-garden find dst-host="captive.apple.com"]] = 0) do={
+:do { /ip hotspot walled-garden remove [find dst-host="captive.apple.com"] } on-error={}
 /ip hotspot walled-garden add dst-host="captive.apple.com" action=allow comment="navspot-cpd-apple"
-}
-:if ([:len [/ip hotspot walled-garden find dst-host="*.apple.com"]] = 0) do={
+:do { /ip hotspot walled-garden remove [find dst-host="*.apple.com"] } on-error={}
 /ip hotspot walled-garden add dst-host="*.apple.com" action=allow comment="navspot-cpd-apple"
-}
 
-# v6.9.26: Protocolos essenciais (DNS UDP + TCP, DHCP, NTP, ICMP)
-:if ([:len [/ip hotspot walled-garden ip find dst-port=53 protocol=udp comment~"navspot-dns"]] = 0) do={
+# v6.9.27: Protocolos essenciais (remove+add by comment - EXACT match)
+:do { /ip hotspot walled-garden ip remove [find comment="navspot-dns-udp"] } on-error={}
 /ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns-udp"
-}
-:if ([:len [/ip hotspot walled-garden ip find dst-port=53 protocol=tcp comment~"navspot-dns"]] = 0) do={
+:do { /ip hotspot walled-garden ip remove [find comment="navspot-dns-tcp"] } on-error={}
 /ip hotspot walled-garden ip add dst-port=53 protocol=tcp action=accept comment="navspot-dns-tcp"
-}
-:if ([:len [/ip hotspot walled-garden ip find dst-port=67 protocol=udp comment~"navspot-dhcp"]] = 0) do={
+:do { /ip hotspot walled-garden ip remove [find comment="navspot-dhcp"] } on-error={}
 /ip hotspot walled-garden ip add dst-port=67-68 protocol=udp action=accept comment="navspot-dhcp"
-}
-:if ([:len [/ip hotspot walled-garden ip find dst-port=123 protocol=udp comment~"navspot-ntp"]] = 0) do={
+:do { /ip hotspot walled-garden ip remove [find comment="navspot-ntp"] } on-error={}
 /ip hotspot walled-garden ip add dst-port=123 protocol=udp action=accept comment="navspot-ntp"
-}
-:if ([:len [/ip hotspot walled-garden ip find protocol=icmp comment~"navspot-icmp"]] = 0) do={
+:do { /ip hotspot walled-garden ip remove [find comment="navspot-icmp"] } on-error={}
 /ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
-}
 
-:log info "NAVSPOT-RECOVERY: Walled Garden essencial verificado/restaurado"
+:log info "NAVSPOT-RECOVERY: Walled Garden essencial configurado"
 
-# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.26
+# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.27
 :log info "NAVSPOT-RECOVERY: Verificando hotspot profile login-url..."
 :local hsprofName "hsprof-navspot"
 :local correctLoginUrl "${loginUrl}"
@@ -695,14 +694,14 @@ ${syncScriptSource}
 
 :log info "=========================================="
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
-:log info "FIX v6.9.26: Removed AUTO-FIX firewall block (caused /import errors)"
-:log info "FIX: Action-processor now uses direct commands only"
+:log info "FIX v6.9.27: Eliminated ALL [:len [/...]] nested patterns"
+:log info "FIX: Uses idempotent remove+add pattern for Walled Garden"
 :log info "FIX: login-url do hotspot profile verificada/corrigida"
 :log info "Token: recriado e fallback embutido no sync"
 :log info "Scripts: sync + action-processor v${VERSION} atualizados"
 :log info "Scheduler: sync a cada ${syncIntervalMinutes}m com startup delay"
 :log info "Netwatch: auto-sync quando internet volta"
-:log info "Walled Garden: portal + API + CPD + DNS/ICMP verificados"
+:log info "Walled Garden: portal + API + CPD + DNS/ICMP configurados"
 :log info "NOTE: Old firewall rules will be fixed on next sync (hotspot=auth)"
 :log info "=========================================="
 `
