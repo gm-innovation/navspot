@@ -578,12 +578,12 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :if ([:len $apExists] > 0) do={
 :log info "NAVSPOT-RECOVERY: Atualizando navspot-action-processor v6.9.21..."
 /system script set $apExists policy=read,write,test source={
-\${actionProcessorSource}
+${actionProcessorSource}
 }
 } else={
 :log info "NAVSPOT-RECOVERY: Criando navspot-action-processor v6.9.21..."
 /system script add name="navspot-action-processor" policy=read,write,test source={
-\${actionProcessorSource}
+${actionProcessorSource}
 }
 }
 :delay 200ms
@@ -593,12 +593,12 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :if ([:len $syncExists] > 0) do={
 :log info "NAVSPOT-RECOVERY: Atualizando navspot-sync v6.9.21 (token fallback embutido)..."
 /system script set $syncExists policy=read,write,test source={
-\${syncScriptSource}
+${syncScriptSource}
 }
 } else={
 :log info "NAVSPOT-RECOVERY: Criando navspot-sync v6.9.21 (token fallback embutido)..."
 /system script add name="navspot-sync" policy=read,write,test source={
-\${syncScriptSource}
+${syncScriptSource}
 }
 }
 :delay 200ms
@@ -607,10 +607,10 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
 :log info "NAVSPOT-RECOVERY: Atualizando scheduler v6.9.21..."
-/system scheduler set $schedExists interval=\${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
+/system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
 :log info "NAVSPOT-RECOVERY: Criando scheduler v6.9.21..."
-/system scheduler add name="navspot-sync-scheduler" interval=\${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
+/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
 }
 
 # 4. NETWATCH v6.9.21 - Dispara sync quando internet volta
@@ -623,7 +623,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :log info "NAVSPOT-RECOVERY v6.9.21: REPARACAO CONCLUIDA!"
 :log info "Token: recriado e fallback embutido no sync"
 :log info "Scripts: sync + action-processor v6.9.21 atualizados"
-:log info "Scheduler: sync a cada \${syncIntervalMinutes}m com startup delay"
+:log info "Scheduler: sync a cada ${syncIntervalMinutes}m com startup delay"
 :log info "Netwatch: auto-sync quando internet volta"
 :log info "=========================================="
 `
