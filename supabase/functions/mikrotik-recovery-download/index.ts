@@ -6,13 +6,15 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-recovery-download v6.9.24
+ * mikrotik-recovery-download v6.9.25
  * 
  * Minimal recovery endpoint for MikroTik self-healing.
  * Returns a .rsc script that recreates scripts/schedulers and verifies hotspot profile login-url.
  * 
- * v6.9.24: NEW - Verifies/corrects hotspot profile login-url for external portal redirection
- *          Fixes issue where captive portal doesn't open on mobile devices
+ * v6.9.25: CRITICAL FIX - RouterOS 6.x /import compatible syntax
+ *          Removed all [/ip firewall filter ...] patterns that break during /import
+ *          Uses menu-context approach: /ip firewall filter + [find ...] + [get ...]
+ * v6.9.24: RouterOS 6.x compatible check (no -> operator)
  * v6.9.23: CRITICAL FIX - Whitelist firewall rules now scoped to hotspot=auth only
  *          Pre-login traffic no longer blocked, fixing Android "no internet" captive portal issue
  *          Auto-removes old unscoped NAVSPOT-ALLOW-MASTER rules on sync
@@ -23,6 +25,9 @@ const corsHeaders = {
  * Called by navspot-guardian when it detects missing components or outdated scripts.
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
+
+const VERSION = "6.9.25"
+const DEPLOYED_AT = "2026-02-03T17:00:00.000Z"
 
 function maskToken(token: string): string {
   if (!token || token.length < 10) return '***'
@@ -51,7 +56,7 @@ Deno.serve(async (req) => {
         syncToken = body.sync_token || null
         hotspotId = body.hotspot_id || null
       } catch {
-        console.error('[mikrotik-recovery-download] Invalid JSON body')
+        console.error(`[mikrotik-recovery-download ${VERSION}] Invalid JSON body`)
         return new Response(
           'Invalid JSON body. Expected: {"sync_token": "..."} or {"hotspot_id": "..."}',
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
@@ -72,7 +77,7 @@ Deno.serve(async (req) => {
     if (hotspotId) {
       const authHeader = req.headers.get('Authorization')
       if (!authHeader?.startsWith('Bearer ')) {
-        console.error('[mikrotik-recovery-download] hotspot_id requires authentication')
+        console.error(`[mikrotik-recovery-download ${VERSION}] hotspot_id requires authentication`)
         return new Response(
           'Authorization required when using hotspot_id',
           { status: 401, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
@@ -91,7 +96,7 @@ Deno.serve(async (req) => {
       const { data: claims, error: claimsError } = await supabaseAuth.auth.getClaims(token)
 
       if (claimsError || !claims?.claims) {
-        console.error('[mikrotik-recovery-download] Invalid JWT:', claimsError)
+        console.error(`[mikrotik-recovery-download ${VERSION}] Invalid JWT:`, claimsError)
         return new Response(
           'Invalid token',
           { status: 401, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
@@ -99,7 +104,7 @@ Deno.serve(async (req) => {
       }
 
       const userId = claims.claims.sub as string
-      console.log(`[mikrotik-recovery-download] Authenticated user: ${userId} requesting hotspot: ${hotspotId}`)
+      console.log(`[mikrotik-recovery-download ${VERSION}] Authenticated user: ${userId} requesting hotspot: ${hotspotId}`)
 
       // Get user role and permissions
       const { data: userRole, error: roleError } = await supabase
@@ -109,7 +114,7 @@ Deno.serve(async (req) => {
         .single()
 
       if (roleError || !userRole) {
-        console.error('[mikrotik-recovery-download] User role not found:', roleError)
+        console.error(`[mikrotik-recovery-download ${VERSION}] User role not found:`, roleError)
         return new Response(
           'User role not found',
           { status: 403, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
@@ -127,7 +132,7 @@ Deno.serve(async (req) => {
         .single()
 
       if (hotspotError || !hotspot) {
-        console.error(`[mikrotik-recovery-download] Hotspot not found: ${hotspotId}`)
+        console.error(`[mikrotik-recovery-download ${VERSION}] Hotspot not found: ${hotspotId}`)
         return new Response(
           'Hotspot not found',
           { status: 404, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
@@ -139,11 +144,11 @@ Deno.serve(async (req) => {
       // Check permission based on role
       if (userRole.role === 'super_admin') {
         // OK - full access
-        console.log('[mikrotik-recovery-download] super_admin has full access')
+        console.log(`[mikrotik-recovery-download ${VERSION}] super_admin has full access`)
       } else if (userRole.role === 'empresa_admin') {
         // Check if hotspot belongs to user's empresa
         if (embarcacao.empresa_id !== userRole.empresa_id) {
-          console.error(`[mikrotik-recovery-download] empresa_admin denied - hotspot empresa: ${embarcacao.empresa_id}, user empresa: ${userRole.empresa_id}`)
+          console.error(`[mikrotik-recovery-download ${VERSION}] empresa_admin denied - hotspot empresa: ${embarcacao.empresa_id}, user empresa: ${userRole.empresa_id}`)
           return new Response(
             'Access denied - hotspot belongs to another empresa',
             { status: 403, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
@@ -159,14 +164,14 @@ Deno.serve(async (req) => {
           .maybeSingle()
 
         if (accessError || !access) {
-          console.error(`[mikrotik-recovery-download] gerente_embarcacao denied - no access to embarcacao: ${embarcacao.id}`)
+          console.error(`[mikrotik-recovery-download ${VERSION}] gerente_embarcacao denied - no access to embarcacao: ${embarcacao.id}`)
           return new Response(
             'Access denied - you do not manage this embarcacao',
             { status: 403, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
           )
         }
       } else {
-        console.error(`[mikrotik-recovery-download] Unknown role: ${userRole.role}`)
+        console.error(`[mikrotik-recovery-download ${VERSION}] Unknown role: ${userRole.role}`)
         return new Response(
           'Access denied',
           { status: 403, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
@@ -175,18 +180,18 @@ Deno.serve(async (req) => {
 
       // Permission granted - use the hotspot's sync_token
       syncToken = hotspot.sync_token
-      console.log(`[mikrotik-recovery-download] Permission granted for ${hotspot.nome}`)
+      console.log(`[mikrotik-recovery-download ${VERSION}] Permission granted for ${hotspot.nome}`)
     }
 
     if (!syncToken) {
-      console.error('[mikrotik-recovery-download] Missing sync_token or hotspot_id')
+      console.error(`[mikrotik-recovery-download ${VERSION}] Missing sync_token or hotspot_id`)
       return new Response(
         'sync_token or hotspot_id is required',
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
       )
     }
 
-    console.log(`[mikrotik-recovery-download] Recovery request for token: ${maskToken(syncToken)}`)
+    console.log(`[mikrotik-recovery-download ${VERSION}] Recovery request for token: ${maskToken(syncToken)}`)
 
     // Find hotspot by sync_token (if we didn't already fetch it above)
     let hotspot: { id: string; nome: string; sync_token: string; sync_interval_minutes: number; embarcacoes: { id: string; nome: string; empresa_id: string } } | null = null
@@ -202,7 +207,7 @@ Deno.serve(async (req) => {
         .single()
 
       if (hotspotError || !data) {
-        console.error(`[mikrotik-recovery-download] Invalid token: ${maskToken(syncToken)}`)
+        console.error(`[mikrotik-recovery-download ${VERSION}] Invalid token: ${maskToken(syncToken)}`)
         return new Response(
           'Invalid sync_token',
           { status: 404, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
@@ -221,7 +226,7 @@ Deno.serve(async (req) => {
         .single()
 
       if (hotspotError || !data) {
-        console.error(`[mikrotik-recovery-download] Hotspot not found for token`)
+        console.error(`[mikrotik-recovery-download ${VERSION}] Hotspot not found for token`)
         return new Response(
           'Hotspot not found',
           { status: 404, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
@@ -234,25 +239,25 @@ Deno.serve(async (req) => {
     const syncUrl = `${supabaseUrl}/functions/v1/mikrotik-sync`
     const syncIntervalMinutes = hotspot!.sync_interval_minutes || 5
 
-    console.log(`[mikrotik-recovery-download] Generating recovery v6.9.24 for: ${hotspot!.nome}`)
+    console.log(`[mikrotik-recovery-download ${VERSION}] Generating recovery for: ${hotspot!.nome}`)
 
-    // v6.9.24: Recovery script with hotspot profile login-url verification + hotspot=auth scoped whitelist + embedded token fallback + Walled Garden
+    // v6.9.25: Recovery script with RouterOS 6.x /import compatible syntax
     const recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes, syncToken, hotspot!.id)
 
-    console.log(`[mikrotik-recovery-download] Recovery script v6.9.24 generated for ${hotspot!.nome} (${recoveryScript.length} bytes)`)
+    console.log(`[mikrotik-recovery-download ${VERSION}] Recovery script generated for ${hotspot!.nome} (${recoveryScript.length} bytes)`)
 
     return new Response(recoveryScript, {
       status: 200,
       headers: {
         ...corsHeaders,
         'Content-Type': 'text/plain; charset=utf-8',
-        'Content-Disposition': 'attachment; filename="navspot-recovery-v6.9.24.rsc"',
+        'Content-Disposition': `attachment; filename="navspot-recovery-v${VERSION}.rsc"`,
         'Cache-Control': 'no-store, no-cache, must-revalidate',
       },
     })
 
   } catch (error) {
-    console.error('[mikrotik-recovery-download] Unexpected error:', error)
+    console.error(`[mikrotik-recovery-download ${VERSION}] Unexpected error:`, error)
     return new Response(
       `Error: ${error instanceof Error ? error.message : 'Internal server error'}`,
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
@@ -264,7 +269,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
   // External portal login URL with escaped variables for runtime expansion
   const loginUrl = `https://navspot.lovable.app/hotspot-login?h=${hotspotId}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)`
   
-  // v6.9.24 sync script source with embedded token fallback
+  // v6.9.25 sync script source with embedded token fallback
   const syncScriptSource = `:local token ""
 :do { :set token [/file get "navspot-token.txt" contents] } on-error={}
 :if ([:len $token] < 10) do={
@@ -324,7 +329,8 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 } on-error={:log warning "NAVSPOT-SYNC: Falha"}
 :log info "NAVSPOT-SYNC: OK"`
 
-  // v6.9.23 action processor source with hotspot=auth scoped whitelist rules
+  // v6.9.25 action processor source with RouterOS 6.x /import compatible syntax
+  // CRITICAL: No more [/ip firewall filter ...] patterns - use menu-context approach
   const actionProcessorSource = `:global navspotActions
 :global navspotLock
 :if ($navspotLock = "1") do={
@@ -338,7 +344,7 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :log info "NAVSPOT: Sem acoes pendentes"
 :return
 }
-:log info ("NAVSPOT-ACTION v6.9.24: Iniciando - " . $rawData)
+:log info ("NAVSPOT-ACTION v${VERSION}: Iniciando - " . $rawData)
 :local pos 0
 :do {
 :while ([:find $rawData ";" $pos] >= 0) do={
@@ -479,75 +485,67 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :if ($cmd = "add_firewall_block") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# v6.9.21: Ensure master drop rule exists before fasttrack
-:if ([:len [/ip firewall filter find comment="NAVSPOT-BLOCK-MASTER"]] = 0) do={
-:local ftPos [/ip firewall filter find where action=fasttrack-connection]
+# v6.9.25: Menu-context approach for RouterOS 6.x /import compatibility
+/ip firewall filter
+:if ([:len [find comment="NAVSPOT-BLOCK-MASTER"]] = 0) do={
+:local ftPos [find action=fasttrack-connection]
 :if ([:len $ftPos] = 0) do={:set ftPos 0}
-/ip firewall filter add chain=forward action=drop dst-address-list=NAVSPOT-BLACKLIST comment="NAVSPOT-BLOCK-MASTER" place-before=$ftPos
-:log info "NAVSPOT: Master firewall rule created (v6.9.21)"
+add chain=forward action=drop dst-address-list=NAVSPOT-BLACKLIST comment="NAVSPOT-BLOCK-MASTER" place-before=$ftPos
+:log info "NAVSPOT: Master firewall rule created (v6.9.25)"
 }
-# v6.9.21: Resolve domain to IP and add to address-list
+# Resolve domain and add to address-list
 :do {
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
-:if ([:len [/ip firewall address-list find list="NAVSPOT-BLACKLIST" address=$resolvedIp]] = 0) do={
-/ip firewall address-list add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=none comment=("navspot-" . $domain)
+/ip firewall address-list
+:if ([:len [find list="NAVSPOT-BLACKLIST" address=$resolvedIp]] = 0) do={
+add list="NAVSPOT-BLACKLIST" address=$resolvedIp timeout=none comment=("navspot-" . $domain)
 :log info ("NAVSPOT: Firewall block - " . $domain . " -> " . $resolvedIp)
-} else={
-:log info ("NAVSPOT: IP already in blacklist - " . $resolvedIp)
 }
 }
 } on-error={
-:log warning ("NAVSPOT: Failed to resolve " . $domain . " - using content match fallback")
-:if ([:len [/ip firewall filter find comment=("NAVSPOT-BLOCK-" . $domain)]] = 0) do={
-:local ftPos [/ip firewall filter find where action=fasttrack-connection]
-:if ([:len $ftPos] = 0) do={:set ftPos 0}
-/ip firewall filter add chain=forward action=drop protocol=tcp dst-port=80,443 content=$domain comment=("NAVSPOT-BLOCK-" . $domain) place-before=$ftPos
+:log warning ("NAVSPOT: Failed to resolve " . $domain)
 }
 }
 }
-}
-# v6.9.23: add_firewall_allow - Whitelist for "bloquear_tudo" mode (SCOPED to hotspot=auth)
+# v6.9.25: add_firewall_allow - Menu-context approach for RouterOS 6.x compatibility
 :if ($cmd = "add_firewall_allow") do={
 :local domain $rest
 :if ([:len $domain] > 0) do={
-# v6.9.23: Ensure master rules exist ONLY for authenticated hotspot users
-# v6.9.23: FIX - Remove old unscoped rules that block pre-login traffic
-:local oldMaster [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
+# v6.9.25: Use menu-context approach - enter /ip firewall filter first
+/ip firewall filter
+:local oldMaster [find comment="NAVSPOT-ALLOW-MASTER"]
 :if ([:len $oldMaster] > 0) do={
-# v6.9.24: RouterOS 6.x compatible check (no -> operator)
 :local oldHotspot ""
-:do { :set oldHotspot [/ip firewall filter get $oldMaster hotspot] } on-error={ :set oldHotspot "" }
+:do { :set oldHotspot [get $oldMaster hotspot] } on-error={ :set oldHotspot "" }
 :if ($oldHotspot != "auth") do={
 :log warning "NAVSPOT: Removendo regra ALLOW-MASTER antiga (sem escopo hotspot=auth)"
-/ip firewall filter remove $oldMaster
-:do { /ip firewall filter remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
+remove $oldMaster
+:do { remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
 }
 }
-# v6.9.23: Create scoped rules if they don't exist
-:if ([:len [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]] = 0) do={
-:local ftPos [/ip firewall filter find where action=fasttrack-connection]
+# Create scoped rules if they don't exist
+:if ([:len [find comment="NAVSPOT-ALLOW-MASTER"]] = 0) do={
+:local ftPos [find action=fasttrack-connection]
 :if ([:len $ftPos] = 0) do={:set ftPos 0}
-# v6.9.23: DROP only for AUTHENTICATED hotspot users (pre-login traffic passes through)
-/ip firewall filter add chain=forward action=drop hotspot=auth comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
-:log info "NAVSPOT: Allow master drop rule created (v6.9.23 - hotspot=auth scoped)"
-# ACCEPT rule for allowed destinations - also scoped to auth users
-:local dropPos [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
-/ip firewall filter add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED hotspot=auth comment="NAVSPOT-ALLOW-ACCEPT" place-before=$dropPos
-:log info "NAVSPOT: Allow accept rule created BEFORE drop (v6.9.23)"
+add chain=forward action=drop hotspot=auth comment="NAVSPOT-ALLOW-MASTER" place-before=$ftPos
+:log info "NAVSPOT: Allow master drop rule created (v6.9.25 - hotspot=auth scoped)"
+:local dropPos [find comment="NAVSPOT-ALLOW-MASTER"]
+add chain=forward action=accept dst-address-list=NAVSPOT-ALLOWED hotspot=auth comment="NAVSPOT-ALLOW-ACCEPT" place-before=$dropPos
+:log info "NAVSPOT: Allow accept rule created BEFORE drop (v6.9.25)"
 }
-# v6.9.21: DUAL APPROACH - Walled Garden (robust for hostnames) + Address-List (backup)
-# 1. Add to Walled Garden with action=allow (works pre-login and with CDNs)
+# Walled Garden (robust for hostnames)
 :if ([:len [/ip hotspot walled-garden find dst-host=$domain]] = 0) do={
 /ip hotspot walled-garden add dst-host=$domain action=allow comment=("navspot-allow-" . $domain)
 :log info ("NAVSPOT: Walled Garden allow - " . $domain)
 }
-# 2. Try DNS resolution for address-list (backup for post-login firewall)
+# Try DNS resolution for address-list
 :do {
 :local resolvedIp [:resolve $domain]
 :if ([:len $resolvedIp] > 0) do={
-:if ([:len [/ip firewall address-list find list="NAVSPOT-ALLOWED" address=$resolvedIp]] = 0) do={
-/ip firewall address-list add list="NAVSPOT-ALLOWED" address=$resolvedIp timeout=none comment=("navspot-allow-" . $domain)
+/ip firewall address-list
+:if ([:len [find list="NAVSPOT-ALLOWED" address=$resolvedIp]] = 0) do={
+add list="NAVSPOT-ALLOWED" address=$resolvedIp timeout=none comment=("navspot-allow-" . $domain)
 :log info ("NAVSPOT: Firewall allow - " . $domain . " -> " . $resolvedIp)
 }
 }
@@ -575,21 +573,21 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 }
 :set navspotActions ""
 :set navspotLock "0"
-:log info "NAVSPOT-ACTION v6.9.24: Processamento concluido"`
+:log info "NAVSPOT-ACTION v${VERSION}: Processamento concluido"`
 
-  const deployedAt = new Date().toISOString()
-  
-  // v6.9.24: Recovery script with RouterOS 6.x compatible syntax
-  return `# NAVSPOT Recovery Script v6.9.24
-# _build: 6.9.24 | deployed_at=${deployedAt}
+  // v6.9.25: Recovery script with RouterOS 6.x /import compatible syntax
+  return `# NAVSPOT Recovery Script v${VERSION}
+# _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
 # This script recreates missing scripts/schedulers + token
-# v6.9.24: RouterOS 6.x compatible syntax (no -> operator, proper get with property)
+# v6.9.25: CRITICAL FIX - RouterOS 6.x /import compatible syntax
+#          Removed all [/ip firewall filter ...] patterns
+#          Uses menu-context approach: /ip firewall filter + [find ...] + [get ...]
 # v6.9.23: CRITICAL FIX - Whitelist rules now scoped to hotspot=auth (pre-login traffic no longer blocked)
 # It does NOT touch network config (bridge, DHCP, NAT, hotspot)
-:log info "NAVSPOT-RECOVERY v6.9.24: Iniciando reparacao..."
+:log info "NAVSPOT-RECOVERY v${VERSION}: Iniciando reparacao..."
 
 # 0. RECRIAR TOKEN (metodo RouterOS 6.x compativel)
-:log info "NAVSPOT-RECOVERY v6.9.24: Recriando token..."
+:log info "NAVSPOT-RECOVERY v${VERSION}: Recriando token..."
 :do { /file remove "navspot-token.txt" } on-error={}
 :delay 500ms
 /file print file=navspot-token where name="__never__"
@@ -600,12 +598,12 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 # 1. ACTION PROCESSOR - set-or-add pattern
 :local apExists [/system script find name="navspot-action-processor"]
 :if ([:len $apExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando navspot-action-processor v6.9.24..."
+:log info "NAVSPOT-RECOVERY: Atualizando navspot-action-processor v${VERSION}..."
 /system script set $apExists policy=read,write,test source={
 ${actionProcessorSource}
 }
 } else={
-:log info "NAVSPOT-RECOVERY: Criando navspot-action-processor v6.9.24..."
+:log info "NAVSPOT-RECOVERY: Criando navspot-action-processor v${VERSION}..."
 /system script add name="navspot-action-processor" policy=read,write,test source={
 ${actionProcessorSource}
 }
@@ -615,35 +613,35 @@ ${actionProcessorSource}
 # 2. SYNC SCRIPT - set-or-add pattern with token fallback embutido
 :local syncExists [/system script find name="navspot-sync"]
 :if ([:len $syncExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando navspot-sync v6.9.24 (token fallback embutido)..."
+:log info "NAVSPOT-RECOVERY: Atualizando navspot-sync v${VERSION} (token fallback embutido)..."
 /system script set $syncExists policy=read,write,test source={
 ${syncScriptSource}
 }
 } else={
-:log info "NAVSPOT-RECOVERY: Criando navspot-sync v6.9.24 (token fallback embutido)..."
+:log info "NAVSPOT-RECOVERY: Criando navspot-sync v${VERSION} (token fallback embutido)..."
 /system script add name="navspot-sync" policy=read,write,test source={
 ${syncScriptSource}
 }
 }
 :delay 200ms
 
-# 3. SCHEDULER - set-or-add pattern v6.9.24: delay para aguardar rede + start-date fixo
+# 3. SCHEDULER - set-or-add pattern v6.9.25: delay para aguardar rede + start-date fixo
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
-:log info "NAVSPOT-RECOVERY: Atualizando scheduler v6.9.24..."
+:log info "NAVSPOT-RECOVERY: Atualizando scheduler v${VERSION}..."
 /system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
-:log info "NAVSPOT-RECOVERY: Criando scheduler v6.9.24..."
+:log info "NAVSPOT-RECOVERY: Criando scheduler v${VERSION}..."
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
 }
 
-# 4. NETWATCH v6.9.24 - Dispara sync quando internet volta
+# 4. NETWATCH v6.9.25 - Dispara sync quando internet volta
 :if ([:len [/tool netwatch find comment="navspot-netwatch"]] = 0) do={
 /tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script=":delay 5s; :do { /system script run navspot-sync } on-error={}" comment="navspot-netwatch"
 :log info "NAVSPOT-RECOVERY: Netwatch configurado para auto-sync"
 }
 
-# 5. WALLED GARDEN ESSENCIAL v6.9.24 (recria regras criticas se estiverem faltando)
+# 5. WALLED GARDEN ESSENCIAL v6.9.25 (recria regras criticas se estiverem faltando)
 :log info "NAVSPOT-RECOVERY: Verificando Walled Garden essencial..."
 
 # Portal NAVSPOT
@@ -695,7 +693,7 @@ ${syncScriptSource}
 /ip hotspot walled-garden add dst-host="*.apple.com" action=allow comment="navspot-cpd-apple"
 }
 
-# v6.9.24: Protocolos essenciais (DNS UDP + TCP, DHCP, NTP, ICMP)
+# v6.9.25: Protocolos essenciais (DNS UDP + TCP, DHCP, NTP, ICMP)
 :if ([:len [/ip hotspot walled-garden ip find dst-port=53 protocol=udp comment~"navspot-dns"]] = 0) do={
 /ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns-udp"
 }
@@ -712,22 +710,28 @@ ${syncScriptSource}
 /ip hotspot walled-garden ip add protocol=icmp action=accept comment="navspot-icmp"
 }
 
-# v6.9.24: AUTO-FIX - Remove old unscoped NAVSPOT-ALLOW-MASTER rules (RouterOS 6.x compatible)
-:local oldMaster [/ip firewall filter find comment="NAVSPOT-ALLOW-MASTER"]
+# v6.9.25: AUTO-FIX - Remove old unscoped NAVSPOT-ALLOW-MASTER rules
+# CRITICAL: Use menu-context approach for RouterOS 6.x /import compatibility
+:do {
+/ip firewall filter
+:local oldMaster [find comment="NAVSPOT-ALLOW-MASTER"]
 :if ([:len $oldMaster] > 0) do={
 :local oldHotspot ""
-:do { :set oldHotspot [/ip firewall filter get $oldMaster hotspot] } on-error={ :set oldHotspot "" }
+:do { :set oldHotspot [get $oldMaster hotspot] } on-error={ :set oldHotspot "" }
 :if ($oldHotspot != "auth") do={
 :log warning "NAVSPOT-RECOVERY: Removendo NAVSPOT-ALLOW-MASTER sem escopo (causa do bloqueio pre-login)"
-/ip firewall filter remove $oldMaster
-:do { /ip firewall filter remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
+remove $oldMaster
+:do { remove [find comment="NAVSPOT-ALLOW-ACCEPT"] } on-error={}
 :log info "NAVSPOT-RECOVERY: Regras de firewall antigas removidas - proximo sync recriara com hotspot=auth"
 }
+}
+} on-error={
+:log warning "NAVSPOT-RECOVERY: Falha ao verificar/remover regras antigas NAVSPOT-ALLOW (seguindo sem auto-fix)"
 }
 
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial verificado/restaurado"
 
-# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.24
+# 6. HOTSPOT PROFILE - Verificar/corrigir login-url para portal externo v6.9.25
 :log info "NAVSPOT-RECOVERY: Verificando hotspot profile login-url..."
 :local hsprofName "hsprof-navspot"
 :local correctLoginUrl "${loginUrl}"
@@ -736,7 +740,6 @@ ${syncScriptSource}
 :if ([:len $hsprof] > 0) do={
 :local currentLoginUrl [/ip hotspot profile get $hsprof login-url]
 :if ($currentLoginUrl != $correctLoginUrl) do={
-# RouterOS 6.x: manter URL sempre como string (caracteres como '&' podem quebrar sem aspas)
 /ip hotspot profile set $hsprof login-url="$correctLoginUrl"
 :log info "NAVSPOT-RECOVERY: login-url corrigida no hotspot profile"
 } else={
@@ -747,16 +750,17 @@ ${syncScriptSource}
 }
 
 :log info "=========================================="
-:log info "NAVSPOT-RECOVERY v6.9.24: REPARACAO CONCLUIDA!"
-:log info "FIX v6.9.24: RouterOS 6.x syntax compatible (no -> operator)"
-:log info "FIX NOVO: login-url do hotspot profile verificada/corrigida"
+:log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
+:log info "FIX v6.9.25: RouterOS 6.x /import compatible syntax"
+:log info "FIX: Removed all [/ip firewall filter ...] patterns"
+:log info "FIX: Uses menu-context: /ip firewall filter + [find ...]"
+:log info "FIX: login-url do hotspot profile verificada/corrigida"
 :log info "FIX CRITICO: Whitelist agora usa hotspot=auth (pre-login nao bloqueado)"
 :log info "Token: recriado e fallback embutido no sync"
-:log info "Scripts: sync + action-processor v6.9.24 atualizados"
+:log info "Scripts: sync + action-processor v${VERSION} atualizados"
 :log info "Scheduler: sync a cada ${syncIntervalMinutes}m com startup delay"
 :log info "Netwatch: auto-sync quando internet volta"
 :log info "Walled Garden: portal + API + CPD + DNS/ICMP verificados"
 :log info "=========================================="
 `
 }
-

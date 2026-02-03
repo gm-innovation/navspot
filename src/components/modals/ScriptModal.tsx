@@ -174,6 +174,7 @@ export function ScriptModal({
                 <li>• <strong>navspot-guardian:</strong> Verifica integridade a cada 10 minutos</li>
                 <li>• <strong>Safe Update:</strong> Atualiza scripts sem remover antes</li>
                 <li>• <strong>Whitelist Fix:</strong> Regras de firewall não bloqueiam mais o portal (hotspot=auth)</li>
+                <li>• <strong>v6.9.25:</strong> Sintaxe /import compatível com RouterOS 6.x</li>
               </ul>
             </AlertDescription>
           </Alert>
