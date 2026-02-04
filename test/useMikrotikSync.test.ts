@@ -54,7 +54,7 @@ describe('useMikrotikSync', () => {
     });
   });
 
-  describe('Script Generator v6.9.35 Validation', () => {
+  describe('Script Generator v6.9.36 Validation', () => {
     it('should NOT have login-url in add command', () => {
       const badPattern = `/ip hotspot profile add name="hsprof-navspot" login-url=$fullUrl`;
       const goodPattern = `/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1`;
@@ -66,11 +66,27 @@ describe('useMikrotikSync', () => {
       expect(goodPattern).not.toMatch(/profile add[^#\n]*login-url=/);
     });
 
-    it('should have login-url in separate set command with quotes', () => {
-      const setCommand = `/ip hotspot profile set $_hsprof login-url="$fullUrl"`;
+    it('should have login-url in separate set command WITHOUT quotes (v6.9.36)', () => {
+      const setCommand = `/ip hotspot profile set $_hsprof login-url=$fullUrl`;
       
       expect(setCommand).toContain('profile set');
-      expect(setCommand).toContain('login-url="$');
+      expect(setCommand).toContain('login-url=$fullUrl');
+      expect(setCommand).not.toContain('login-url="$fullUrl"');
+    });
+
+    it('should have incremental URL construction with urlVars1/2/3', () => {
+      const urlConstruction = `
+:local urlVars1 "&mac=\\$(mac)"
+:local urlVars2 "&ip=\\$(ip)"
+:local urlVars3 "&link-login-only=\\$(link-login-only)"
+:local fullUrl $urlBase
+:set fullUrl ($fullUrl . $urlVars1)
+`;
+      
+      expect(urlConstruction).toContain('urlVars1');
+      expect(urlConstruction).toContain('urlVars2');
+      expect(urlConstruction).toContain('urlVars3');
+      expect(urlConstruction).toContain(':set fullUrl');
     });
 
     it('should have create-if-missing pattern', () => {
@@ -81,13 +97,35 @@ describe('useMikrotikSync', () => {
       expect(createIfMissing).toContain('= 0');
     });
 
-    it('should produce \\$(mac) in final RSC', () => {
+    it('should produce \\$(mac) in final RSC (single backslash)', () => {
       // TypeScript uses \\$(mac) to produce \$(mac) in output
       const tsTemplate = "&mac=\\$(mac)&ip=\\$(ip)";
       
       // In the final .rsc file, it should appear as \$(mac)
       expect(tsTemplate).toMatch(/\\\$\(mac\)/);
       expect(tsTemplate).toMatch(/\\\$\(ip\)/);
+    });
+
+    it('should NOT have urlVars with multiple runtime vars in same line', () => {
+      const badPattern = ':local urlVars "&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"';
+      const goodPattern1 = ':local urlVars1 "&mac=\\$(mac)"';
+      const goodPattern2 = ':local urlVars2 "&ip=\\$(ip)"';
+      
+      // Bad: multiple runtime vars in same line
+      const multiVarRegex = /\\\$\([^)]+\).*\\\$\([^)]+\)/;
+      expect(badPattern).toMatch(multiVarRegex);
+      
+      // Good: single runtime var per line
+      expect(goodPattern1).not.toMatch(multiVarRegex);
+      expect(goodPattern2).not.toMatch(multiVarRegex);
+    });
+
+    it('should have debug log for fullUrl length', () => {
+      const debugLog = ':log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl] . " sample=" . [:pick $fullUrl 0 120])';
+      
+      expect(debugLog).toContain('fullUrl-len=');
+      expect(debugLog).toContain('[:len $fullUrl]');
+      expect(debugLog).toContain('[:pick $fullUrl 0 120]');
     });
   });
 

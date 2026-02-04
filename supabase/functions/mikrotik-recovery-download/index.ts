@@ -31,7 +31,7 @@ const corsHeaders = {
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.35"
+const VERSION = "6.9.36"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -63,6 +63,8 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /profile add[^#\n]*login-url=.*\\\$\(/, desc: 'login-url with escaped vars in add command (use separate set after add)' },
     // v6.9.35: Block login-url=$var in add command (any var) - must use separate set
     { regex: /profile add[^#\n]*login-url=\$/, desc: 'login-url=$var in add command (use separate set after add)' },
+    // v6.9.36: Block ANY line >120 chars containing \$(...) - not just command lines
+    { regex: /^.{121,}.*\\\$\(/m, desc: 'Line >120 chars containing \\$(...) (breaks /import RouterOS 6.x - split into urlVars1/2/3)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
@@ -311,9 +313,6 @@ Deno.serve(async (req) => {
 })
 
 function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, syncToken: string, hotspotId: string, backendHost: string): string {
-  // External portal login URL with escaped variables for runtime expansion
-  const loginUrl = `https://navspot.lovable.app/hotspot-login?h=${hotspotId}&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)`
-  
   // v6.9.27 sync script source with embedded token fallback
   const syncScriptSource = `:local token ""
 :do { :set token [/file get "navspot-token.txt" contents] } on-error={}
@@ -696,12 +695,20 @@ ${syncScriptSource}
 
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial configurado"
 
-# 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.35
-# Padrao definitivo: construir URL em vars locais, criar profile se nao existir, aplicar via set com aspas
+# 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.36
+# URL incremental: dividir runtime vars em linhas curtas (<120 chars)
 :log info "NAVSPOT-RECOVERY: Configurando hotspot profile login-url..."
 :local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspotId}"
-:local urlVars "&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
-:local fullUrl (\$urlBase . \$urlVars)
+:local urlVars1 "&mac=\\$(mac)"
+:local urlVars2 "&ip=\\$(ip)"
+:local urlVars3 "&link-login-only=\\$(link-login-only)"
+
+:local fullUrl \$urlBase
+:set fullUrl (\$fullUrl . \$urlVars1)
+:set fullUrl (\$fullUrl . \$urlVars2)
+:set fullUrl (\$fullUrl . \$urlVars3)
+
+:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len \$fullUrl] . " sample=" . [:pick \$fullUrl 0 120])
 
 # Garantir que profile existe (create-if-missing)
 :local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
@@ -711,9 +718,9 @@ ${syncScriptSource}
 :set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
 }
 
-# Aplicar login-url via set (com aspas)
+# Aplicar login-url via set SEM aspas (v6.9.36)
 :do {
-/ip hotspot profile set \$_hsprof login-url="\$fullUrl"
+/ip hotspot profile set \$_hsprof login-url=\$fullUrl
 :log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
 } on-error={
 :log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
@@ -722,7 +729,7 @@ ${syncScriptSource}
 
 :log info "=========================================="
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
-:log info "FIX v6.9.35: add curto + set separado + create-if-missing (padrao definitivo)"
+:log info "FIX v6.9.36: URL incremental + set sem aspas (padrao definitivo)"
 :log info "FIX v6.9.31: Replaced *.supabase.* wildcards with explicit host"
 :log info "FIX v6.9.31: Token file uses explicit .txt extension"
 :log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"
