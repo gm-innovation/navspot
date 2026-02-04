@@ -1,62 +1,76 @@
 
 
-# Correção: Action Processor Não Recebe Ações do Sync
+# Correção: Action Processor Não Executa - Problema de Escopo de Variável Global
 
-## Diagnóstico Completo
+## Diagnóstico Confirmado
 
-Analisando os logs do MikroTik na imagem:
+Analisando a imagem dos logs do MikroTik:
 
-| Hora | Log | Observação |
-|------|-----|------------|
-| 14:06:40 | `fetch: file "navspot-resp.txt" downloaded` | ✅ Resposta recebida |
-| 14:06:41 | `pending_actions_pipe extraido (187 chars)` | ✅ Ações extraídas |
-| 14:06:41 | `NAVSPOT-SYNC: OK` | ✅ Sync concluído |
-| 14:06:43 | `login failed: invalid username or password` | ❌ Usuário não existe |
+| Linha | Hora | Log | Status |
+|-------|------|-----|--------|
+| 975 | 15:02:41 | `NAVSPOT-SYNC: pending_actions_pipe extraido (187 chars)` | ✅ OK |
+| 976 | 15:02:41 | `NAVSPOT-SYNC: Variavel global setada, acionando action-processor...` | ✅ OK |
+| 977 | 15:02:41 | `NAVSPOT-SYNC: OK` | ⚠️ Executou muito rápido |
+| 979 | 15:02:43 | `NAVSPOT-SYNC: Falha` | ❌ ERRO |
 
-**O que FALTA nos logs:** `NAVSPOT-ACTION v7.1.2: Iniciando - ...`
+O log **não mostra** `NAVSPOT-ACTION: Variavel recebida, len=...` porque:
+1. O script está com versão **7.1.2** (instalado às 15:02:33)
+2. A edge function já está em **7.1.3** (deploy recente)
+3. Os scripts precisam ser **reinstalados** para pegar a nova versão
 
-Isso significa que o action-processor está recebendo `$navspotActions` como **vazio** e retornando imediatamente com `Sem acoes pendentes` (que também não aparece porque o log seria silencioso).
+Mas o problema real é mais profundo: mesmo com v7.1.3, a variável global pode não estar persistindo.
 
-## Causa Raiz
+## Causa Raiz: Race Condition no RouterOS 6.x
 
-O problema está no **escopo de variáveis globais** do RouterOS:
-
-1. **Script sync** define:
-   ```routeros
-   :global navspotActions $actions      # Define com valor
-   /system script run navspot-action-processor
-   ```
-
-2. **Script action-processor** começa com:
-   ```routeros
-   :global navspotActions               # Redeclara SEM valor
-   :local rawData $navspotActions       # Lê vazio!
-   ```
-
-Quando você declara `:global varname` **sem valor**, no RouterOS 6.x isso pode sobrescrever ou não pegar o valor definido em outro contexto, especialmente quando o script é chamado via `/system script run` em sequência rápida.
-
-## Solução
-
-Modificar o action-processor para **verificar se a variável existe antes de usar**, e adicionar fallback:
-
-### Mudanças no `supabase/functions/mikrotik-scripts/index.ts`
-
-#### 1. Script Sync - Garantir que a variável persista
-
-Adicionar um pequeno delay e log extra para debugging:
+No RouterOS 6.x, quando você define uma variável global e imediatamente chama outro script:
 
 ```routeros
+:global navspotActions $actions     # Define
+:delay 500ms                        # Delay
+/system script run navspot-action-processor  # Chama
+```
+
+O script chamado pode não ver o valor porque:
+1. A variável é definida no contexto do script pai
+2. O script filho redeclara `:global navspotActions` **sem valor**
+3. No RouterOS 6.x, isso pode resetar a variável
+
+## Solução: Usar Arquivo Temporário ao invés de Variável Global
+
+A solução mais robusta para RouterOS 6.x é passar os dados via **arquivo temporário** ao invés de variável global.
+
+### Mudanças no Arquivo `supabase/functions/mikrotik-scripts/index.ts`
+
+#### 1. Sync Script - Salvar ações em arquivo
+
+**Alteração nas linhas 417-424:**
+
+```routeros
+# ANTES:
 :global navspotActions $actions
 :log info ("NAVSPOT-SYNC: pending_actions_pipe extraido (" . [:len $actions] . " chars)")
-:log info ("NAVSPOT-SYNC: Acionando action-processor...")
-:delay 500ms   # <- Aumentar de 250ms para 500ms
+:log info ("NAVSPOT-SYNC: Variavel global setada, acionando action-processor...")
+:delay 500ms
+/system script run navspot-action-processor
+
+# DEPOIS:
+:log info ("NAVSPOT-SYNC: pending_actions_pipe extraido (" . [:len $actions] . " chars)")
+# v7.1.4: Usar arquivo ao invés de variavel global para evitar race condition
+:do { /file remove "navspot-actions.txt" } on-error={}
+/file print file=navspot-actions.txt where name="__never__"
+:delay 500ms
+/file set [find name="navspot-actions.txt"] contents=$actions
+:log info ("NAVSPOT-SYNC: Acoes salvas em arquivo, acionando action-processor...")
+:delay 500ms
 /system script run navspot-action-processor
 ```
 
-#### 2. Script Action-Processor - Melhorar leitura da variável
+#### 2. Action Processor - Ler ações do arquivo
+
+**Alteração nas linhas 430-443:**
 
 ```routeros
-# Antes:
+# ANTES:
 :global navspotActions
 :global navspotLock
 :if ($navspotLock = "1") do={
@@ -64,80 +78,6 @@ Adicionar um pequeno delay e log extra para debugging:
 :return
 }
 :set navspotLock "1"
-:local rawData $navspotActions
-
-# Depois:
-:global navspotActions
-:global navspotLock
-:if ($navspotLock = "1") do={
-:log info "NAVSPOT-ACTION: processamento em andamento, abortando"
-:return
-}
-:set navspotLock "1"
-:log info ("NAVSPOT-ACTION: Lendo variavel global, len=" . [:len $navspotActions])
-:local rawData $navspotActions
-```
-
-#### 3. Alternativa Mais Robusta: Passar Via Argumento
-
-Ao invés de usar variável global, passar as ações como **argumento do script**:
-
-**Script Sync:**
-```routeros
-:global navspotActions $actions
-:log info ("NAVSPOT-SYNC: pending_actions_pipe extraido (" . [:len $actions] . " chars)")
-:delay 500ms
-# Usar :execute com variável de ambiente ao invés de /system script run
-:do {
-  /system script run [find name="navspot-action-processor"]
-} on-error={
-  :log error "NAVSPOT-SYNC: Falha ao executar action-processor"
-}
-```
-
-**Script Action-Processor (início):**
-```routeros
-:global navspotActions
-:global navspotLock
-:log info ("NAVSPOT-ACTION: Iniciando com len=" . [:len $navspotActions])
-:if ([:len $navspotActions] = 0) do={
-  :log warning "NAVSPOT-ACTION: Variavel navspotActions vazia ou nao definida"
-  :set navspotLock "0"
-  :return
-}
-```
-
-### Solução Definitiva Recomendada
-
-A solução mais robusta é **aumentar o delay** e **adicionar logs de debug** para confirmar que a variável está sendo passada:
-
-## Arquivo: `supabase/functions/mikrotik-scripts/index.ts`
-
-### Mudança 1: generateSyncSource() - Aumentar delay (linha 421)
-
-```typescript
-// De:
-:delay 250ms
-/system script run navspot-action-processor
-
-// Para:
-:log info ("NAVSPOT-SYNC: Variavel global setada, len=" . [:len $actions])
-:delay 500ms
-/system script run navspot-action-processor
-```
-
-### Mudança 2: generateActionProcessorSource() - Adicionar log de debug (linha 436)
-
-```typescript
-// De:
-:local rawData $navspotActions
-:if ([:len $rawData] = 0) do={
-:set navspotLock "0"
-:log info "NAVSPOT: Sem acoes pendentes"
-:return
-}
-
-// Para:
 :local rawData $navspotActions
 :log info ("NAVSPOT-ACTION: Variavel recebida, len=" . [:len $rawData])
 :if ([:len $rawData] = 0) do={
@@ -145,50 +85,75 @@ A solução mais robusta é **aumentar o delay** e **adicionar logs de debug** p
 :log warning "NAVSPOT-ACTION: Variavel navspotActions VAZIA - nada a processar"
 :return
 }
+
+# DEPOIS:
+:global navspotLock
+:if ($navspotLock = "1") do={
+:log info "NAVSPOT-ACTION: processamento em andamento, abortando"
+:return
+}
+:set navspotLock "1"
+# v7.1.4: Ler acoes de arquivo ao inves de variavel global
+:local actionsFile [/file find name="navspot-actions.txt"]
+:if ([:len $actionsFile] = 0) do={
+:set navspotLock "0"
+:log warning "NAVSPOT-ACTION: Arquivo navspot-actions.txt NAO encontrado"
+:return
+}
+:local rawData [/file get "navspot-actions.txt" contents]
+:log info ("NAVSPOT-ACTION: Acoes lidas do arquivo, len=" . [:len $rawData])
+:do { /file remove "navspot-actions.txt" } on-error={}
+:if ([:len $rawData] = 0) do={
+:set navspotLock "0"
+:log warning "NAVSPOT-ACTION: Arquivo vazio - nada a processar"
+:return
+}
 ```
 
-### Mudança 3: Versão bump
+#### 3. Bump de Versão
 
-Atualizar `VERSION` para `7.1.3` para rastrear a mudança.
+- Alterar `VERSION` de `7.1.3` para `7.1.4`
+
+## Resumo das Mudanças
+
+| # | Arquivo | Linha | Mudança |
+|---|---------|-------|---------|
+| 1 | mikrotik-scripts/index.ts | 26 | Bump VERSION para 7.1.4 |
+| 2 | mikrotik-scripts/index.ts | 417-424 | Sync salva ações em arquivo |
+| 3 | mikrotik-scripts/index.ts | 430-443 | Action-processor lê do arquivo |
+| 4 | Deploy | - | Redeploy edge function |
 
 ## Fluxo Corrigido
 
 ```text
-                  SYNC SCRIPT                    ACTION-PROCESSOR
-                      │                                 │
-   1. Extrai ações ──►│                                 │
-   2. Define global ──►:global navspotActions $actions  │
-   3. Log debug ──────►"len=187"                        │
-   4. Delay 500ms ────►                                 │
-   5. Run ────────────►/system script run ─────────────►│
-                                                        │◄─ :global navspotActions
+             SYNC SCRIPT                         ACTION-PROCESSOR
+                 │                                      │
+   1. Extrai ações (187 chars)                          │
+   2. Salva em navspot-actions.txt ──────────────────►  │
+   3. Delay 500ms                                       │
+   4. /system script run ─────────────────────────────► │
+                                                        │◄─ Verifica arquivo existe
+                                                        │◄─ Lê conteúdo do arquivo
                                                         │◄─ Log "len=187"
+                                                        │◄─ Remove arquivo
                                                         │◄─ Processa ações
                                                         │◄─ Cria usuário
-                                                        │
 ```
 
-## Checklist de Implementação
+## Por Que Isso Funciona
 
-| # | Tarefa | Arquivo | Linha |
-|---|--------|---------|-------|
-| 1 | Aumentar delay de 250ms para 500ms | mikrotik-scripts/index.ts | 421 |
-| 2 | Adicionar log de debug no sync | mikrotik-scripts/index.ts | 420 |
-| 3 | Adicionar log de debug no action-processor | mikrotik-scripts/index.ts | 437 |
-| 4 | Mudar log de "Sem acoes" para warning | mikrotik-scripts/index.ts | 439 |
-| 5 | Bump versão para 7.1.3 | mikrotik-scripts/index.ts | 26 |
-| 6 | Re-deploy mikrotik-scripts | - | - |
+1. **Persistência Garantida**: Arquivos no RouterOS são persistentes entre contextos de script
+2. **Sem Race Condition**: O arquivo é escrito completamente antes do script ser chamado
+3. **Atomicidade**: O action-processor remove o arquivo após leitura, evitando reprocessamento
+4. **Compatibilidade**: Funciona tanto no RouterOS 6.x quanto no 7.x
 
-## Após a Correção
+## Passos Após Implementação
 
-1. **Gerar novo script bootstrap** via painel
-2. **Reimportar no MikroTik** com `/import navspot-bootstrap-v7.1.3.rsc`
-3. Aguardar o próximo sync e verificar se aparece:
-   - `NAVSPOT-SYNC: Variavel global setada, len=XXX`
-   - `NAVSPOT-ACTION: Variavel recebida, len=XXX`
+1. Deploy da edge function `mikrotik-scripts`
+2. Gerar novo bootstrap script (v7.1.4)
+3. Reimportar no MikroTik: `/import navspot-bootstrap-v7.1.4.rsc`
+4. Aguardar sync e verificar logs:
+   - `NAVSPOT-SYNC: Acoes salvas em arquivo...`
+   - `NAVSPOT-ACTION: Acoes lidas do arquivo, len=187`
    - `NAVSPOT: Usuario criado - alexandre.silva`
-
-## Nota Importante
-
-**SIM, você precisará atualizar o script no MikroTik** após esta correção, pois a mudança está no código dos scripts `navspot-sync` e `navspot-action-processor` que são instalados durante o bootstrap.
 
