@@ -477,6 +477,7 @@ export type Database = {
           firewall_rules_hash: string | null
           firewall_rules_updated_at: string | null
           id: string
+          initial_config_sent: boolean | null
           interface_wifi: string
           max_usuarios: number | null
           nome: string
@@ -499,6 +500,7 @@ export type Database = {
           firewall_rules_hash?: string | null
           firewall_rules_updated_at?: string | null
           id?: string
+          initial_config_sent?: boolean | null
           interface_wifi?: string
           max_usuarios?: number | null
           nome: string
@@ -521,6 +523,7 @@ export type Database = {
           firewall_rules_hash?: string | null
           firewall_rules_updated_at?: string | null
           id?: string
+          initial_config_sent?: boolean | null
           interface_wifi?: string
           max_usuarios?: number | null
           nome?: string
