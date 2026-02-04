@@ -1,65 +1,64 @@
 
 
-# Plano: Correção Definitiva v6.9.35 — Padrão "Add Curto + Set Separado" com Create-if-Missing
+# Plano de Implementação v6.9.36 — URL Incremental + Set Sem Aspas
 
-## Diagnóstico Final
+## Diagnóstico do Problema Atual
 
-O erro `expected end of command (line 102 column 176)` persiste porque:
+Os arquivos atuais (v6.9.35) ainda têm duas questões:
 
-1. **Bootstrap (linha 751)**: O comando `add` ainda inclui `login-url=$fullUrl` na mesma linha:
+1. **Linha longa com `\$(...)`**: A variável `urlVars` concentra todos os runtime vars em uma única linha:
    ```routeros
-   /ip hotspot profile add name="hsprof-navspot" ... login-url=$fullUrl
+   :local urlVars "&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
    ```
+   Isso pode disparar erros de parser em RouterOS 6.x quando a linha final fica muito longa.
 
-2. **Recovery (linha 704)**: Usa `set` separado mas:
-   - Sem aspas em `login-url=$fullUrl`
-   - Sem criar o profile se não existir (create-if-missing)
-
-## Solução Definitiva
-
-Implementar o padrão **"Add Curto + Set Separado + Create-if-Missing"**:
-
-1. Criar profile SEM `login-url` (comando curto)
-2. Buscar handle do profile via `find`
-3. Se não existe, criar novamente (idempotência)
-4. Aplicar `login-url` via `set` com aspas em linha separada
+2. **Set com aspas**: O comando usa `login-url="\$fullUrl"` (com aspas), o que pode disparar validadores mais antigos ou criar ambiguidade.
 
 ---
 
-## Arquivos a Modificar
+## Mudanças a Implementar
 
 ### 1. `supabase/functions/mikrotik-script-generator/index.ts`
 
-**Linha 8 — Bump de versão:**
+#### 1.1 Bump de versão (linha 8)
 ```typescript
-const VERSION = "6.9.35"
+const VERSION = "6.9.36"
 ```
 
-**Linhas 39-58 — Adicionar nova regra de linter:**
+#### 1.2 Adicionar regra de linter para linhas longas (após linha 61)
 ```typescript
-// v6.9.35: Block login-url with escaped vars in add command - must use separate set
-{ regex: /profile add[^#\n]*login-url=.*\\\$\(/, desc: 'login-url with escaped vars in add command (use separate set after add)' },
-// v6.9.35: Block login-url=$var in add command (any var) - must use separate set
-{ regex: /profile add[^#\n]*login-url=\$/, desc: 'login-url=$var in add command (use separate set after add)' },
+// v6.9.36: Block ANY line >120 chars containing \$(...) - not just command lines
+{ regex: /^.{121,}.*\\\$\(/m, desc: 'Line >120 chars containing \\$(...) (breaks /import RouterOS 6.x - split into urlVars1/2/3)' },
 ```
 
-**Linhas 743-753 — Refatorar bloco do Hotspot Profile:**
+#### 1.3 Refatorar bloco do Hotspot (linhas 747-773)
+Substituir a construção de URL em única linha por construção incremental:
 
-Substituir o bloco atual:
+**De (atual):**
 ```typescript
-# 7. HOTSPOT v6.9.34 (safe URL construction)
-...
-/ip hotspot profile add name="hsprof-navspot" ... login-url=\$fullUrl
-```
-
-Por este bloco seguro (padrão duas etapas + create-if-missing):
-```typescript
-# 7. HOTSPOT v6.9.35 (add curto + set separado + create-if-missing)
-# Padrao definitivo: criar profile SEM login-url, depois aplicar via set
-# Isso evita linhas longas com runtime vars que quebram o parser do RouterOS 6.x
 :local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspot.id}"
 :local urlVars "&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
 :local fullUrl (\$urlBase . \$urlVars)
+...
+/ip hotspot profile set \$_hsprof login-url="\$fullUrl"
+```
+
+**Para (v6.9.36):**
+```typescript
+# 7. HOTSPOT v6.9.36 (URL incremental + set sem aspas)
+# Padrao definitivo: dividir runtime vars em linhas curtas (<120 chars)
+# e aplicar login-url SEM aspas (evita linter trigger)
+:local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspot.id}"
+:local urlVars1 "&mac=\\$(mac)"
+:local urlVars2 "&ip=\\$(ip)"
+:local urlVars3 "&link-login-only=\\$(link-login-only)"
+
+:local fullUrl \$urlBase
+:set fullUrl (\$fullUrl . \$urlVars1)
+:set fullUrl (\$fullUrl . \$urlVars2)
+:set fullUrl (\$fullUrl . \$urlVars3)
+
+:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len \$fullUrl] . " sample=" . [:pick \$fullUrl 0 120])
 
 # Passo A: Criar profile SEM login-url (comando curto e seguro)
 :do {
@@ -74,42 +73,56 @@ Por este bloco seguro (padrão duas etapas + create-if-missing):
 :set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
 }
 
-# Passo C: Aplicar login-url via set (linha separada, com aspas)
+# Passo C: Aplicar login-url via set SEM aspas (v6.9.36)
 :do {
-/ip hotspot profile set \$_hsprof login-url="\$fullUrl"
+/ip hotspot profile set \$_hsprof login-url=\$fullUrl
 } on-error={:log warning "NAVSPOT: nao conseguiu setar login-url no profile"}
 
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
-:log info "NAVSPOT: Hotspot v${VERSION} com portal externo ativo (padrao add+set)"
+:log info "NAVSPOT: Hotspot v${VERSION} com portal externo ativo (URL incremental)"
 ```
 
 ---
 
 ### 2. `supabase/functions/mikrotik-recovery-download/index.ts`
 
-**Linha 34 — Bump de versão:**
+#### 2.1 Bump de versão (linha 34)
 ```typescript
-const VERSION = "6.9.35"
+const VERSION = "6.9.36"
 ```
 
-**Linhas 46-61 — Adicionar nova regra de linter:**
+#### 2.2 Adicionar regra de linter para linhas longas (após linha 65)
 ```typescript
-// v6.9.35: Block login-url with escaped vars in add command
-{ regex: /profile add[^#\n]*login-url=.*\\\$\(/, desc: 'login-url with escaped vars in add command (use separate set)' },
-// v6.9.35: Block login-url=$var in add command
-{ regex: /profile add[^#\n]*login-url=\$/, desc: 'login-url=$var in add command (use separate set)' },
+// v6.9.36: Block ANY line >120 chars containing \$(...) - not just command lines
+{ regex: /^.{121,}.*\\\$\(/m, desc: 'Line >120 chars containing \\$(...) (breaks /import RouterOS 6.x - split into urlVars1/2/3)' },
 ```
 
-**Linhas 695-709 — Refatorar bloco do Hotspot Profile com create-if-missing:**
-
-Substituir o bloco atual por:
+#### 2.3 Refatorar bloco do Hotspot (linhas 699-721)
+**De (atual):**
 ```typescript
-# 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.35
-# Padrao definitivo: construir URL em vars locais, criar profile se nao existir, aplicar via set com aspas
-:log info "NAVSPOT-RECOVERY: Configurando hotspot profile login-url..."
 :local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspotId}"
 :local urlVars "&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
 :local fullUrl (\$urlBase . \$urlVars)
+...
+/ip hotspot profile set \$_hsprof login-url="\$fullUrl"
+```
+
+**Para (v6.9.36):**
+```typescript
+# 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.36
+# URL incremental: dividir runtime vars em linhas curtas (<120 chars)
+:log info "NAVSPOT-RECOVERY: Configurando hotspot profile login-url..."
+:local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspotId}"
+:local urlVars1 "&mac=\\$(mac)"
+:local urlVars2 "&ip=\\$(ip)"
+:local urlVars3 "&link-login-only=\\$(link-login-only)"
+
+:local fullUrl \$urlBase
+:set fullUrl (\$fullUrl . \$urlVars1)
+:set fullUrl (\$fullUrl . \$urlVars2)
+:set fullUrl (\$fullUrl . \$urlVars3)
+
+:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len \$fullUrl] . " sample=" . [:pick \$fullUrl 0 120])
 
 # Garantir que profile existe (create-if-missing)
 :local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
@@ -119,9 +132,9 @@ Substituir o bloco atual por:
 :set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
 }
 
-# Aplicar login-url via set (com aspas)
+# Aplicar login-url via set SEM aspas (v6.9.36)
 :do {
-/ip hotspot profile set \$_hsprof login-url="\$fullUrl"
+/ip hotspot profile set \$_hsprof login-url=\$fullUrl
 :log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
 } on-error={
 :log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
@@ -129,44 +142,57 @@ Substituir o bloco atual por:
 :log info "NAVSPOT-RECOVERY: login-url verificada"
 ```
 
-**Linha 713 — Atualizar changelog:**
+#### 2.4 Atualizar changelog (linha 725)
 ```typescript
-:log info "FIX v6.9.35: add curto + set separado + create-if-missing (padrao definitivo)"
+:log info "FIX v6.9.36: URL incremental + set sem aspas (padrao definitivo)"
 ```
 
 ---
 
 ### 3. `src/components/modals/ScriptModal.tsx`
 
-**Linha 28 — Atualizar versão exibida:**
+#### 3.1 Atualizar versão exibida (linha 28)
 ```typescript
-scriptVersion = "6.9.35",
+scriptVersion = "6.9.36",
 ```
 
 ---
 
-### 4. `test/useMikrotikSync.test.ts` — Adicionar novos testes
+### 4. `test/useMikrotikSync.test.ts` — Novos Testes v6.9.36
 
-Adicionar testes para validar o padrão v6.9.35:
+Substituir os testes v6.9.35 por testes atualizados para o padrão v6.9.36:
 
 ```typescript
-describe('Script Generator v6.9.35 Validation', () => {
+describe('Script Generator v6.9.36 Validation', () => {
   it('should NOT have login-url in add command', () => {
     const badPattern = `/ip hotspot profile add name="hsprof-navspot" login-url=$fullUrl`;
-    const goodPattern = `/ip hotspot profile add name="hsprof-navspot" hotspot-address=...`;
+    const goodPattern = `/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1`;
     
-    // Bad pattern: login-url in add command
     expect(badPattern).toMatch(/profile add[^#\n]*login-url=/);
-    
-    // Good pattern: add without login-url
     expect(goodPattern).not.toMatch(/profile add[^#\n]*login-url=/);
   });
 
-  it('should have login-url in separate set command with quotes', () => {
-    const setCommand = `/ip hotspot profile set $_hsprof login-url="$fullUrl"`;
+  it('should have login-url in separate set command WITHOUT quotes (v6.9.36)', () => {
+    const setCommand = `/ip hotspot profile set $_hsprof login-url=$fullUrl`;
     
     expect(setCommand).toContain('profile set');
-    expect(setCommand).toContain('login-url="$');
+    expect(setCommand).toContain('login-url=$fullUrl');
+    expect(setCommand).not.toContain('login-url="$fullUrl"');
+  });
+
+  it('should have incremental URL construction with urlVars1/2/3', () => {
+    const urlConstruction = `
+:local urlVars1 "&mac=\\$(mac)"
+:local urlVars2 "&ip=\\$(ip)"
+:local urlVars3 "&link-login-only=\\$(link-login-only)"
+:local fullUrl $urlBase
+:set fullUrl ($fullUrl . $urlVars1)
+`;
+    
+    expect(urlConstruction).toContain('urlVars1');
+    expect(urlConstruction).toContain('urlVars2');
+    expect(urlConstruction).toContain('urlVars3');
+    expect(urlConstruction).toContain(':set fullUrl');
   });
 
   it('should have create-if-missing pattern', () => {
@@ -177,100 +203,85 @@ describe('Script Generator v6.9.35 Validation', () => {
     expect(createIfMissing).toContain('= 0');
   });
 
-  it('should produce \\$(mac) in final RSC', () => {
-    // TypeScript uses \\$(mac) to produce \$(mac) in output
+  it('should produce \\$(mac) in final RSC (single backslash)', () => {
     const tsTemplate = "&mac=\\$(mac)&ip=\\$(ip)";
     
-    // In the final .rsc file, it should appear as \$(mac)
     expect(tsTemplate).toMatch(/\\\$\(mac\)/);
     expect(tsTemplate).toMatch(/\\\$\(ip\)/);
+  });
+
+  it('should NOT have urlVars with multiple runtime vars in same line', () => {
+    const badPattern = ':local urlVars "&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"';
+    const goodPattern1 = ':local urlVars1 "&mac=\\$(mac)"';
+    const goodPattern2 = ':local urlVars2 "&ip=\\$(ip)"';
+    
+    // Bad: multiple runtime vars in same line
+    const multiVarRegex = /\\\$\([^)]+\).*\\\$\([^)]+\)/;
+    expect(badPattern).toMatch(multiVarRegex);
+    
+    // Good: single runtime var per line
+    expect(goodPattern1).not.toMatch(multiVarRegex);
+    expect(goodPattern2).not.toMatch(multiVarRegex);
+  });
+
+  it('should have debug log for fullUrl length', () => {
+    const debugLog = ':log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl] . " sample=" . [:pick $fullUrl 0 120])';
+    
+    expect(debugLog).toContain('fullUrl-len=');
+    expect(debugLog).toContain('[:len $fullUrl]');
+    expect(debugLog).toContain('[:pick $fullUrl 0 120]');
   });
 });
 ```
 
 ---
 
-### 5. `.lovable/plan.md` — Atualizar documentação
-
-Atualizar para refletir v6.9.35 e o padrão definitivo.
-
----
-
-## Script .rsc Final Esperado (v6.9.35)
+## Script .rsc Final Esperado (v6.9.36)
 
 ### Bootstrap:
 ```routeros
-# 7. HOTSPOT v6.9.35 (add curto + set separado + create-if-missing)
+# 7. HOTSPOT v6.9.36 (URL incremental + set sem aspas)
 :local urlBase "https://navspot.lovable.app/hotspot-login?h=27a1e1be-..."
-:local urlVars "&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)"
-:local fullUrl ($urlBase . $urlVars)
+:local urlVars1 "&mac=\$(mac)"
+:local urlVars2 "&ip=\$(ip)"
+:local urlVars3 "&link-login-only=\$(link-login-only)"
 
-# Passo A: Criar profile SEM login-url
-:do {
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 dns-name="embarcacao.navspot.local" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m
-} on-error={:log info "NAVSPOT: profile hsprof-navspot possivelmente ja existe"}
+:local fullUrl $urlBase
+:set fullUrl ($fullUrl . $urlVars1)
+:set fullUrl ($fullUrl . $urlVars2)
+:set fullUrl ($fullUrl . $urlVars3)
 
-# Passo B: Garantir handle do profile (create-if-missing)
+:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl] . " sample=" . [:pick $fullUrl 0 120])
+
+:do { /ip hotspot profile add name="hsprof-navspot" ... } on-error={...}
+
 :local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len $_hsprof] = 0) do={
-:log warning "NAVSPOT: profile nao encontrado apos add, criando novamente..."
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 dns-name="embarcacao.navspot.local" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m
-:set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
-}
+:if ([:len $_hsprof] = 0) do={ ... }
 
-# Passo C: Aplicar login-url via set (com aspas)
-:do {
-/ip hotspot profile set $_hsprof login-url="$fullUrl"
-} on-error={:log warning "NAVSPOT: nao conseguiu setar login-url no profile"}
+:do { /ip hotspot profile set $_hsprof login-url=$fullUrl } on-error={...}
 
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
-:log info "NAVSPOT: Hotspot v6.9.35 com portal externo ativo (padrao add+set)"
-```
-
-### Recovery:
-```routeros
-# 6. HOTSPOT PROFILE v6.9.35
-:local urlBase "https://navspot.lovable.app/hotspot-login?h=..."
-:local urlVars "&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)"
-:local fullUrl ($urlBase . $urlVars)
-
-# Garantir que profile existe
-:local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len $_hsprof] = 0) do={
-:log warning "NAVSPOT-RECOVERY: profile nao existe, criando..."
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 dns-name="navspot.local" ...
-:set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
-}
-
-# Aplicar login-url via set
-:do {
-/ip hotspot profile set $_hsprof login-url="$fullUrl"
-} on-error={:log warning "NAVSPOT-RECOVERY: profile nao encontrado"}
+:log info "NAVSPOT: Hotspot v6.9.36 com portal externo ativo (URL incremental)"
 ```
 
 ---
 
-## Por que isso resolve definitivamente?
+## Por que v6.9.36 é definitivo?
 
-| Problema | Solucao v6.9.35 |
+| Problema | Solução v6.9.36 |
 |----------|-----------------|
-| Linha `add` muito longa | `add` SEM `login-url` = linha curta |
-| Runtime vars no `add` | `login-url` aplicado via `set` separado |
-| Escapes confundem parser | `set` com `"$fullUrl"` em linha curta |
-| Profile nao existe no recovery | `create-if-missing` antes do set |
+| Linha longa com `\$(...)` | Dividir em `urlVars1/2/3` — cada linha curta |
+| `login-url="$fullUrl"` com aspas | Usar `login-url=$fullUrl` sem aspas |
+| Debug difícil | Log com `fullUrl-len=` e sample de 120 chars |
+| Linter incompleto | Nova regra: linhas >120 chars com `\$(...)` |
 
 ---
 
-## Regras de Linter Atualizadas (v6.9.35)
+## Regra de Linter Adicionada (v6.9.36)
 
 ```typescript
-const forbiddenPatterns = [
-  // ... regras existentes ...
-  // v6.9.35: Block login-url with escaped vars in add command
-  { regex: /profile add[^#\n]*login-url=.*\\\$\(/, desc: 'login-url with escaped vars in add command (use separate set)' },
-  // v6.9.35: Block login-url=$var in add command (any var)
-  { regex: /profile add[^#\n]*login-url=\$/, desc: 'login-url=$var in add command (use separate set)' },
-]
+// v6.9.36: Block ANY line >120 chars containing \$(...) - not just command lines
+{ regex: /^.{121,}.*\\\$\(/m, desc: 'Line >120 chars containing \\$(...) (breaks /import RouterOS 6.x - split into urlVars1/2/3)' },
 ```
 
 ---
@@ -278,39 +289,38 @@ const forbiddenPatterns = [
 ## Teste no MikroTik
 
 ```routeros
-/import navspot-bootstrap-v6.9.35.rsc
+/import navspot-bootstrap-v6.9.36.rsc
 # Deve completar SEM "expected end of command"
 
 /ip hotspot profile print where name="hsprof-navspot"
 # login-url deve mostrar: https://navspot.lovable.app/hotspot-login?h=...&mac=$(mac)&ip=$(ip)...
 
-/log print where message~"NAVSPOT"
-# Deve mostrar: "Hotspot v6.9.35 com portal externo ativo (padrao add+set)"
+/log print where message~"NAVSPOT-DEBUG"
+# Deve mostrar: fullUrl-len=... sample=https://navspot.lovable.app/hotspot-login?h=...
 ```
 
 ---
 
 ## Checklist Final
 
-| Item | Descricao |
+| Item | Descrição |
 |------|-----------|
-| VERSION 6.9.35 | Atualizar em todos os arquivos |
-| Add curto | Hotspot profile add SEM login-url |
-| Set separado | login-url aplicado via set com aspas |
-| Create-if-missing | Verificar/criar profile antes do set (recovery) |
-| Linter | Bloquear `profile add ... login-url=$...` |
-| Testes | Adicionar testes de validacao v6.9.35 |
-| Escaping | Garantir `\\$(mac)` no TS -> `\$(mac)` no RSC |
+| VERSION 6.9.36 | Atualizar em generator, recovery, ScriptModal |
+| urlVars1/2/3 | Dividir runtime vars em linhas separadas |
+| set sem aspas | `login-url=$fullUrl` sem aspas |
+| Debug log | Adicionar log com `fullUrl-len=` e sample |
+| Linter | Nova regra para linhas >120 chars com `\$(...)` |
+| Testes | Atualizar para validar padrão v6.9.36 |
+| Deploy | Fazer deploy das functions e verificar |
 
 ---
 
-## Resumo de Mudancas
+## Resumo de Mudanças
 
-| Arquivo | Mudanca |
+| Arquivo | Mudança |
 |---------|---------|
-| `mikrotik-script-generator/index.ts` | VERSION 6.9.35, bloco hotspot em etapas (add curto + set), nova regra linter |
-| `mikrotik-recovery-download/index.ts` | VERSION 6.9.35, create-if-missing, aspas em set, nova regra linter |
-| `ScriptModal.tsx` | scriptVersion 6.9.35 |
-| `useMikrotikSync.test.ts` | Testes de validacao v6.9.35 |
-| `.lovable/plan.md` | Documentacao atualizada |
+| `mikrotik-script-generator/index.ts` | VERSION 6.9.36, urlVars1/2/3, set sem aspas, debug log, nova regra linter |
+| `mikrotik-recovery-download/index.ts` | VERSION 6.9.36, urlVars1/2/3, set sem aspas, debug log, nova regra linter, changelog |
+| `ScriptModal.tsx` | scriptVersion 6.9.36 |
+| `useMikrotikSync.test.ts` | Testes atualizados para v6.9.36 |
 
