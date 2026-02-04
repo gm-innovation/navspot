@@ -5,8 +5,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.0.0: Version identifier
-const VERSION = "7.0.0"
+// v7.0.1: Version identifier - reduced cooldown, update_profile_config support
+const VERSION = "7.0.1"
 
 // v7.0: Sanitize pipe delimiter in URLs
 function sanitizeForPipe(value: string): string {
@@ -67,7 +67,7 @@ interface SyncedUserMeta {
 
 // v6.9.7: Constants for reconciliation
 const MISS_THRESHOLD = 2        // Syncs faltando antes de re-criar
-const SYNC_COOLDOWN_MS = 5 * 60 * 1000  // 5 min cooldown entre re-syncs
+const SYNC_COOLDOWN_MS = 2 * 60 * 1000  // v7.0.1: Reduced from 5min to 2min cooldown
 
 interface DeviceViolation {
   user: string
@@ -1352,7 +1352,7 @@ Deno.serve(async (req) => {
       else if (action.type === 'add_firewall_block') {
         firewallBlockActions.push(action)
       }
-      else if (action.type === 'add_user_profile' || action.type === 'create_profile') {
+      else if (action.type === 'add_user_profile' || action.type === 'create_profile' || action.type === 'update_profile_config') {
         profileActions.push(action)
       }
       else if (action.type === 'create_user' || action.type === 'add_user') {
@@ -1428,7 +1428,17 @@ Deno.serve(async (req) => {
         case 'create_user':
           return `create_user|${p.user || ''}|${p.password || ''}|${p.profile || 'default-navspot'}`
         case 'update_profile':
+        case 'update_profile_config':
         case 'update_user_profile':
+          // v7.0.1: update_profile_config updates profile settings (rate, quota, etc)
+          // For MikroTik, we recreate the profile with new settings
+          if (action.type === 'update_profile_config' && p.name) {
+            const normalizeRate = (v: string): string => String(v || '2M/5M')
+              .toUpperCase()
+              .replace(/MB/g, 'M').replace(/KB/g, 'K').replace(/GB/g, 'G').trim()
+            const rateLimit = normalizeRate(String(p.rateLimit || '2M/5M'))
+            return `create_profile|${p.name || ''}|${rateLimit}|${p.sharedUsers || 1}|${p.limitBytes || 0}`
+          }
           // Update profile is handled via create_user with updated profile
           return `create_user|${p.user || ''}||${p.profile || ''}`
         case 'add_user_profile':
