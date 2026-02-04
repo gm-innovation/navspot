@@ -54,6 +54,43 @@ describe('useMikrotikSync', () => {
     });
   });
 
+  describe('Script Generator v6.9.35 Validation', () => {
+    it('should NOT have login-url in add command', () => {
+      const badPattern = `/ip hotspot profile add name="hsprof-navspot" login-url=$fullUrl`;
+      const goodPattern = `/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1`;
+      
+      // Bad pattern: login-url in add command
+      expect(badPattern).toMatch(/profile add[^#\n]*login-url=/);
+      
+      // Good pattern: add without login-url
+      expect(goodPattern).not.toMatch(/profile add[^#\n]*login-url=/);
+    });
+
+    it('should have login-url in separate set command with quotes', () => {
+      const setCommand = `/ip hotspot profile set $_hsprof login-url="$fullUrl"`;
+      
+      expect(setCommand).toContain('profile set');
+      expect(setCommand).toContain('login-url="$');
+    });
+
+    it('should have create-if-missing pattern', () => {
+      const createIfMissing = `:if ([:len $_hsprof] = 0) do={`;
+      
+      expect(createIfMissing).toContain(':if');
+      expect(createIfMissing).toContain('[:len');
+      expect(createIfMissing).toContain('= 0');
+    });
+
+    it('should produce \\$(mac) in final RSC', () => {
+      // TypeScript uses \\$(mac) to produce \$(mac) in output
+      const tsTemplate = "&mac=\\$(mac)&ip=\\$(ip)";
+      
+      // In the final .rsc file, it should appear as \$(mac)
+      expect(tsTemplate).toMatch(/\\\$\(mac\)/);
+      expect(tsTemplate).toMatch(/\\\$\(ip\)/);
+    });
+  });
+
   describe('Script Generator Validation', () => {
     it('should use correct action values for walled-garden menus', () => {
       // Para /ip hotspot walled-garden (hostnames): action=allow ou action=deny

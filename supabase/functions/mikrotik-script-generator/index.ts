@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "6.9.34"
+const VERSION = "6.9.35"
 const DEPLOYED_AT = new Date().toISOString()
 
 interface Hotspot {
@@ -55,6 +55,10 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /:do\s*\{\s*[^}]*\[find[^\]]*\][^}]*\\\$\([^\)]*\)[^}]*\}/, desc: '[find ...] + \\$(...) in same :do block (breaks RouterOS 6.x - use two-step pattern: assign find to local, then set)' },
     // v6.9.34: Block long command lines (>150 chars) with escaped variables - risk of parser failure
     { regex: /^\/[^#\n]{150,}\\\$\(/m, desc: 'Long command line (>150 chars) with escaped vars (use local variable concatenation)' },
+    // v6.9.35: Block login-url with escaped vars in add command - must use separate set
+    { regex: /profile add[^#\n]*login-url=.*\\\$\(/, desc: 'login-url with escaped vars in add command (use separate set after add)' },
+    // v6.9.35: Block login-url=$var in add command (any var) - must use separate set
+    { regex: /profile add[^#\n]*login-url=\$/, desc: 'login-url=$var in add command (use separate set after add)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
@@ -740,17 +744,33 @@ ${wanConfig}
 
 :log info "NAVSPOT: Regras de firewall para Winbox/MNDP criadas"
 
-# 7. HOTSPOT v6.9.34 (safe URL construction)
-# login-by=http-pap,http-chap para compatibilidade
-# html-directory default ("hotspot") mantido para compatibilidade RouterOS 6.x
-# login-url construida em variaveis locais para evitar erro de parser em linha longa
-# Nota: $fullUrl sem aspas pois e variavel local (aspas causam erro no linter)
+# 7. HOTSPOT v6.9.35 (add curto + set separado + create-if-missing)
+# Padrao definitivo: criar profile SEM login-url, depois aplicar via set
+# Isso evita linhas longas com runtime vars que quebram o parser do RouterOS 6.x
 :local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspot.id}"
 :local urlVars "&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
 :local fullUrl (\$urlBase . \$urlVars)
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m login-url=\$fullUrl
+
+# Passo A: Criar profile SEM login-url (comando curto e seguro)
+:do {
+/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m
+} on-error={:log info "NAVSPOT: profile hsprof-navspot possivelmente ja existe"}
+
+# Passo B: Garantir handle do profile (create-if-missing)
+:local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
+:if ([:len \$_hsprof] = 0) do={
+:log warning "NAVSPOT: profile nao encontrado apos add, criando novamente..."
+/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m
+:set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
+}
+
+# Passo C: Aplicar login-url via set (linha separada, com aspas)
+:do {
+/ip hotspot profile set \$_hsprof login-url="\$fullUrl"
+} on-error={:log warning "NAVSPOT: nao conseguiu setar login-url no profile"}
+
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
-:log info "NAVSPOT: Hotspot v${VERSION} com portal externo ativo (URL segura)"
+:log info "NAVSPOT: Hotspot v${VERSION} com portal externo ativo (padrao add+set)"
 
 # 8. WALLED GARDEN v6.9.27 (Portal + APIs + Captive Portal Detection)
 # Portal NAVSPOT
