@@ -1,147 +1,194 @@
 
-# Correção: Sincronização de Perfis e Usuários MikroTik
 
-## Problemas Identificados
+# Correção: Action Processor Não Recebe Ações do Sync
 
-### Problema 1: Tipo de ação `update_profile_config` não existe no banco
+## Diagnóstico Completo
 
-**Erro:**
+Analisando os logs do MikroTik na imagem:
+
+| Hora | Log | Observação |
+|------|-----|------------|
+| 14:06:40 | `fetch: file "navspot-resp.txt" downloaded` | ✅ Resposta recebida |
+| 14:06:41 | `pending_actions_pipe extraido (187 chars)` | ✅ Ações extraídas |
+| 14:06:41 | `NAVSPOT-SYNC: OK` | ✅ Sync concluído |
+| 14:06:43 | `login failed: invalid username or password` | ❌ Usuário não existe |
+
+**O que FALTA nos logs:** `NAVSPOT-ACTION v7.1.2: Iniciando - ...`
+
+Isso significa que o action-processor está recebendo `$navspotActions` como **vazio** e retornando imediatamente com `Sem acoes pendentes` (que também não aparece porque o log seria silencioso).
+
+## Causa Raiz
+
+O problema está no **escopo de variáveis globais** do RouterOS:
+
+1. **Script sync** define:
+   ```routeros
+   :global navspotActions $actions      # Define com valor
+   /system script run navspot-action-processor
+   ```
+
+2. **Script action-processor** começa com:
+   ```routeros
+   :global navspotActions               # Redeclara SEM valor
+   :local rawData $navspotActions       # Lê vazio!
+   ```
+
+Quando você declara `:global varname` **sem valor**, no RouterOS 6.x isso pode sobrescrever ou não pegar o valor definido em outro contexto, especialmente quando o script é chamado via `/system script run` em sequência rápida.
+
+## Solução
+
+Modificar o action-processor para **verificar se a variável existe antes de usar**, e adicionar fallback:
+
+### Mudanças no `supabase/functions/mikrotik-scripts/index.ts`
+
+#### 1. Script Sync - Garantir que a variável persista
+
+Adicionar um pequeno delay e log extra para debugging:
+
+```routeros
+:global navspotActions $actions
+:log info ("NAVSPOT-SYNC: pending_actions_pipe extraido (" . [:len $actions] . " chars)")
+:log info ("NAVSPOT-SYNC: Acionando action-processor...")
+:delay 500ms   # <- Aumentar de 250ms para 500ms
+/system script run navspot-action-processor
 ```
-new row for relation "acoes_pendentes" violates check constraint "acoes_pendentes_tipo_check"
+
+#### 2. Script Action-Processor - Melhorar leitura da variável
+
+```routeros
+# Antes:
+:global navspotActions
+:global navspotLock
+:if ($navspotLock = "1") do={
+:log info "NAVSPOT-ACTION: processamento em andamento, abortando"
+:return
+}
+:set navspotLock "1"
+:local rawData $navspotActions
+
+# Depois:
+:global navspotActions
+:global navspotLock
+:if ($navspotLock = "1") do={
+:log info "NAVSPOT-ACTION: processamento em andamento, abortando"
+:return
+}
+:set navspotLock "1"
+:log info ("NAVSPOT-ACTION: Lendo variavel global, len=" . [:len $navspotActions])
+:local rawData $navspotActions
 ```
 
-**Causa:**
-- O hook `usePerfisVelocidade.ts` usa o tipo `update_profile_config` (linha 212)
-- Este tipo **não está** na lista de tipos permitidos no check constraint do banco
-- Tipos permitidos incluem: `add_user_profile`, `remove_user_profile`, `update_profile`, mas **não** `update_profile_config`
+#### 3. Alternativa Mais Robusta: Passar Via Argumento
 
-**Solução:**
-Alterar o tipo de `update_profile_config` para `update_profile` que já existe no banco.
+Ao invés de usar variável global, passar as ações como **argumento do script**:
 
-### Problema 2: Cooldown bloqueando re-sincronização de usuários
-
-**Dados dos logs:**
-```
-Decision for alexandre.silva: neverSynced=false, exceeded=true, cooldown=false
-```
-
-O sistema detecta que o usuário está faltando no MikroTik (`exceeded=true`, `miss_count=5`), mas o cooldown de 5 minutos **bloqueia** a re-injeção do `create_user`.
-
-**Causa:**
-O `last_synced_at` foi atualizado quando a ação foi criada, mas o usuário ainda não foi criado no MikroTik porque a ação não foi executada corretamente ou houve falha no script.
-
-**Dados no banco:**
-```json
-{
-  "login": "alexandre.silva",
-  "last_synced_at": "2026-02-04T17:00:39.905Z",
-  "miss_count": 0
+**Script Sync:**
+```routeros
+:global navspotActions $actions
+:log info ("NAVSPOT-SYNC: pending_actions_pipe extraido (" . [:len $actions] . " chars)")
+:delay 500ms
+# Usar :execute com variável de ambiente ao invés de /system script run
+:do {
+  /system script run [find name="navspot-action-processor"]
+} on-error={
+  :log error "NAVSPOT-SYNC: Falha ao executar action-processor"
 }
 ```
 
-Apesar do `miss_count` resetar após criar a ação, o usuário continua sem aparecer em `registered_users_csv`, e o cooldown impede nova tentativa por 5 minutos.
-
-**Solução:**
-Reduzir o cooldown de 5 minutos para 2 minutos, e também verificar se a ação anterior foi realmente **executada** antes de confiar no `last_synced_at`.
-
-### Problema 3: Ordem de criação - Perfil antes do Usuário
-
-**Situação:**
-Quando um perfil é atualizado e um usuário associado a ele precisa ser re-sincronizado, a ordem deve ser:
-1. Primeiro: criar/atualizar o perfil no MikroTik
-2. Depois: criar o usuário com referência ao perfil
-
-**Causa:**
-O sistema está invalidando o cache de perfis (`synced_profiles`) mas a lógica de reconciliação no `mikrotik-sync` processa usuários após perfis, o que é correto. Porém, se o perfil ainda não foi re-criado no MikroTik e um usuário tenta usar esse perfil, a criação do usuário falha.
-
-**Solução:**
-Garantir que a reconciliação de perfis seja executada **antes** da reconciliação de usuários no `mikrotik-sync`, e que ações de perfil tenham prioridade maior na fila.
-
-## Mudanças Necessárias
-
-### 1. Migração SQL: Adicionar tipo `update_profile_config` ao check constraint
-
-```sql
-ALTER TABLE acoes_pendentes DROP CONSTRAINT acoes_pendentes_tipo_check;
-ALTER TABLE acoes_pendentes ADD CONSTRAINT acoes_pendentes_tipo_check CHECK (
-  tipo = ANY (ARRAY[
-    'create_user', 'remove_user', 'delete_user', 'disable_user', 'enable_user',
-    'update_password', 'kick_session',
-    'create_profile', 'update_profile', 'update_profile_config',
-    'update_user_profile', 'add_user_profile', 'remove_user_profile', 'update_profile_quota',
-    'add_walled_garden', 'remove_walled_garden',
-    'add_whitelist_domain', 'remove_whitelist_domain',
-    'add_blacklist_domain', 'remove_blacklist_domain',
-    'create_whitelist_domain', 'create_blacklist_domain',
-    'add_firewall_filter', 'remove_firewall_filter',
-    'add_firewall_block', 'remove_firewall_block',
-    'block_device', 'unblock_device'
-  ])
-);
+**Script Action-Processor (início):**
+```routeros
+:global navspotActions
+:global navspotLock
+:log info ("NAVSPOT-ACTION: Iniciando com len=" . [:len $navspotActions])
+:if ([:len $navspotActions] = 0) do={
+  :log warning "NAVSPOT-ACTION: Variavel navspotActions vazia ou nao definida"
+  :set navspotLock "0"
+  :return
+}
 ```
 
-### 2. Edge Function: Reduzir cooldown e melhorar lógica de reconciliação
+### Solução Definitiva Recomendada
 
-**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
+A solução mais robusta é **aumentar o delay** e **adicionar logs de debug** para confirmar que a variável está sendo passada:
 
-| Linha | Alteração |
-|-------|-----------|
-| 70 | Alterar `SYNC_COOLDOWN_MS` de 5 minutos para 2 minutos |
-| 401-425 | Adicionar verificação se a última ação foi realmente executada |
+## Arquivo: `supabase/functions/mikrotik-scripts/index.ts`
 
-**Código atualizado (constante):**
+### Mudança 1: generateSyncSource() - Aumentar delay (linha 421)
+
 ```typescript
-// v6.9.8: Reduzir cooldown para 2 minutos (era 5)
-const SYNC_COOLDOWN_MS = 2 * 60 * 1000  // 2 min cooldown entre re-syncs
+// De:
+:delay 250ms
+/system script run navspot-action-processor
+
+// Para:
+:log info ("NAVSPOT-SYNC: Variavel global setada, len=" . [:len $actions])
+:delay 500ms
+/system script run navspot-action-processor
 ```
 
-### 3. Edge Function: Processar ação `update_profile_config`
+### Mudança 2: generateActionProcessorSource() - Adicionar log de debug (linha 436)
 
-**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
+```typescript
+// De:
+:local rawData $navspotActions
+:if ([:len $rawData] = 0) do={
+:set navspotLock "0"
+:log info "NAVSPOT: Sem acoes pendentes"
+:return
+}
 
-Adicionar handler para `update_profile_config` na seção de processamento de ações, convertendo para comandos MikroTik de atualização de perfil de usuário.
+// Para:
+:local rawData $navspotActions
+:log info ("NAVSPOT-ACTION: Variavel recebida, len=" . [:len $rawData])
+:if ([:len $rawData] = 0) do={
+:set navspotLock "0"
+:log warning "NAVSPOT-ACTION: Variavel navspotActions VAZIA - nada a processar"
+:return
+}
+```
 
-## Detalhes Técnicos
+### Mudança 3: Versão bump
 
-### Fluxo Atual de Sincronização
+Atualizar `VERSION` para `7.1.3` para rastrear a mudança.
+
+## Fluxo Corrigido
 
 ```text
-MikroTik                    Backend (mikrotik-sync)
-   |                              |
-   |-- POST /sync --------------->|
-   |   registered_users_csv       |
-   |   registered_profiles_csv    |
-   |                              |-- Reconcile Profiles
-   |                              |   (perfis do banco vs MikroTik)
-   |                              |
-   |                              |-- Reconcile Users
-   |                              |   (tripulantes do banco vs MikroTik)
-   |                              |
-   |<-- pending_actions_pipe -----|
-   |    profile:create|...        |
-   |    user:create|...           |
+                  SYNC SCRIPT                    ACTION-PROCESSOR
+                      │                                 │
+   1. Extrai ações ──►│                                 │
+   2. Define global ──►:global navspotActions $actions  │
+   3. Log debug ──────►"len=187"                        │
+   4. Delay 500ms ────►                                 │
+   5. Run ────────────►/system script run ─────────────►│
+                                                        │◄─ :global navspotActions
+                                                        │◄─ Log "len=187"
+                                                        │◄─ Processa ações
+                                                        │◄─ Cria usuário
+                                                        │
 ```
 
-### Problema no Ciclo
+## Checklist de Implementação
 
-1. Usuário `alexandre.silva` existe no banco mas não no MikroTik
-2. Sistema detecta `miss_count >= 2` e cria ação `create_user`
-3. Define `last_synced_at = now()` e reseta `miss_count = 0`
-4. MikroTik recebe ação mas **falha** na execução (perfil não existe?)
-5. Próximo sync: usuário ainda não aparece em `registered_users_csv`
-6. Sistema incrementa `miss_count` novamente
-7. Mas cooldown de 5 minutos impede nova ação
+| # | Tarefa | Arquivo | Linha |
+|---|--------|---------|-------|
+| 1 | Aumentar delay de 250ms para 500ms | mikrotik-scripts/index.ts | 421 |
+| 2 | Adicionar log de debug no sync | mikrotik-scripts/index.ts | 420 |
+| 3 | Adicionar log de debug no action-processor | mikrotik-scripts/index.ts | 437 |
+| 4 | Mudar log de "Sem acoes" para warning | mikrotik-scripts/index.ts | 439 |
+| 5 | Bump versão para 7.1.3 | mikrotik-scripts/index.ts | 26 |
+| 6 | Re-deploy mikrotik-scripts | - | - |
 
-### Arquivos Impactados
+## Após a Correção
 
-| Arquivo | Alteração |
-|---------|-----------|
-| SQL Migration | Adicionar `update_profile_config` ao check constraint |
-| `supabase/functions/mikrotik-sync/index.ts` | Reduzir cooldown, melhorar reconciliação |
+1. **Gerar novo script bootstrap** via painel
+2. **Reimportar no MikroTik** com `/import navspot-bootstrap-v7.1.3.rsc`
+3. Aguardar o próximo sync e verificar se aparece:
+   - `NAVSPOT-SYNC: Variavel global setada, len=XXX`
+   - `NAVSPOT-ACTION: Variavel recebida, len=XXX`
+   - `NAVSPOT: Usuario criado - alexandre.silva`
 
-## Resultado Esperado
+## Nota Importante
 
-Após as correções:
-1. Atualizar um perfil de velocidade não causa erro de constraint
-2. Usuários faltando no MikroTik são re-sincronizados a cada 2 minutos (ao invés de 5)
-3. A ordem de prioridade garante que perfis são criados antes dos usuários
+**SIM, você precisará atualizar o script no MikroTik** após esta correção, pois a mudança está no código dos scripts `navspot-sync` e `navspot-action-processor` que são instalados durante o bootstrap.
+
