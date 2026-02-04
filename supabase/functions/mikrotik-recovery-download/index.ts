@@ -26,7 +26,7 @@ const corsHeaders = {
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.38"
+const VERSION = "6.9.39"
 const DEPLOYED_AT = new Date().toISOString()
 
 // v6.9.37: Placeholders para runtime vars - evita erros de escaping
@@ -767,13 +767,11 @@ ${syncScriptSource}
 
 :log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl] . " sample=" . [:pick $fullUrl 0 80])
 
-# Garantir que profile existe (create-if-missing com comando CURTO)
+# Criar profile (idempotente - on-error ignora se ja existe)
+:do { /ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 } on-error={}
+
+# Obter handle do profile
 :local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len $_hsprof] = 0) do={
-:log warning "NAVSPOT-RECOVERY: profile nao existe, criando..."
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1
-:set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
-}
 
 # Aplicar configuracoes via sets SEPARADOS (cada linha <100 chars)
 :do { /ip hotspot profile set $_hsprof dns-name="navspot.local" } on-error={}

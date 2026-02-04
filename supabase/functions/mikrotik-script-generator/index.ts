@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "6.9.38"
+const VERSION = "6.9.39"
 const DEPLOYED_AT = new Date().toISOString()
 
 // v6.9.37: Placeholders para runtime vars - evita erros de escaping
@@ -835,18 +835,11 @@ ${wanConfig}
 
 :log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl] . " sample=" . [:pick $fullUrl 0 80])
 
-# Passo A: Criar profile com comando CURTO (apenas name + hotspot-address)
-:do {
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway}
-} on-error={:log info "NAVSPOT: profile hsprof-navspot possivelmente ja existe"}
+# Passo A: Criar profile (idempotente - on-error ignora se ja existe)
+:do { /ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} } on-error={}
 
-# Passo B: Garantir handle do profile (create-if-missing)
+# Passo B: Obter handle do profile
 :local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len $_hsprof] = 0) do={
-:log warning "NAVSPOT: profile nao encontrado apos add, criando novamente..."
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway}
-:set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
-}
 
 # Passo C: Aplicar configuracoes via sets SEPARADOS (cada linha <100 chars)
 :do { /ip hotspot profile set $_hsprof dns-name="${dnsName}" } on-error={}
