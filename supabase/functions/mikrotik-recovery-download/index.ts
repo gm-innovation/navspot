@@ -6,32 +6,27 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-recovery-download v6.9.31
+ * mikrotik-recovery-download v6.9.38
  * 
  * Minimal recovery endpoint for MikroTik self-healing.
  * Returns a .rsc script that recreates scripts/schedulers and verifies hotspot profile login-url.
  * 
+ * v6.9.38: CRITICAL FIX - Hard line cap (<160 chars) + short on-event strings
+ *          Hotspot profile uses add with minimal params + separate sets
+ *          JSON built incrementally to avoid long lines
+ *          Scheduler/netwatch use simple on-event="/system script run X"
+ * v6.9.37: Placeholders + robust escaping for runtime vars
  * v6.9.31: CRITICAL FIX - Replaced *.supabase.co/in wildcards with explicit backend hostname
  *          Wildcard patterns in walled-garden [find dst-host="*.supabase.co"] break RouterOS 6.x parser
  *          Now uses removal by comment ("navspot-api") and explicit host from SUPABASE_URL
  *          Token file now uses explicit .txt extension throughout
  * v6.9.30: Fixed local variable escaping ($hsprof not escaped, \$(mac) escaped)
- * v6.9.29: (broken) Over-escaped local variables causing parser errors
- * v6.9.28: Removed *.apple.com wildcard (breaks RouterOS 6.x /import)
- * v6.9.27: Eliminated ALL [:len [/... find ...]] patterns
- * v6.9.26: CRITICAL FIX - Removed AUTO-FIX firewall block completely
- * v6.9.25: CRITICAL FIX - RouterOS 6.x /import compatible syntax (partial fix)
- * v6.9.24: RouterOS 6.x compatible check (no -> operator)
- * v6.9.23: CRITICAL FIX - Whitelist firewall rules now scoped to hotspot=auth only
- * v6.9.22: Added essential Walled Garden recreation (portal, API, CDNs, CPD) + DNS TCP + ICMP
- * v6.9.21: Fixed firewall rule order (ACCEPT before DROP) + Walled Garden for whitelists + timeout=none
- * v6.9.20: Token fallback embutido nos scripts + suporte a hotspot_id autenticado
  * 
  * Called by navspot-guardian when it detects missing components or outdated scripts.
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.37"
+const VERSION = "6.9.38"
 const DEPLOYED_AT = new Date().toISOString()
 
 // v6.9.37: Placeholders para runtime vars - evita erros de escaping
@@ -114,6 +109,8 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /@@RUNTIME_[A-Z_]+@@/, desc: 'Unreplaced runtime placeholder (call replaceRuntimePlaceholders before validation)' },
     // v6.9.37: Block double-escaped runtime vars
     { regex: /\\\\\$\(/, desc: 'Double-escaped runtime var (\\\\$(mac) should be \\$(mac))' },
+    // v6.9.38: Block ANY non-comment line >160 chars (RouterOS /import practical limit)
+    { regex: /^(?!\s*#).{161,}$/m, desc: 'Line >160 chars (RouterOS /import may fail - split into multiple commands)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
@@ -334,7 +331,7 @@ Deno.serve(async (req) => {
 
     console.log(`[mikrotik-recovery-download ${VERSION}] Generating recovery for: ${hotspot!.nome}`)
 
-    // v6.9.37: Recovery script with explicit backend host + placeholder replacement
+    // v6.9.38: Recovery script with explicit backend host + placeholder replacement
     let recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes, syncToken, hotspot!.id, backendHost)
 
     // v6.9.37: Apply placeholder replacement, normalize and validate
@@ -365,7 +362,10 @@ Deno.serve(async (req) => {
 })
 
 function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, syncToken: string, hotspotId: string, backendHost: string): string {
-  // v6.9.27 sync script source with embedded token fallback
+  // v6.9.38: URL-encode hotspotId for safe URL construction
+  const hotspotIdSafe = encodeURIComponent(hotspotId)
+  
+  // v6.9.38 sync script source with JSON incremental build + embedded token fallback
   const syncScriptSource = `:local token ""
 :do { :set token [/file get "navspot-token.txt" contents] } on-error={}
 :if ([:len $token] < 10) do={
@@ -398,8 +398,11 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :local pname [get $p name]
 :set profiles ($profiles . $pname . ",")
 }
-# Construir JSON com todos os campos (users, registered, profiles)
-:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q . "," . $q . "registered_users_csv" . $q . ":" . $q . $registered . $q . "," . $q . "registered_profiles_csv" . $q . ":" . $q . $profiles . $q . "}")
+# v6.9.38: Construir JSON incrementalmente (evita linha >160 chars)
+:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q)
+:set body ($body . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q)
+:set body ($body . "," . $q . "registered_users_csv" . $q . ":" . $q . $registered . $q)
+:set body ($body . "," . $q . "registered_profiles_csv" . $q . ":" . $q . $profiles . $q . "}")
 :do {
 :local result [/tool fetch url=$syncUrl mode=https http-method=post http-data=$body http-header-field="Content-Type: application/json" output=user as-value]
 :if (($result->"status") = "finished") do={
@@ -630,15 +633,13 @@ function generateRecoveryScript(syncUrl: string, syncIntervalMinutes: number, sy
 :set navspotLock "0"
 :log info "NAVSPOT-ACTION v${VERSION}: Processamento concluido"`
 
-  // v6.9.27: Recovery script - Uses remove+add pattern (NO nested [:len [/...]] patterns)
+  // v6.9.38: Recovery script - Short commands, no lines >160 chars
   return `# NAVSPOT Recovery Script v${VERSION}
 # _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
 # This script recreates missing scripts/schedulers + token
-# v6.9.27: CRITICAL FIX - Eliminated ALL [:len [/... find ...]] patterns
-#          Uses idempotent remove+add pattern for Walled Garden entries
-#          RouterOS 6.x compatible /import syntax
-# v6.9.26: Removed AUTO-FIX firewall block completely
-# v6.9.23: Whitelist rules now scoped to hotspot=auth (pre-login traffic no longer blocked)
+# v6.9.38: Hard line cap (<160 chars) + short on-event strings
+# v6.9.37: Placeholders + robust escaping for runtime vars
+# v6.9.31: Replaced *.supabase.* wildcards with explicit host
 # It does NOT touch network config (bridge, DHCP, NAT, hotspot)
 :log info "NAVSPOT-RECOVERY v${VERSION}: Iniciando reparacao..."
 
@@ -666,7 +667,7 @@ ${actionProcessorSource}
 }
 :delay 200ms
 
-# 2. SYNC SCRIPT - set-or-add pattern with token fallback embutido
+# 2. SYNC SCRIPT - set-or-add pattern with token fallback embutido + JSON incremental
 :local syncExists [/system script find name="navspot-sync"]
 :if ([:len $syncExists] > 0) do={
 :log info "NAVSPOT-RECOVERY: Atualizando navspot-sync v${VERSION} (token fallback embutido)..."
@@ -681,19 +682,19 @@ ${syncScriptSource}
 }
 :delay 200ms
 
-# 3. SCHEDULER - set-or-add pattern v6.9.27: delay para aguardar rede + start-date fixo
+# 3. SCHEDULER v6.9.38: on-event curto (sem delay inline)
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
 :log info "NAVSPOT-RECOVERY: Atualizando scheduler v${VERSION}..."
-/system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
+/system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
 :log info "NAVSPOT-RECOVERY: Criando scheduler v${VERSION}..."
-/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
+/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup start-date=jan/01/1970
 }
 
-# 4. NETWATCH v6.9.27 - Dispara sync quando internet volta (remove+add pattern)
+# 4. NETWATCH v6.9.38 - on-event curto (remove+add pattern)
 :do { /tool netwatch remove [find comment="navspot-netwatch"] } on-error={}
-/tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script=":delay 5s; :do { /system script run navspot-sync } on-error={}" comment="navspot-netwatch"
+/tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script="/system script run navspot-sync" comment="navspot-netwatch"
 :log info "NAVSPOT-RECOVERY: Netwatch configurado para auto-sync"
 
 # 5. WALLED GARDEN ESSENCIAL v6.9.27 (remove+add pattern - idempotent)
@@ -747,11 +748,9 @@ ${syncScriptSource}
 
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial configurado"
 
-# 6. HOTSPOT PROFILE v6.9.37 (placeholders + escaping robusto)
-# Variáveis locais: SEM escape ($urlBase, $fullUrl, $_hsprof)
-# Variáveis runtime: via placeholder -> substituídas no final
+# 6. HOTSPOT PROFILE v6.9.38 (add curto + sets separados)
 :log info "NAVSPOT-RECOVERY: Configurando hotspot profile login-url..."
-:local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspotId}"
+:local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspotIdSafe}"
 :local urlVars1 "&mac=${RUNTIME_PLACEHOLDERS.mac}"
 :local urlVars2 "&ip=${RUNTIME_PLACEHOLDERS.ip}"
 :local urlVars3 "&link-login-only=${RUNTIME_PLACEHOLDERS.linkLoginOnly}"
@@ -761,28 +760,29 @@ ${syncScriptSource}
 :set fullUrl ($fullUrl . $urlVars2)
 :set fullUrl ($fullUrl . $urlVars3)
 
-:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl] . " sample=" . [:pick $fullUrl 0 120])
+:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl] . " sample=" . [:pick $fullUrl 0 80])
 
-# Garantir que profile existe (create-if-missing)
+# Garantir que profile existe (create-if-missing com comando CURTO)
 :local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
 :if ([:len $_hsprof] = 0) do={
 :log warning "NAVSPOT-RECOVERY: profile nao existe, criando..."
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 dns-name="navspot.local" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m
+/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1
 :set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
 }
 
-# Aplicar login-url via set SEM aspas (v6.9.37)
-:do {
-/ip hotspot profile set $_hsprof login-url=$fullUrl
+# Aplicar configuracoes via sets SEPARADOS (cada linha <100 chars)
+:do { /ip hotspot profile set $_hsprof dns-name="navspot.local" } on-error={}
+:do { /ip hotspot profile set $_hsprof html-directory=hotspot } on-error={}
+:do { /ip hotspot profile set $_hsprof login-by=http-pap,http-chap } on-error={}
+:do { /ip hotspot profile set $_hsprof keepalive-timeout=2m } on-error={}
+:do { /ip hotspot profile set $_hsprof idle-timeout=5m } on-error={}
+:do { /ip hotspot profile set $_hsprof login-url=$fullUrl } on-error={}
 :log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
-} on-error={
-:log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
-}
-:log info "NAVSPOT-RECOVERY: login-url verificada"
 
 :log info "=========================================="
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
-:log info "FIX v6.9.37: Placeholders + escaping robusto (elimina erros de escape)"
+:log info "FIX v6.9.38: Hard line cap + comandos curtos (max 160 chars/linha)"
+:log info "FIX v6.9.37: Placeholders + escaping robusto"
 :log info "FIX v6.9.31: Replaced *.supabase.* wildcards with explicit host"
 :log info "FIX v6.9.31: Token file uses explicit .txt extension"
 :log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"
@@ -790,8 +790,8 @@ ${syncScriptSource}
 :log info "FIX: login-url do hotspot profile verificada/corrigida"
 :log info "Token: recriado e fallback embutido no sync"
 :log info "Scripts: sync + action-processor v${VERSION} atualizados"
-:log info "Scheduler: sync a cada ${syncIntervalMinutes}m com startup delay"
-:log info "Netwatch: auto-sync quando internet volta"
+:log info "Scheduler: sync a cada ${syncIntervalMinutes}m (on-event curto)"
+:log info "Netwatch: auto-sync quando internet volta (on-event curto)"
 :log info "Walled Garden: portal + API (${backendHost}) + CPD + DNS/ICMP"
 :log info "NOTE: Old firewall rules will be fixed on next sync (hotspot=auth)"
 :log info "=========================================="

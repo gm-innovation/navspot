@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "6.9.37"
+const VERSION = "6.9.38"
 const DEPLOYED_AT = new Date().toISOString()
 
 // v6.9.37: Placeholders para runtime vars - evita erros de escaping
@@ -110,6 +110,8 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /@@RUNTIME_[A-Z_]+@@/, desc: 'Unreplaced runtime placeholder (call replaceRuntimePlaceholders before validation)' },
     // v6.9.37: Block double-escaped runtime vars
     { regex: /\\\\\$\(/, desc: 'Double-escaped runtime var (\\\\$(mac) should be \\$(mac))' },
+    // v6.9.38: Block ANY non-comment line >160 chars (RouterOS /import practical limit)
+    { regex: /^(?!\s*#).{161,}$/m, desc: 'Line >160 chars (RouterOS /import may fail - split into multiple commands)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
@@ -187,7 +189,7 @@ Deno.serve(async (req) => {
 
     const embarcacao = hotspot.embarcacoes as unknown as Embarcacao
 
-    // Generate v6.9.37 single bootstrap script with placeholder replacement
+    // Generate v6.9.38 single bootstrap script with placeholder replacement
     let bootstrapScript = generateBootstrapScript(
       hotspot as unknown as Hotspot,
       embarcacao,
@@ -334,7 +336,10 @@ function generateBootstrapScript(
   const syncIntervalMinutes = hotspot.sync_interval_minutes || 5
   const wanInterface = hotspot.wan_interface || 'ether1'
   const wanType = hotspot.wan_type || 'dhcp'
-  const dnsName = `${hotspotSlug}.navspot.local`
+  // v6.9.38: Escape dnsName for safe use in quotes
+  const dnsName = `${hotspotSlug}.navspot.local`.replace(/"/g, '\\"')
+  // v6.9.38: URL-encode hotspot.id for safe URL construction
+  const hotspotIdSafe = encodeURIComponent(hotspot.id)
 
   // v6.9.2: ether2 é porta de gerência fixa - NUNCA entra na bridge
   // Apenas ether3, 4, 5 serão portas do Hotspot
@@ -349,7 +354,7 @@ function generateBootstrapScript(
 :delay 500ms`
   }).join('\n\n')
 
-  // v6.9.27: Script sync com JSON usando hex \22 para aspas + TOKEN FALLBACK EMBUTIDO
+  // v6.9.38: Script sync com JSON incremental (evita linha >160 chars) + TOKEN FALLBACK EMBUTIDO
   const syncScriptSource = `:local token ""
 :do { :set token [/file get "navspot-token.txt" contents] } on-error={}
 :if ([:len $token] < 10) do={
@@ -382,8 +387,11 @@ function generateBootstrapScript(
 :local pname [get $p name]
 :set profiles ($profiles . $pname . ",")
 }
-# Construir JSON com todos os campos (users, registered, profiles)
-:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q . "," . $q . "registered_users_csv" . $q . ":" . $q . $registered . $q . "," . $q . "registered_profiles_csv" . $q . ":" . $q . $profiles . $q . "}")
+# v6.9.38: Construir JSON incrementalmente (evita linha >160 chars)
+:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q)
+:set body ($body . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q)
+:set body ($body . "," . $q . "registered_users_csv" . $q . ":" . $q . $registered . $q)
+:set body ($body . "," . $q . "registered_profiles_csv" . $q . ":" . $q . $profiles . $q . "}")
 :do {
 :local result [/tool fetch url=$syncUrl mode=https http-method=post http-data=$body http-header-field="Content-Type: application/json" output=user as-value]
 :if (($result->"status") = "finished") do={
@@ -702,7 +710,7 @@ function generateBootstrapScript(
 :log info "NAVSPOT-GUARDIAN: Sistema integro v${VERSION}"
 }`
 
-  // Bootstrap script v6.9.27 - Simplified syntax, no problematic patterns
+  // Bootstrap script v6.9.38 - Short commands, no lines >160 chars
   return `# NAVSPOT Bootstrap Script v${VERSION}
 # _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
 :log info "NAVSPOT v${VERSION}: Iniciando instalacao..."
@@ -798,10 +806,10 @@ ${wanConfig}
 
 :log info "NAVSPOT: Regras de firewall para Winbox/MNDP criadas"
 
-# 7. HOTSPOT v6.9.37 (placeholders + escaping robusto)
+# 7. HOTSPOT v6.9.38 (add curto + sets separados para evitar linhas longas)
 # Variáveis locais: SEM escape ($urlBase, $fullUrl, $_hsprof)
 # Variáveis runtime: via placeholder -> substituídas no final
-:local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspot.id}"
+:local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspotIdSafe}"
 :local urlVars1 "&mac=${RUNTIME_PLACEHOLDERS.mac}"
 :local urlVars2 "&ip=${RUNTIME_PLACEHOLDERS.ip}"
 :local urlVars3 "&link-login-only=${RUNTIME_PLACEHOLDERS.linkLoginOnly}"
@@ -811,28 +819,31 @@ ${wanConfig}
 :set fullUrl ($fullUrl . $urlVars2)
 :set fullUrl ($fullUrl . $urlVars3)
 
-:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl] . " sample=" . [:pick $fullUrl 0 120])
+:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl] . " sample=" . [:pick $fullUrl 0 80])
 
-# Passo A: Criar profile SEM login-url (comando curto e seguro)
+# Passo A: Criar profile com comando CURTO (apenas name + hotspot-address)
 :do {
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m
+/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway}
 } on-error={:log info "NAVSPOT: profile hsprof-navspot possivelmente ja existe"}
 
 # Passo B: Garantir handle do profile (create-if-missing)
 :local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
 :if ([:len $_hsprof] = 0) do={
 :log warning "NAVSPOT: profile nao encontrado apos add, criando novamente..."
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m
+/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway}
 :set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
 }
 
-# Passo C: Aplicar login-url via set SEM aspas (v6.9.37)
-:do {
-/ip hotspot profile set $_hsprof login-url=$fullUrl
-} on-error={:log warning "NAVSPOT: nao conseguiu setar login-url no profile"}
+# Passo C: Aplicar configuracoes via sets SEPARADOS (cada linha <100 chars)
+:do { /ip hotspot profile set $_hsprof dns-name="${dnsName}" } on-error={}
+:do { /ip hotspot profile set $_hsprof html-directory=hotspot } on-error={}
+:do { /ip hotspot profile set $_hsprof login-by=http-pap,http-chap } on-error={}
+:do { /ip hotspot profile set $_hsprof keepalive-timeout=2m } on-error={}
+:do { /ip hotspot profile set $_hsprof idle-timeout=5m } on-error={}
+:do { /ip hotspot profile set $_hsprof login-url=$fullUrl } on-error={}
 
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
-:log info "NAVSPOT: Hotspot v\${VERSION} com portal externo ativo (escaping robusto)"
+:log info "NAVSPOT: Hotspot v${VERSION} com portal externo ativo"
 
 # 8. WALLED GARDEN v6.9.27 (Portal + APIs + Captive Portal Detection)
 # Portal NAVSPOT
@@ -884,14 +895,14 @@ ${guardianScriptSource}
 }
 }
 
-# Guardian scheduler (startup + a cada 10 min) v6.9.27: usando variavel local
+# Guardian scheduler v6.9.38: on-event curto (sem delay inline)
 :local guardianSchedExists [/system scheduler find name="navspot-guardian-scheduler"]
 :if ([:len $guardianSchedExists] > 0) do={
-/system scheduler set $guardianSchedExists interval=10m on-event=":delay 20s; :do { /system script run navspot-guardian } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
+/system scheduler set $guardianSchedExists interval=10m on-event="/system script run navspot-guardian" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
-/system scheduler add name="navspot-guardian-scheduler" interval=10m on-event=":delay 20s; :do { /system script run navspot-guardian } on-error={}" start-time=startup start-date=jan/01/1970
+/system scheduler add name="navspot-guardian-scheduler" interval=10m on-event="/system script run navspot-guardian" start-time=startup start-date=jan/01/1970
 }
-:log info "NAVSPOT: Guardian v${VERSION} ativo (startup delay + token fallback + version check)"
+:log info "NAVSPOT: Guardian v${VERSION} ativo (startup + token fallback + version check)"
 
 # 11. ACTION PROCESSOR v6.9.27 - set-or-add pattern (nunca remove antes)
 :local apExists [/system script find name="navspot-action-processor"]
@@ -908,7 +919,7 @@ ${actionProcessorSource}
 }
 :delay 100ms
 
-# 12. SYNC SCRIPT v6.9.27 - set-or-add pattern com TOKEN FALLBACK EMBUTIDO
+# 12. SYNC SCRIPT v6.9.38 - set-or-add pattern com TOKEN FALLBACK EMBUTIDO e JSON incremental
 :local syncExists [/system script find name="navspot-sync"]
 :if ([:len $syncExists] > 0) do={
 :log info "NAVSPOT: Atualizando sync (token fallback embutido)..."
@@ -923,18 +934,18 @@ ${syncScriptSource}
 }
 :delay 100ms
 
-# Scheduler - set-or-add pattern v6.9.27: delay para aguardar rede + start-date fixo
+# Scheduler v6.9.38: on-event curto (sem delay inline)
 :local schedExists [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $schedExists] > 0) do={
-/system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970 disabled=no
+/system scheduler set $schedExists interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup start-date=jan/01/1970 disabled=no
 } else={
-/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}" start-time=startup start-date=jan/01/1970
+/system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup start-date=jan/01/1970
 }
-:log info "NAVSPOT: Sync scheduler v${VERSION} configurado (startup delay 30s)"
+:log info "NAVSPOT: Sync scheduler v${VERSION} configurado"
 
-# 13. NETWATCH v6.9.27 - Dispara sync quando internet volta (remove+add pattern)
+# 13. NETWATCH v6.9.38 - on-event curto (remove+add pattern)
 :do { /tool netwatch remove [find comment="navspot-netwatch"] } on-error={}
-/tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script=":delay 5s; :do { /system script run navspot-sync } on-error={}" comment="navspot-netwatch"
+/tool netwatch add host=8.8.8.8 interval=30s down-script="" up-script="/system script run navspot-sync" comment="navspot-netwatch"
 :log info "NAVSPOT: Netwatch configurado para auto-sync"
 
 # 14. MIGRAR PORTAS LAN COM DELAYS (evitar perda de conexao)
@@ -944,14 +955,15 @@ ${migrationCommands}
 
 :log info "NAVSPOT: Portas LAN migradas"
 
-# 15. SYNC INICIAL SUAVE (sem bloquear instalacao)
+# 15. SYNC INICIAL SUAVE v6.9.38 (on-event curto)
 :log info "NAVSPOT: Agendando sync inicial em 45 segundos..."
 :delay 200ms
-/system scheduler add name="navspot-first-sync" on-event=":do { /system script run navspot-sync } on-error={}; /system scheduler remove navspot-first-sync" start-time=startup interval=45s
+/system scheduler add name="navspot-first-sync" on-event="/system script run navspot-sync; /system scheduler remove navspot-first-sync" start-time=startup interval=45s
 
 :log info "=========================================="
 :log info "NAVSPOT v${VERSION}: INSTALACAO CONCLUIDA!"
-:log info "FIX v6.9.37: Placeholders + escaping robusto (elimina erros de escape)"
+:log info "FIX v6.9.38: Hard line cap + comandos curtos (max 160 chars/linha)"
+:log info "FIX v6.9.37: Placeholders + escaping robusto"
 :log info "FIX v6.9.31: Replaced *.supabase.* wildcards with explicit host"
 :log info "FIX v6.9.31: Token file uses explicit .txt extension"
 :log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"

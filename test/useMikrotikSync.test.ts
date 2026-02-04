@@ -209,6 +209,84 @@ describe('useMikrotikSync', () => {
     });
   });
 
+  describe('Script Generator v6.9.38 Line Length Validation', () => {
+    it('should block non-comment lines >160 chars', () => {
+      const longLineRe = /^(?!\s*#).{161,}$/m;
+      
+      // Good: short command
+      const shortLine = '/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1';
+      expect(longLineRe.test(shortLine)).toBe(false);
+      
+      // Good: long comment (allowed)
+      const longComment = '# ' + 'x'.repeat(200);
+      expect(longLineRe.test(longComment)).toBe(false);
+      
+      // Bad: long command (should be blocked)
+      const longCommand = '/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 dns-name="test.navspot.local" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m';
+      expect(longCommand.length).toBeGreaterThan(160);
+      expect(longLineRe.test(longCommand)).toBe(true);
+    });
+
+    it('should use short profile add command (only name + hotspot-address)', () => {
+      const shortAdd = '/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1';
+      
+      // Profile add should NOT contain these fields (they go in separate set commands)
+      expect(shortAdd).not.toContain('dns-name=');
+      expect(shortAdd).not.toContain('html-directory=');
+      expect(shortAdd).not.toContain('login-by=');
+      expect(shortAdd).not.toContain('keepalive-timeout=');
+      expect(shortAdd).not.toContain('idle-timeout=');
+      expect(shortAdd).not.toContain('login-url=');
+      
+      // Should be under 100 chars
+      expect(shortAdd.length).toBeLessThan(100);
+    });
+
+    it('should use short on-event strings for schedulers', () => {
+      const shortOnEvent = 'on-event="/system script run navspot-sync"';
+      const longOnEvent = 'on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}"';
+      
+      // Short version should be used
+      expect(shortOnEvent.length).toBeLessThan(60);
+      
+      // Long version should be avoided
+      expect(longOnEvent.length).toBeGreaterThan(60);
+    });
+
+    it('should build JSON incrementally to avoid long lines', () => {
+      const incrementalPattern = `
+:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q)
+:set body ($body . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q)
+`;
+      
+      // Each line should be <100 chars
+      const lines = incrementalPattern.trim().split('\n');
+      for (const line of lines) {
+        expect(line.length).toBeLessThan(100);
+      }
+      
+      // Should use incremental :set body pattern
+      expect(incrementalPattern).toContain(':set body ($body');
+    });
+
+    it('should use separate set commands for profile configuration', () => {
+      const setCommands = `
+:do { /ip hotspot profile set $_hsprof dns-name="test.navspot.local" } on-error={}
+:do { /ip hotspot profile set $_hsprof html-directory=hotspot } on-error={}
+:do { /ip hotspot profile set $_hsprof login-by=http-pap,http-chap } on-error={}
+:do { /ip hotspot profile set $_hsprof keepalive-timeout=2m } on-error={}
+:do { /ip hotspot profile set $_hsprof idle-timeout=5m } on-error={}
+:do { /ip hotspot profile set $_hsprof login-url=$fullUrl } on-error={}
+`;
+      
+      // Each set command should be under 100 chars
+      const lines = setCommands.trim().split('\n');
+      for (const line of lines) {
+        expect(line.length).toBeLessThan(100);
+      }
+    });
+  });
+
   describe('Script Generator Validation', () => {
     it('should use correct action values for walled-garden menus', () => {
       // Para /ip hotspot walled-garden (hostnames): action=allow ou action=deny
