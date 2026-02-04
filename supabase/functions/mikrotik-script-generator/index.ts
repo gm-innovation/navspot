@@ -248,7 +248,7 @@ function generateBootstrapScript(
 
   const migrationCommands = migrationOrder.map((port) => {
     return `:do { /interface bridge port remove [find interface=${port}] } on-error={}
-/interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan"
+:do { /interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan" } on-error={}
 :log info "NAVSPOT: ${port} migrada"
 :delay 500ms`
   }).join('\n\n')
@@ -317,25 +317,25 @@ ${wanConfig}
 /system identity set name="${embarcacao.nome}"
 
 # 5. CRIAR BRIDGE1
-/interface bridge add name="bridge1" protocol-mode=rstp auto-mac=yes comment="navspot"
+:do { /interface bridge add name="bridge1" protocol-mode=rstp auto-mac=yes comment="navspot" } on-error={}
 :delay 1s
 :log info "NAVSPOT: Bridge1 criada"
 
 # 6. CONFIGURAR REDE
-/ip address add address=${gateway}/24 interface=bridge1 comment="navspot"
-/ip pool add name="hs-pool-navspot" ranges=${poolStart}-${poolEnd}
-/ip dhcp-server network add address=${networkCidr} gateway=${gateway} dns-server=${gateway} comment="navspot"
-/ip dhcp-server add name="dhcp-navspot" interface=bridge1 address-pool="hs-pool-navspot" disabled=no
+:do { /ip address add address=${gateway}/24 interface=bridge1 comment="navspot" } on-error={}
+:do { /ip pool add name="hs-pool-navspot" ranges=${poolStart}-${poolEnd} } on-error={}
+:do { /ip dhcp-server network add address=${networkCidr} gateway=${gateway} dns-server=${gateway} comment="navspot" } on-error={}
+:do { /ip dhcp-server add name="dhcp-navspot" interface=bridge1 address-pool="hs-pool-navspot" disabled=no } on-error={}
 :log info "NAVSPOT: Rede IP configurada"
 
 # 7. NAT
-/ip firewall nat add chain=srcnat out-interface=${wanInterface} action=masquerade comment="navspot-nat"
+:do { /ip firewall nat add chain=srcnat out-interface=${wanInterface} action=masquerade comment="navspot-nat" } on-error={}
 :log info "NAVSPOT: NAT configurado"
 
 # 8. GERENCIA WINBOX
 :do { /interface list add name="mgmt" comment="navspot-mgmt-list" } on-error={}
 :do { /interface list member add list="mgmt" interface=ether2 } on-error={}
-/interface list member add list="mgmt" interface=bridge1 comment="navspot-allow-discovery"
+:do { /interface list member add list="mgmt" interface=bridge1 comment="navspot-allow-discovery" } on-error={}
 /ip neighbor discovery-settings set discover-interface-list=mgmt
 :do { /ip firewall filter remove [find comment="navspot-allow-winbox-mgmt"] } on-error={}
 # v7.1.2: regras de gerencia sem place-before (evita erro em roteadores limpos)
@@ -351,7 +351,7 @@ ${migrationCommands}
 
 # 10. HOTSPOT MINIMO v7.1 (SEM login-url - sera configurada via sync)
 :do { /ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} } on-error={}
-/ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
+:do { /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no } on-error={}
 :log info "NAVSPOT v${VERSION}: Hotspot criado (aguardando config via sync)"
 
 # 11. TOKEN
