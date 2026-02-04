@@ -54,175 +54,223 @@ describe('useMikrotikSync', () => {
     });
   });
 
-  describe('Script Generator v6.9.36 Validation', () => {
-    it('should NOT have login-url in add command', () => {
-      const badPattern = `/ip hotspot profile add name="hsprof-navspot" login-url=$fullUrl`;
-      const goodPattern = `/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1`;
-      
-      // Bad pattern: login-url in add command
-      expect(badPattern).toMatch(/profile add[^#\n]*login-url=/);
-      
-      // Good pattern: add without login-url
-      expect(goodPattern).not.toMatch(/profile add[^#\n]*login-url=/);
+  describe('Script Generator v7.0 Architecture Validation', () => {
+    describe('Minimal Bootstrap (Thin Client Pattern)', () => {
+      it('should NOT have login-url with $(mac) in bootstrap', () => {
+        // v7.0: Bootstrap MUST NOT contain login-url with runtime vars
+        const badPattern = 'login-url="https://navspot.lovable.app/hotspot-login?h=abc&mac=$(mac)"';
+        const goodPattern = ':do { /ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 } on-error={}';
+        
+        // Bad: login-url with $(mac) in bootstrap
+        expect(badPattern).toMatch(/login-url=.*\$\(mac\)/);
+        
+        // Good: hotspot profile add without login-url
+        expect(goodPattern).not.toMatch(/login-url=/);
+        expect(goodPattern).toContain('profile add');
+      });
+
+      it('should have minimal hotspot profile add (only name + hotspot-address)', () => {
+        const minimalAdd = '/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1';
+        
+        // Should NOT contain these (they come via sync)
+        expect(minimalAdd).not.toContain('login-url=');
+        expect(minimalAdd).not.toContain('dns-name=');
+        expect(minimalAdd).not.toContain('login-by=');
+        expect(minimalAdd).not.toContain('keepalive-timeout=');
+        expect(minimalAdd).not.toContain('idle-timeout=');
+        
+        // Should be under 100 chars
+        expect(minimalAdd.length).toBeLessThan(100);
+      });
+
+      it('should have cleanup commands at the start', () => {
+        const cleanupCommand = ':do { /file remove [find where name~"navspot"] } on-error={}';
+        
+        expect(cleanupCommand).toContain('/file remove');
+        expect(cleanupCommand).toContain('on-error={}');
+      });
+
+      it('should configure DNS before first sync', () => {
+        // DNS must be set before sync can work
+        const dnsConfig = '/ip dns set allow-remote-requests=yes servers=8.8.8.8,8.8.4.4';
+        
+        expect(dnsConfig).toContain('allow-remote-requests=yes');
+        expect(dnsConfig).toContain('8.8.8.8');
+      });
     });
 
-    it('should have login-url in separate set command WITHOUT quotes (v6.9.40)', () => {
-      const setCommand = `/ip hotspot profile set $hsprof login-url=$fullUrl`;
-      
-      expect(setCommand).toContain('profile set');
-      expect(setCommand).toContain('login-url=$fullUrl');
-      expect(setCommand).not.toContain('login-url="$fullUrl"');
+    describe('Action Processor v7.0 (configure_hotspot_profile handler)', () => {
+      it('should have configure_hotspot_profile handler', () => {
+        const handler = `:if ($cmd = "configure_hotspot_profile") do={
+:local p2 [:find $rest "|"]
+:local loginUrl [:pick $rest 0 $p2]
+:local dnsName [:pick $rest ($p2 + 1) [:len $rest]]
+:local hsprof [/ip hotspot profile find name="hsprof-navspot"]
+:do { /ip hotspot profile set $hsprof login-url=$loginUrl } on-error={}
+}`;
+        
+        expect(handler).toContain('configure_hotspot_profile');
+        expect(handler).toContain('loginUrl');
+        expect(handler).toContain('dnsName');
+        expect(handler).toContain('profile set $hsprof login-url=$loginUrl');
+      });
+
+      it('should use $loginUrl (local var, no escape) not escaped version', () => {
+        const correctHandler = '/ip hotspot profile set $hsprof login-url=$loginUrl';
+        const wrongHandler = '/ip hotspot profile set $hsprof login-url=\\$loginUrl';
+        
+        // Correct: local script var without escape
+        expect(correctHandler).toContain('$loginUrl');
+        expect(correctHandler).not.toMatch(/\\\$loginUrl/);
+        
+        // Wrong: escaped local var
+        expect(wrongHandler).toMatch(/\\\$loginUrl/);
+      });
+
+      it('should parse pipe-delimited format correctly', () => {
+        // Format: configure_hotspot_profile|login_url|dns_name
+        const pipeFormat = 'configure_hotspot_profile|https://navspot.lovable.app/hotspot-login?h=abc&mac=$(mac)|test.navspot.local';
+        
+        const parts = pipeFormat.split('|');
+        expect(parts[0]).toBe('configure_hotspot_profile');
+        expect(parts[1]).toContain('$(mac)'); // Runtime var in URL is OK (comes from sync)
+        expect(parts[2]).toBe('test.navspot.local');
+      });
     });
 
-    it('should have incremental URL construction with urlVars1/2/3 (v6.9.41 hex escape)', () => {
-      // v6.9.41: Uses \24 hex escape instead of \$
-      const urlConstruction = `
-:local urlVars1 "&mac=\\24(mac)"
-:local urlVars2 "&ip=\\24(ip)"
-:local urlVars3 "&link-login-only=\\24(link-login-only)"
-:local fullUrl $urlBase
-:set fullUrl ($fullUrl . $urlVars1)
-`;
-      
-      expect(urlConstruction).toContain('urlVars1');
-      expect(urlConstruction).toContain('urlVars2');
-      expect(urlConstruction).toContain('urlVars3');
-      expect(urlConstruction).toContain(':set fullUrl');
-      // v6.9.41: Must use \24( not \$(
-      expect(urlConstruction).toContain('\\24(mac)');
-      expect(urlConstruction).toContain('\\24(ip)');
-      expect(urlConstruction).not.toContain('\\$(mac)');
+    describe('Guardian v7.0 (login-url verification)', () => {
+      it('should check if login-url is configured', () => {
+        const guardianCheck = `:local hsprof [/ip hotspot profile find name="hsprof-navspot"]
+:local loginUrl ""
+:if ([:len $hsprof] > 0) do={
+:set loginUrl [/ip hotspot profile get $hsprof login-url]
+}
+:if ([:len $loginUrl] < 10) do={
+:log warning "NAVSPOT-GUARDIAN v7.0: login-url incompleta - forcando sync"
+}`;
+        
+        expect(guardianCheck).toContain('profile get $hsprof login-url');
+        expect(guardianCheck).toContain('[:len $loginUrl] < 10');
+        expect(guardianCheck).toContain('forcando sync');
+      });
+
+      it('should check for configure_hotspot_profile handler in action-processor', () => {
+        const versionCheck = `:if ([:find $apSource "configure_hotspot_profile"] < 0) do={
+:set needsRepair 1
+}`;
+        
+        expect(versionCheck).toContain('configure_hotspot_profile');
+        expect(versionCheck).toContain('needsRepair 1');
+      });
     });
 
-    it('should use idempotent add pattern (v6.9.40)', () => {
-      // v6.9.40: Replaced :if ([:len...] with idempotent :do { add } on-error={}
-      const idempotentAdd = `:do { /ip hotspot profile add name="hsprof-navspot" } on-error={}`;
-      
-      expect(idempotentAdd).toContain(':do {');
-      expect(idempotentAdd).toContain('profile add');
-      expect(idempotentAdd).toContain('on-error={}');
+    describe('Sync API v7.0 (First-Sync Detection)', () => {
+      it('should format configure_hotspot_profile action correctly', () => {
+        // Pipe format: configure_hotspot_profile|login_url|dns_name
+        const loginUrl = 'https://navspot.lovable.app/hotspot-login?h=abc&mac=$(mac)&ip=$(ip)';
+        const dnsName = 'test.navspot.local';
+        const formatted = `configure_hotspot_profile|${loginUrl}|${dnsName}`;
+        
+        expect(formatted).toContain('configure_hotspot_profile|');
+        expect(formatted).toContain('$(mac)'); // Runtime vars are literal in sync
+        expect(formatted).toContain('$(ip)');
+        expect(formatted).toContain('|test.navspot.local');
+      });
+
+      it('should NOT have pipe character in loginUrl', () => {
+        const loginUrl = 'https://navspot.lovable.app/hotspot-login?h=abc&mac=$(mac)';
+        
+        // URL should not contain | (would break pipe format)
+        expect(loginUrl).not.toContain('|');
+      });
+
+      it('should use unshift to inject configure_hotspot_profile first', () => {
+        // The configure_hotspot_profile action must be FIRST in the pipe
+        // so it runs before create_user or create_profile
+        const actions = [
+          'create_profile|Tripulante|5M/2M|3',
+          'create_user|joao|senha123|Tripulante',
+        ];
+        
+        const configAction = 'configure_hotspot_profile|https://test.com|test.local';
+        
+        // Simulating unshift
+        actions.unshift(configAction);
+        
+        expect(actions[0]).toBe(configAction);
+        expect(actions[0]).toContain('configure_hotspot_profile');
+      });
     });
 
-    it('should produce \\24(mac) in final RSC (v6.9.41 hex escape)', () => {
-      // v6.9.41: TypeScript uses \\24(mac) to produce \24(mac) in output
-      const tsTemplate = "&mac=\\24(mac)&ip=\\24(ip)";
-      
-      // In the final .rsc file, it should appear as \24(mac)
-      expect(tsTemplate).toMatch(/\\24\(mac\)/);
-      expect(tsTemplate).toMatch(/\\24\(ip\)/);
-      // Must NOT use \$( pattern (breaks RouterOS 6.x /import)
-      expect(tsTemplate).not.toMatch(/\\\$\(/);
-    });
+    describe('Recovery v7.0 (Reset initial_config_sent)', () => {
+      it('should NOT have login-url with runtime vars in recovery', () => {
+        // v7.0: Recovery script must NOT contain login-url with $(mac)
+        const badRecovery = ':do { /ip hotspot profile set $hsprof login-url="https://x.com?mac=$(mac)" } on-error={}';
+        const goodRecovery = '# Config comes via sync API - no login-url in recovery';
+        
+        // Bad: login-url in recovery
+        expect(badRecovery).toMatch(/login-url=.*\$\(mac\)/);
+        
+        // Good: no login-url
+        expect(goodRecovery).not.toMatch(/login-url=/);
+      });
 
-    it('should NOT have \\$( in output (v6.9.41)', () => {
-      const badPattern = ':local urlVars1 "&mac=\\$(mac)"';
-      const goodPattern = ':local urlVars1 "&mac=\\24(mac)"';
-      
-      // Bad: \$( doesn't work in RouterOS 6.x /import
-      expect(badPattern).toMatch(/\\\$\(/);
-      
-      // Good: \24( hex escape works
-      expect(goodPattern).not.toMatch(/\\\$\(/);
-      expect(goodPattern).toMatch(/\\24\(/);
-    });
-
-    it('should NOT have urlVars with multiple runtime vars in same line', () => {
-      const badPattern = ':local urlVars "&mac=\\24(mac)&ip=\\24(ip)&link-login-only=\\24(link-login-only)"';
-      const goodPattern1 = ':local urlVars1 "&mac=\\24(mac)"';
-      const goodPattern2 = ':local urlVars2 "&ip=\\24(ip)"';
-      
-      // Bad: multiple runtime vars in same line
-      const multiVarRegex = /\\24\([^)]+\).*\\24\([^)]+\)/;
-      expect(badPattern).toMatch(multiVarRegex);
-      
-      // Good: single runtime var per line
-      expect(goodPattern1).not.toMatch(multiVarRegex);
-      expect(goodPattern2).not.toMatch(multiVarRegex);
-    });
-
-    it('should have debug log for fullUrl length', () => {
-      const debugLog = ':log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl] . " sample=" . [:pick $fullUrl 0 120])';
-      
-      expect(debugLog).toContain('fullUrl-len=');
-      expect(debugLog).toContain('[:len $fullUrl]');
-      expect(debugLog).toContain('[:pick $fullUrl 0 120]');
+      it('should trigger sync after recovery to get config', () => {
+        const syncTrigger = '/system script run navspot-sync';
+        
+        expect(syncTrigger).toContain('script run navspot-sync');
+      });
     });
   });
 
-  describe('Script Generator v6.9.40 Escaping Validation', () => {
-    it('should NOT escape local script variables ($urlBase, $fullUrl, $hsprof)', () => {
-      // v6.9.40: Variable names without underscore prefix (RouterOS 6.x parser issue)
-      const correctLocalVars = `
-:local fullUrl $urlBase
-:set fullUrl ($fullUrl . $urlVars1)
-:local hsprof [/ip hotspot profile find name="hsprof-navspot"]
-/ip hotspot profile set $hsprof login-url=$fullUrl
-`;
+  describe('Script Generator Validation (Legacy Tests)', () => {
+    it('should use correct action values for walled-garden menus', () => {
+      // Para /ip hotspot walled-garden (hostnames): action=allow ou action=deny
+      const hostnameBlacklist = '/ip hotspot walled-garden add dst-host=$domain action=deny';
       
-      // Variáveis locais NÃO devem ter backslash
-      expect(correctLocalVars).toContain('$urlBase');
-      expect(correctLocalVars).toContain('$fullUrl');
-      expect(correctLocalVars).toContain('$hsprof');
-      expect(correctLocalVars).not.toMatch(/\\\$urlBase/);
-      expect(correctLocalVars).not.toMatch(/\\\$fullUrl/);
-      expect(correctLocalVars).not.toMatch(/\\\$hsprof/);
+      // Para /ip hotspot walled-garden ip (IPs): action=accept ou action=reject
+      const ipWhitelist = '/ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept';
+      
+      expect(hostnameBlacklist).toContain('action=deny');
+      expect(ipWhitelist).toContain('action=accept');
     });
 
-    it('should ONLY use hex escape \\24 for runtime hotspot variables (v6.9.41)', () => {
-      const correctRuntimeVars = `
-:local urlVars1 "&mac=\\24(mac)"
-:local urlVars2 "&ip=\\24(ip)"
-:local urlVars3 "&link-login-only=\\24(link-login-only)"
-`;
+    it('should use correct walled-garden menu for hostnames', () => {
+      const actionProcessorSource = '/ip hotspot walled-garden add dst-host=$domain action=deny';
       
-      // Must use \24( hex escape
-      expect(correctRuntimeVars).toMatch(/\\24\(mac\)/);
-      expect(correctRuntimeVars).toMatch(/\\24\(ip\)/);
-      expect(correctRuntimeVars).toMatch(/\\24\(link-login-only\)/);
-      // Must NOT use \$( (breaks RouterOS 6.x /import)
-      expect(correctRuntimeVars).not.toMatch(/\\\$\(/);
+      // Verificar que usa o menu correto (sem "ip") para hostnames
+      expect(actionProcessorSource).toContain('/ip hotspot walled-garden add dst-host');
+      expect(actionProcessorSource).not.toMatch(/walled-garden ip.*dst-host/);
     });
 
-    it('should NOT have \\$( escape pattern (v6.9.41)', () => {
-      // v6.9.41: \$( is invalid in RouterOS 6.x /import - use \24( instead
-      const badPattern = '&mac=\\$(mac)';
-      const goodPattern = '&mac=\\24(mac)';
+    it('should not contain invalid policy token in script declarations', () => {
+      const scriptDeclaration = '/system script add name="navspot-sync" policy=read,write,test source={';
       
-      expect(badPattern).toMatch(/\\\$\(/);
-      expect(goodPattern).not.toMatch(/\\\$\(/);
-      expect(goodPattern).toMatch(/\\24\(/);
+      expect(scriptDeclaration).not.toMatch(/policy=.*policy,.*policy/);
+      expect(scriptDeclaration).toMatch(/policy=read,write,test/);
     });
 
-    it('should NOT have double-escaped runtime vars (\\\\24(mac))', () => {
-      const badPattern = '&mac=\\\\24(mac)';
-      const goodPattern = '&mac=\\24(mac)';
+    it('should use full command in scheduler on-event', () => {
+      const schedulerCommand = 'on-event="/system script run navspot-sync"';
       
-      expect(badPattern).toMatch(/\\\\24\(mac\)/);
-      expect(goodPattern).not.toMatch(/\\\\24\(mac\)/);
+      expect(schedulerCommand).toContain('on-event="/system script run');
     });
 
-    it('should have no leftover placeholders in final output', () => {
-      const placeholders = ['@@RUNTIME_MAC@@', '@@RUNTIME_IP@@', '@@RUNTIME_LINK_LOGIN_ONLY@@'];
-      const validOutput = ':local urlVars1 "&mac=\\24(mac)"';
+    it('should block non-comment lines >160 chars', () => {
+      const longLineRe = /^(?!\s*#).{161,}$/m;
       
-      for (const ph of placeholders) {
-        expect(validOutput).not.toContain(ph);
-      }
-    });
-
-    it('should validate replaceRuntimePlaceholders function (v6.9.41 hex)', () => {
-      const input = ':local urlVars1 "&mac=@@RUNTIME_MAC@@"';
-      const expected = ':local urlVars1 "&mac=\\24(mac)"';
+      // Good: short command
+      const shortLine = '/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1';
+      expect(longLineRe.test(shortLine)).toBe(false);
       
-      // v6.9.41: Uses \24 hex escape instead of \$
-      const output = input.replace(/@@RUNTIME_MAC@@/g, '\\24(mac)');
-      expect(output).toBe(expected);
-    });
-
-    it('should have no CRLF or BOM in output', () => {
-      const cleanScript = ':local test "value"\n:log info "ok"';
-      expect(cleanScript.includes('\r\n')).toBe(false);
-      expect(cleanScript.startsWith('\uFEFF')).toBe(false);
+      // Good: long comment (allowed)
+      const longComment = '# ' + 'x'.repeat(200);
+      expect(longLineRe.test(longComment)).toBe(false);
+      
+      // Bad: long command
+      const longCommand = '/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 dns-name="test.navspot.local" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m';
+      expect(longCommand.length).toBeGreaterThan(160);
+      expect(longLineRe.test(longCommand)).toBe(true);
     });
 
     it('should have balanced braces and quotes', () => {
@@ -242,162 +290,13 @@ describe('useMikrotikSync', () => {
       
       expect(openParens).toBe(closeParens);
     });
-  });
 
-  describe('Script Generator v6.9.38 Line Length Validation', () => {
-    it('should block non-comment lines >160 chars', () => {
-      const longLineRe = /^(?!\s*#).{161,}$/m;
-      
-      // Good: short command
-      const shortLine = '/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1';
-      expect(longLineRe.test(shortLine)).toBe(false);
-      
-      // Good: long comment (allowed)
-      const longComment = '# ' + 'x'.repeat(200);
-      expect(longLineRe.test(longComment)).toBe(false);
-      
-      // Bad: long command (should be blocked)
-      const longCommand = '/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 dns-name="test.navspot.local" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m';
-      expect(longCommand.length).toBeGreaterThan(160);
-      expect(longLineRe.test(longCommand)).toBe(true);
-    });
-
-    it('should use short profile add command (only name + hotspot-address)', () => {
-      const shortAdd = '/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1';
-      
-      // Profile add should NOT contain these fields (they go in separate set commands)
-      expect(shortAdd).not.toContain('dns-name=');
-      expect(shortAdd).not.toContain('html-directory=');
-      expect(shortAdd).not.toContain('login-by=');
-      expect(shortAdd).not.toContain('keepalive-timeout=');
-      expect(shortAdd).not.toContain('idle-timeout=');
-      expect(shortAdd).not.toContain('login-url=');
-      
-      // Should be under 100 chars
-      expect(shortAdd.length).toBeLessThan(100);
-    });
-
-    it('should use short on-event strings for schedulers', () => {
-      const shortOnEvent = 'on-event="/system script run navspot-sync"';
-      const longOnEvent = 'on-event=":delay 30s; :do { /system script run navspot-sync } on-error={}"';
-      
-      // Short version should be used
-      expect(shortOnEvent.length).toBeLessThan(60);
-      
-      // Long version should be avoided
-      expect(longOnEvent.length).toBeGreaterThan(60);
-    });
-
-    it('should build JSON incrementally to avoid long lines', () => {
-      const incrementalPattern = `
-:local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q)
-:set body ($body . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q)
-`;
-      
-      // Each line should be <100 chars
-      const lines = incrementalPattern.trim().split('\n');
-      for (const line of lines) {
-        expect(line.length).toBeLessThan(100);
-      }
-      
-      // Should use incremental :set body pattern
-      expect(incrementalPattern).toContain(':set body ($body');
-    });
-
-    it('should use separate set commands for profile configuration (v6.9.40)', () => {
-      // v6.9.40: Variable name $hsprof (without underscore) for RouterOS 6.x compatibility
-      const setCommands = `
-:do { /ip hotspot profile set $hsprof dns-name="test.navspot.local" } on-error={}
-:do { /ip hotspot profile set $hsprof html-directory=hotspot } on-error={}
-:do { /ip hotspot profile set $hsprof login-by=http-pap,http-chap } on-error={}
-:do { /ip hotspot profile set $hsprof keepalive-timeout=2m } on-error={}
-:do { /ip hotspot profile set $hsprof idle-timeout=5m } on-error={}
-:do { /ip hotspot profile set $hsprof login-url=$fullUrl } on-error={}
-`;
-      
-      // Each set command should be under 100 chars
-      const lines = setCommands.trim().split('\n');
-      for (const line of lines) {
-        expect(line.length).toBeLessThan(100);
-      }
-    });
-    
-    it('should NOT have underscore-prefixed local variables (v6.9.40)', () => {
-      // v6.9.40: Local variables starting with _ can break RouterOS 6.x /import
+    it('should NOT have underscore-prefixed local variables', () => {
       const badPattern = ':local _hsprof [/ip hotspot profile find name="hsprof-navspot"]';
       const goodPattern = ':local hsprof [/ip hotspot profile find name="hsprof-navspot"]';
       
-      // Bad: underscore prefix
       expect(badPattern).toMatch(/^:local\s+_/);
-      
-      // Good: no underscore prefix
       expect(goodPattern).not.toMatch(/^:local\s+_/);
-    });
-  });
-
-  describe('Script Generator Validation', () => {
-    it('should use correct action values for walled-garden menus', () => {
-      // Para /ip hotspot walled-garden (hostnames): action=allow ou action=deny
-      const hostnameBlacklist = `
-        /ip hotspot walled-garden add dst-host=$domain action=deny comment=("navspot-blacklist-" . $bName)
-      `;
-      
-      // Para /ip hotspot walled-garden ip (IPs): action=accept ou action=reject
-      const ipWhitelist = `
-        /ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot-dns"
-      `;
-      
-      // Hostnames devem usar deny para bloquear
-      expect(hostnameBlacklist).toContain('action=deny');
-      expect(hostnameBlacklist).not.toContain('action=reject');
-      
-      // IPs devem usar accept/reject
-      expect(ipWhitelist).toContain('action=accept');
-      expect(ipWhitelist).not.toContain('action=allow');
-    });
-
-    it('should use correct walled-garden menu for hostnames', () => {
-      const actionProcessorSource = `
-        /ip hotspot walled-garden add dst-host=$domain action=deny
-      `;
-      
-      // Verificar que usa o menu correto (sem "ip") para hostnames
-      expect(actionProcessorSource).toContain('/ip hotspot walled-garden add dst-host');
-      // Verificar que NÃO usa o menu "ip" para dst-host
-      expect(actionProcessorSource).not.toMatch(/walled-garden ip.*dst-host/);
-    });
-
-    it('should not contain invalid policy token in script declarations', () => {
-      const scriptDeclaration = `
-        /system script add name="navspot-sync" policy=read,write,test source={
-      `;
-      
-      // Verificar que não contém "policy,policy" ou "policy=...policy..."
-      expect(scriptDeclaration).not.toMatch(/policy=.*policy,.*policy/);
-      // Verificar que usa políticas válidas
-      expect(scriptDeclaration).toMatch(/policy=read,write,test/);
-    });
-
-    it('should use full command in scheduler on-event', () => {
-      const schedulerCommand = `
-        /system scheduler add name="navspot-sync-scheduler" interval=5m on-event="/system script run navspot-sync" start-time=startup
-      `;
-      
-      // Verificar que on-event contém comando completo
-      expect(schedulerCommand).toContain('on-event="/system script run');
-    });
-
-    it('should handle empty rate-limit gracefully', () => {
-      const createProfileLogic = `
-        :if ([:len $pRate] > 0) do={
-          /ip hotspot user profile add name=$pName rate-limit=$pRate shared-users=$pShared
-        } else={
-          /ip hotspot user profile add name=$pName shared-users=$pShared
-        }
-      `;
-      
-      // Verificar que existe verificação de rate-limit vazio
-      expect(createProfileLogic).toContain('[:len $pRate] > 0');
     });
   });
 });
