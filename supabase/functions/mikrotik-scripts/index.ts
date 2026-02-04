@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.7
+ * mikrotik-scripts v7.1.8
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -17,19 +17,18 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" (default: "all")
  *   - token: sync_token for authentication
  * 
- * v7.1.7: CRITICAL FIX for source={} escaping
- *   - escapeForSourceBlock() now called on all RSC generators
- *   - Uses placeholder pattern for runtime vars $()
+ * v7.1.8: CRITICAL FIX - Use source="..." instead of source={...}
+ *   - RouterOS 6.x /import does NOT support source={} syntax in .rsc files
+ *   - source={} only works in interactive terminal, not in imported files
+ *   - Now uses source="escaped_content" with proper escaping
  * 
- * v7.1.6: CRITICAL FIX for RouterOS 6.x 4KB variable limit
- *   - *-source endpoints now return full RSC with source={...} wrapper
- *   - Installer uses /import directly instead of [/file get ... contents]
- *   - Action processor minified to <4KB (essential handlers only)
+ * v7.1.7: escapeForSourceBlock() called on all RSC generators
+ * v7.1.6: Direct /import bypasses 4KB variable limit
  * 
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.7"
+const VERSION = "7.1.8"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -38,12 +37,18 @@ function maskToken(token: string): string {
 }
 
 /**
- * Escape script source for embedding in source={...} block
- * RouterOS 6.x requires escaping " and $ inside source={} blocks
- * v7.1.7: Uses placeholder pattern to preserve runtime vars $(...)
+ * Escape script source for embedding in source="..." block
+ * RouterOS requires escaping " and $ inside source="" quoted strings
+ * v7.1.8: Uses placeholder pattern to preserve runtime vars $(...)
+ * 
+ * Escaping rules for source="...":
+ * - Backslashes: \ -> \\
+ * - Double quotes: " -> \"
+ * - Dollar signs (local vars): $ -> \$
+ * - Runtime vars $(...): preserved unescaped
  */
-function escapeForSourceBlock(script: string): string {
-  // Preserve runtime vars BEFORE escaping
+function escapeForSourceQuotes(script: string): string {
+  // Preserve runtime vars $(...) BEFORE escaping
   const preserved = script.replace(/\$\(/g, '@@RUNTIME_VAR@@')
   
   const escaped = preserved
@@ -118,7 +123,7 @@ Deno.serve(async (req) => {
       case 'guardian':
         script = generateGuardianScript(recoveryUrl, syncToken)
         break
-      // v7.1.6: RSC with source={} wrapper for /import bypass
+      // v7.1.8: RSC with source="..." wrapper for /import
       case 'sync-source':
         script = generateSyncRSC(syncUrl, syncToken)
         break
@@ -157,7 +162,7 @@ Deno.serve(async (req) => {
 
 /**
  * v7.1.6: Generate installer that uses /import directly
- * Downloads each script as .rsc (with source={} wrapper) and imports it
+ * Downloads each script as .rsc (with source="..." wrapper) and imports it
  * This bypasses RouterOS 6.x 4KB variable limit completely
  */
 function generateAllScripts(
@@ -314,93 +319,90 @@ function generateAllScripts(
 
 /**
  * Generate individual sync script RSC (legacy - with wrapper)
+ * v7.1.8: Uses source="..." instead of source={...}
  */
 function generateSyncScript(syncUrl: string, syncToken: string): string {
+  const source = generateSyncSource(syncUrl, syncToken)
+  const escapedSource = escapeForSourceQuotes(source)
   return `# NAVSPOT Sync Script v${VERSION}
 :do { /system script remove [find name="navspot-sync"] } on-error={}
-/system script add name="navspot-sync" policy=read,write,test source={
-${generateSyncSource(syncUrl, syncToken)}
-}
+/system script add name="navspot-sync" policy=read,write,test source="${escapedSource}"
 :log info "NAVSPOT: Script sync v${VERSION} instalado"
 `
 }
 
 /**
  * Generate individual action-processor script RSC (legacy - with wrapper)
+ * v7.1.8: Uses source="..." instead of source={...}
  */
 function generateActionProcessorScript(): string {
+  const source = generateActionProcessorSource()
+  const escapedSource = escapeForSourceQuotes(source)
   return `# NAVSPOT Action Processor v${VERSION}
 :do { /system script remove [find name="navspot-action-processor"] } on-error={}
-/system script add name="navspot-action-processor" policy=read,write,test source={
-${generateActionProcessorSource()}
-}
+/system script add name="navspot-action-processor" policy=read,write,test source="${escapedSource}"
 :log info "NAVSPOT: Script action-processor v${VERSION} instalado"
 `
 }
 
 /**
  * Generate individual guardian script RSC (legacy - with wrapper)
+ * v7.1.8: Uses source="..." instead of source={...}
  */
 function generateGuardianScript(recoveryUrl: string, syncToken: string): string {
+  const source = generateGuardianSource(recoveryUrl, syncToken)
+  const escapedSource = escapeForSourceQuotes(source)
   return `# NAVSPOT Guardian Script v${VERSION}
 :do { /system script remove [find name="navspot-guardian"] } on-error={}
-/system script add name="navspot-guardian" policy=read,write,test source={
-${generateGuardianSource(recoveryUrl, syncToken)}
-}
+/system script add name="navspot-guardian" policy=read,write,test source="${escapedSource}"
 :log info "NAVSPOT: Script guardian v${VERSION} instalado"
 `
 }
 
 // ==========================================
-// v7.1.6: RSC files with source={} wrapper for /import
-// These bypass the 4KB variable limit completely
+// v7.1.8: RSC files with source="..." wrapper for /import
+// RouterOS 6.x requires quoted strings, not curly braces
 // ==========================================
 
 /**
- * Generate sync RSC with source={} wrapper for direct /import
- * v7.1.7: Now applies escapeForSourceBlock() to fix parser errors
+ * Generate sync RSC with source="..." wrapper for direct /import
+ * v7.1.8: Uses source="..." syntax compatible with RouterOS 6.x /import
  */
 function generateSyncRSC(syncUrl: string, syncToken: string): string {
   const source = generateSyncSource(syncUrl, syncToken)
-  const escapedSource = escapeForSourceBlock(source)
+  const escapedSource = escapeForSourceQuotes(source)
   return `# NAVSPOT Sync v${VERSION} - RSC for /import
 :do { /system script remove [find name="navspot-sync"] } on-error={}
-/system script add name="navspot-sync" policy=read,write,test source={
-${escapedSource}
-}
+/system script add name="navspot-sync" policy=read,write,test source="${escapedSource}"
 :log info "NAVSPOT: Sync v${VERSION} instalado"
 `
 }
 
 /**
- * Generate action-processor RSC with source={} wrapper for direct /import
- * v7.1.7: Now applies escapeForSourceBlock() to fix parser errors
+ * Generate action-processor RSC with source="..." wrapper for direct /import
+ * v7.1.8: Uses source="..." syntax compatible with RouterOS 6.x /import
  * v7.1.6: MINIFIED to <4KB with essential handlers only
  */
 function generateActionProcessorRSC(): string {
   const source = generateActionProcessorSource()
-  const escapedSource = escapeForSourceBlock(source)
+  const escapedSource = escapeForSourceQuotes(source)
   return `# NAVSPOT Action Processor v${VERSION} - RSC for /import
 :do { /system script remove [find name="navspot-action-processor"] } on-error={}
-/system script add name="navspot-action-processor" policy=read,write,test source={
-${escapedSource}
-}
+/system script add name="navspot-action-processor" policy=read,write,test source="${escapedSource}"
 :log info "NAVSPOT: Action-processor v${VERSION} instalado"
 `
 }
 
 /**
- * Generate guardian RSC with source={} wrapper for direct /import
- * v7.1.7: Now applies escapeForSourceBlock() to fix parser errors
+ * Generate guardian RSC with source="..." wrapper for direct /import
+ * v7.1.8: Uses source="..." syntax compatible with RouterOS 6.x /import
  */
 function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
   const source = generateGuardianSource(recoveryUrl, syncToken)
-  const escapedSource = escapeForSourceBlock(source)
+  const escapedSource = escapeForSourceQuotes(source)
   return `# NAVSPOT Guardian v${VERSION} - RSC for /import
 :do { /system script remove [find name="navspot-guardian"] } on-error={}
-/system script add name="navspot-guardian" policy=read,write,test source={
-${escapedSource}
-}
+/system script add name="navspot-guardian" policy=read,write,test source="${escapedSource}"
 :log info "NAVSPOT: Guardian v${VERSION} instalado"
 `
 }
