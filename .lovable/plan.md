@@ -1,197 +1,198 @@
 
 
-# Implementação v7.1 — Bootstrap-Loader (Ultra-Thin Client)
+# Plano v7.1.1 — Bootstrap Robusto com Retry e Diagnóstico
 
-## Diagnóstico Confirmado
+## Objetivo
 
-O erro `expected end of command (line 138 column 39)` ocorre exatamente onde o bootstrap tenta embutir scripts complexos:
+Implementar todas as melhorias de resiliência no bootstrap para garantir que o fetch dos scripts funcione mesmo em condições de rede instáveis ou lentas.
 
-```routeros
-# Linha ~715 no código TypeScript gera linha ~138 no RSC:
-/system script add name="navspot-action-processor" source={
-${actionProcessorSource}   # <- ~200 linhas de RouterOS embutidas
-}
-```
+## Mudanças no Bootstrap (v7.1.0 -> v7.1.1)
 
-O parser do RouterOS 6.x não suporta strings longas e multi-linha dentro de `source={...}` durante `/import`.
+### 1. Aumentar Delay de Estabilização
 
-## Solução: Bootstrap-Loader v7.1
-
-```text
-+------------------------------------------+
-| Bootstrap v7.1 ULTRA-MINIMO (~100 linhas)|
-| - Infra (WAN, DNS, Bridge, DHCP, NAT)    |
-| - Hotspot VAZIO                          |
-| - Token salvo                            |
-| - /tool fetch -> baixa scripts           | <- NOVO!
-| - Schedulers                             |
-+------------------------------------------+
-          |
-          v (fetch + import)
-+------------------------------------------+
-| Nova Edge Function: mikrotik-scripts     |
-| GET ?type=all&token=XXX                  |
-| -> Retorna RSC com os 3 scripts          |
-+------------------------------------------+
-```
-
-## Arquitetura de Arquivos
-
-### 1. Nova Edge Function: `mikrotik-scripts`
-
-**Arquivo:** `supabase/functions/mikrotik-scripts/index.ts`
-
-- Endpoint simples que retorna scripts RouterOS puros
-- Parametros: `type` (sync|action-processor|guardian|all) e `token`
-- Valida token no banco de dados
-- Retorna `Content-Type: text/plain` (critico para MikroTik)
-- Cada script e um arquivo RSC auto-contido que cria/atualiza o script no MikroTik
-
-```typescript
-// Exemplo de resposta para type=all
-`# NAVSPOT Scripts Installer v7.1
-/system script remove [find name="navspot-sync"]
-/system script add name="navspot-sync" policy=read,write,test source={
-  ... codigo do sync ...
-}
-
-/system script remove [find name="navspot-action-processor"]
-/system script add name="navspot-action-processor" policy=read,write,test source={
-  ... codigo do action processor ...
-}
-
-/system script remove [find name="navspot-guardian"]
-/system script add name="navspot-guardian" policy=read,write,test source={
-  ... codigo do guardian ...
-}
-
-:log info "NAVSPOT v7.1: Scripts instalados com sucesso"
-`
-```
-
-### 2. Bootstrap Ultra-Minimo v7.1
-
-**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
-
-Mudancas principais:
-- VERSION: 7.0.0 -> 7.1.0
-- Remover `syncScriptSource`, `actionProcessorSource`, `guardianScriptSource` do bootstrap
-- Adicionar bloco de fetch + import:
+**Linha 366-367:** Aumentar de 10s para 15s
 
 ```routeros
-# DOWNLOAD E INSTALACAO DOS SCRIPTS (substitui ~300 linhas de source={})
-:log info "NAVSPOT v7.1: Baixando scripts da API..."
-:local scriptsUrl "${scriptsApiUrl}?type=all&token=${token}"
-/tool fetch url=$scriptsUrl check-certificate=no dst-path="ns-install.rsc"
-:delay 3s
-/import ns-install.rsc
-:do { /file remove "ns-install.rsc" } on-error={}
-:log info "NAVSPOT v7.1: Scripts instalados"
+# ANTES
+:delay 10s
+
+# DEPOIS
+:delay 15s
 ```
 
-- DNS: Usar 8.8.8.8 e 1.1.1.1 (redundancia conforme recomendacao)
-- Delay: Manter 3s entre fetch e import
+### 2. Adicionar Verificação de Rota Default
 
-### 3. Recovery v7.1
+**Novo bloco após estabilização:** Verificar se DHCP configurou rota default
 
-**Arquivo:** `supabase/functions/mikrotik-recovery-download/index.ts`
-
-Mesmo padrao - usar fetch para baixar scripts ao inves de embutir.
-
-### 4. Config
-
-**Arquivo:** `supabase/config.toml`
-
-Adicionar:
-```toml
-[functions.mikrotik-scripts]
-verify_jwt = false
+```routeros
+# 12.1. VERIFICAR ROTA DEFAULT
+:local hasRoute false
+:do {
+  :local gw [/ip route get [find dst-address="0.0.0.0/0" active=yes] gateway]
+  :if ([:len $gw] > 0) do={ :set hasRoute true }
+} on-error={}
+:if ($hasRoute = false) do={
+  :log warning "NAVSPOT v7.1.1: Rota default NAO encontrada - fetch pode falhar"
+} else={
+  :log info "NAVSPOT v7.1.1: Rota default OK"
+}
 ```
 
-## Fluxo de Instalacao v7.1
+### 3. Adicionar Verificação de DNS
+
+**Novo bloco:** Testar resolução DNS antes do fetch
+
+```routeros
+# 12.2. VERIFICAR DNS
+:local dnsOk false
+:do {
+  :local resolved [/resolve focqrhkozhdefohroqyi.supabase.co]
+  :if ([:len $resolved] > 0) do={ :set dnsOk true }
+} on-error={}
+:if ($dnsOk = false) do={
+  :log warning "NAVSPOT v7.1.1: DNS NAO resolvido - tentando fetch mesmo assim"
+} else={
+  :log info "NAVSPOT v7.1.1: DNS OK"
+}
+```
+
+### 4. Implementar Retry com Logs Detalhados
+
+**Linhas 369-380:** Substituir fetch simples por loop com 3 tentativas
+
+```routeros
+# 13. BAIXAR SCRIPTS VIA API (com retry)
+:local apiBase "https://..."
+:local tk "TOKEN"
+:local scriptsUrl ($apiBase . "?type=all&token=" . $tk)
+
+:local maxRetries 3
+:local retryCount 0
+:local fetchSuccess false
+
+:log info "NAVSPOT v7.1.1: Iniciando download dos scripts..."
+
+:while (($retryCount < $maxRetries) && ($fetchSuccess = false)) do={
+  :set retryCount ($retryCount + 1)
+  :log info ("NAVSPOT v7.1.1: Tentativa " . $retryCount . "/" . $maxRetries)
+  :do {
+    /tool fetch url=$scriptsUrl check-certificate=no dst-path="ns-install.rsc"
+    :set fetchSuccess true
+  } on-error={
+    :log warning ("NAVSPOT v7.1.1: Fetch falhou na tentativa " . $retryCount)
+    :if ($retryCount < $maxRetries) do={
+      :log info "NAVSPOT v7.1.1: Aguardando 5s antes de retry..."
+      :delay 5s
+    }
+  }
+}
+```
+
+### 5. Tratamento de Sucesso/Falha
+
+**Após o loop:** Condicional para import ou abort
+
+```routeros
+:if ($fetchSuccess = true) do={
+  :log info "NAVSPOT v7.1.1: Fetch OK! Aguardando 4s para flash..."
+  :delay 4s
+  :log info "NAVSPOT v7.1.1: Importando scripts..."
+  /import ns-install.rsc
+  :delay 1s
+  :do { /file remove "ns-install.rsc" } on-error={}
+  :log info "NAVSPOT v7.1.1: Scripts instalados com sucesso!"
+} else={
+  :log error "NAVSPOT v7.1.1: FALHA CRITICA - Fetch falhou apos 3 tentativas"
+  :log error "NAVSPOT v7.1.1: Verifique conectividade e execute manualmente:"
+  :log error ("/tool fetch url=" . $scriptsUrl . " check-certificate=no dst-path=ns-install.rsc")
+}
+```
+
+## Fluxo Completo da Seção 12-14
 
 ```text
-1. Tecnico executa: /import navspot-bootstrap-v7.1.0.rsc
-   - Configura infra (DNS, WAN, Bridge, DHCP, NAT, Hotspot VAZIO)
-   - Salva token
-   - Faz /tool fetch -> baixa ns-install.rsc
-   - Executa /import ns-install.rsc -> instala os 3 scripts
-   - Cria schedulers
-   - Executa primeiro sync
-
-2. Primeiro sync
-   - navspot-sync (agora instalado) executa
-   - API detecta initial_config_sent=false
-   - Injeta configure_hotspot_profile + walled-garden
-   - Hotspot fica 100% configurado
-
-3. Sistema operacional
-   - Syncs periodicos a cada 5min
-   - Guardian verifica integridade a cada 10min
+12. AGUARDAR ESTABILIZACAO (15s)
+    |
+12.1. VERIFICAR ROTA DEFAULT
+    - Se OK: log info
+    - Se FALHA: log warning (continua)
+    |
+12.2. VERIFICAR DNS
+    - Tenta resolver dominio Supabase
+    - Se OK: log info
+    - Se FALHA: log warning (continua)
+    |
+13. FETCH COM RETRY (3 tentativas)
+    |-- Tentativa 1 -> FALHA -> delay 5s
+    |-- Tentativa 2 -> FALHA -> delay 5s
+    |-- Tentativa 3 -> FALHA -> ABORT
+    |-- SUCESSO -> continua
+    |
+13.1. IMPORT (se fetch OK)
+    - :delay 4s (flash lento)
+    - /import ns-install.rsc
+    - Cleanup arquivo
+    |
+14. PRIMEIRO SYNC (35s delay)
+    - /system script run navspot-sync
 ```
 
-## Arquivos a Modificar
+## Alterações Técnicas
 
-| Arquivo | Mudanca |
-|---------|---------|
-| **NOVO** `supabase/functions/mikrotik-scripts/index.ts` | Nova edge function (retorna scripts RSC) |
-| `supabase/config.toml` | Adicionar `[functions.mikrotik-scripts]` |
-| `supabase/functions/mikrotik-script-generator/index.ts` | VERSION 7.1.0, remover scripts embutidos, adicionar fetch |
-| `supabase/functions/mikrotik-recovery-download/index.ts` | Mesmo padrao - fetch ao inves de embutir |
-| `src/components/modals/ScriptModal.tsx` | scriptVersion 7.1.0 |
+| Linha | Mudança |
+|-------|---------|
+| 8 | `VERSION = "7.1.1"` |
+| 366 | Delay de 10s para 15s |
+| 367-380 | Novo bloco com verificação de rota, DNS, retry 3x e tratamento de erro |
 
-## Checklist de Implementacao
+## Checklist de Implementação
 
 | # | Item | Detalhes |
 |---|------|----------|
-| 1 | Content-Type | `text/plain` na mikrotik-scripts |
-| 2 | check-certificate=no | Em todos os /tool fetch |
-| 3 | DNS redundante | 8.8.8.8 e 1.1.1.1 |
-| 4 | Delay pos-fetch | 3 segundos |
-| 5 | Token na URL | Token embutido na URL do fetch (arquivo ainda nao existe) |
-| 6 | Validar token | Edge function valida antes de retornar scripts |
-| 7 | Sem source={} longo | Zero scripts embutidos no bootstrap |
+| 1 | VERSION | Atualizar para 7.1.1 |
+| 2 | Delay estabilização | 10s -> 15s |
+| 3 | Verificar rota default | Log warning se não existir |
+| 4 | Verificar DNS | Log warning se não resolver |
+| 5 | Retry 3x | Com delay 5s entre tentativas |
+| 6 | Delay pós-fetch | 3s -> 4s |
+| 7 | Tratamento de falha | Log erro detalhado com comando manual |
+| 8 | Limite de 160 chars | Todas as linhas RouterOS < 160 caracteres |
 
-## Estrutura da Edge Function mikrotik-scripts
+## Resultado Esperado nos Logs
 
-```typescript
-// GET ?type=all&token=XXX
-// - Valida token no banco
-// - Busca hotspot e embarcacao
-// - Gera scripts com variaveis do hotspot (syncUrl, recoveryUrl, token)
-// - Retorna RSC puro como text/plain
-
-// Resposta para type=all:
-`# NAVSPOT Scripts Installer v7.1.0
-# Este arquivo instala todos os scripts necessarios
-
-# 1. ACTION PROCESSOR
-/system script remove [find name="navspot-action-processor"]
-/system script add name="navspot-action-processor" policy=read,write,test source={
-... actionProcessorSource completo ...
-}
-
-# 2. SYNC
-/system script remove [find name="navspot-sync"]
-/system script add name="navspot-sync" policy=read,write,test source={
-... syncScriptSource completo ...
-}
-
-# 3. GUARDIAN
-/system script remove [find name="navspot-guardian"]
-/system script add name="navspot-guardian" policy=read,write,test source={
-... guardianScriptSource completo ...
-}
-
-:log info "NAVSPOT v7.1.0: Todos os scripts instalados com sucesso"
-`
+### Cenário de Sucesso
+```
+NAVSPOT v7.1.1: Aguardando 15s para rede estabilizar...
+NAVSPOT v7.1.1: Rota default OK
+NAVSPOT v7.1.1: DNS OK
+NAVSPOT v7.1.1: Iniciando download dos scripts...
+NAVSPOT v7.1.1: Tentativa 1/3
+NAVSPOT v7.1.1: Fetch OK! Aguardando 4s para flash...
+NAVSPOT v7.1.1: Importando scripts...
+NAVSPOT v7.1.1: Scripts instalados com sucesso!
 ```
 
-## Por que isso funciona
+### Cenário de Retry
+```
+NAVSPOT v7.1.1: Tentativa 1/3
+NAVSPOT v7.1.1: Fetch falhou na tentativa 1
+NAVSPOT v7.1.1: Aguardando 5s antes de retry...
+NAVSPOT v7.1.1: Tentativa 2/3
+NAVSPOT v7.1.1: Fetch OK! Aguardando 4s para flash...
+```
 
-1. **Bootstrap sem scripts embutidos** - Apenas comandos curtos e simples
-2. **Fetch e import separados** - MikroTik processa um arquivo RSC de cada vez
-3. **Scripts RSC separados** - O `/import ns-install.rsc` processa os scripts DEPOIS do bootstrap
-4. **Sem limite de linha** - O arquivo baixado nao passa pelo parser do `/import` original
-5. **Atualizacao facil** - Mudar script na API atualiza todos os routers no proximo sync/guardian
+### Cenário de Falha Total
+```
+NAVSPOT v7.1.1: Tentativa 3/3
+NAVSPOT v7.1.1: Fetch falhou na tentativa 3
+NAVSPOT v7.1.1: FALHA CRITICA - Fetch falhou apos 3 tentativas
+NAVSPOT v7.1.1: Verifique conectividade e execute manualmente:
+/tool fetch url=https://... check-certificate=no dst-path=ns-install.rsc
+```
+
+## Arquivo a Modificar
+
+| Arquivo | Mudança |
+|---------|---------|
+| `supabase/functions/mikrotik-script-generator/index.ts` | VERSION 7.1.1, delay 15s, verificações de rota/DNS, retry 3x, tratamento de erro |
 
