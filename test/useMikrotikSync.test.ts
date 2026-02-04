@@ -74,11 +74,12 @@ describe('useMikrotikSync', () => {
       expect(setCommand).not.toContain('login-url="$fullUrl"');
     });
 
-    it('should have incremental URL construction with urlVars1/2/3', () => {
+    it('should have incremental URL construction with urlVars1/2/3 (v6.9.41 hex escape)', () => {
+      // v6.9.41: Uses \24 hex escape instead of \$
       const urlConstruction = `
-:local urlVars1 "&mac=\\$(mac)"
-:local urlVars2 "&ip=\\$(ip)"
-:local urlVars3 "&link-login-only=\\$(link-login-only)"
+:local urlVars1 "&mac=\\24(mac)"
+:local urlVars2 "&ip=\\24(ip)"
+:local urlVars3 "&link-login-only=\\24(link-login-only)"
 :local fullUrl $urlBase
 :set fullUrl ($fullUrl . $urlVars1)
 `;
@@ -87,6 +88,10 @@ describe('useMikrotikSync', () => {
       expect(urlConstruction).toContain('urlVars2');
       expect(urlConstruction).toContain('urlVars3');
       expect(urlConstruction).toContain(':set fullUrl');
+      // v6.9.41: Must use \24( not \$(
+      expect(urlConstruction).toContain('\\24(mac)');
+      expect(urlConstruction).toContain('\\24(ip)');
+      expect(urlConstruction).not.toContain('\\$(mac)');
     });
 
     it('should use idempotent add pattern (v6.9.40)', () => {
@@ -98,22 +103,36 @@ describe('useMikrotikSync', () => {
       expect(idempotentAdd).toContain('on-error={}');
     });
 
-    it('should produce \\$(mac) in final RSC (single backslash)', () => {
-      // TypeScript uses \\$(mac) to produce \$(mac) in output
-      const tsTemplate = "&mac=\\$(mac)&ip=\\$(ip)";
+    it('should produce \\24(mac) in final RSC (v6.9.41 hex escape)', () => {
+      // v6.9.41: TypeScript uses \\24(mac) to produce \24(mac) in output
+      const tsTemplate = "&mac=\\24(mac)&ip=\\24(ip)";
       
-      // In the final .rsc file, it should appear as \$(mac)
-      expect(tsTemplate).toMatch(/\\\$\(mac\)/);
-      expect(tsTemplate).toMatch(/\\\$\(ip\)/);
+      // In the final .rsc file, it should appear as \24(mac)
+      expect(tsTemplate).toMatch(/\\24\(mac\)/);
+      expect(tsTemplate).toMatch(/\\24\(ip\)/);
+      // Must NOT use \$( pattern (breaks RouterOS 6.x /import)
+      expect(tsTemplate).not.toMatch(/\\\$\(/);
+    });
+
+    it('should NOT have \\$( in output (v6.9.41)', () => {
+      const badPattern = ':local urlVars1 "&mac=\\$(mac)"';
+      const goodPattern = ':local urlVars1 "&mac=\\24(mac)"';
+      
+      // Bad: \$( doesn't work in RouterOS 6.x /import
+      expect(badPattern).toMatch(/\\\$\(/);
+      
+      // Good: \24( hex escape works
+      expect(goodPattern).not.toMatch(/\\\$\(/);
+      expect(goodPattern).toMatch(/\\24\(/);
     });
 
     it('should NOT have urlVars with multiple runtime vars in same line', () => {
-      const badPattern = ':local urlVars "&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"';
-      const goodPattern1 = ':local urlVars1 "&mac=\\$(mac)"';
-      const goodPattern2 = ':local urlVars2 "&ip=\\$(ip)"';
+      const badPattern = ':local urlVars "&mac=\\24(mac)&ip=\\24(ip)&link-login-only=\\24(link-login-only)"';
+      const goodPattern1 = ':local urlVars1 "&mac=\\24(mac)"';
+      const goodPattern2 = ':local urlVars2 "&ip=\\24(ip)"';
       
       // Bad: multiple runtime vars in same line
-      const multiVarRegex = /\\\$\([^)]+\).*\\\$\([^)]+\)/;
+      const multiVarRegex = /\\24\([^)]+\).*\\24\([^)]+\)/;
       expect(badPattern).toMatch(multiVarRegex);
       
       // Good: single runtime var per line
@@ -149,40 +168,54 @@ describe('useMikrotikSync', () => {
       expect(correctLocalVars).not.toMatch(/\\\$hsprof/);
     });
 
-    it('should ONLY escape runtime hotspot variables with single backslash in .rsc', () => {
+    it('should ONLY use hex escape \\24 for runtime hotspot variables (v6.9.41)', () => {
       const correctRuntimeVars = `
-:local urlVars1 "&mac=\\$(mac)"
-:local urlVars2 "&ip=\\$(ip)"
-:local urlVars3 "&link-login-only=\\$(link-login-only)"
+:local urlVars1 "&mac=\\24(mac)"
+:local urlVars2 "&ip=\\24(ip)"
+:local urlVars3 "&link-login-only=\\24(link-login-only)"
 `;
       
-      expect(correctRuntimeVars).toMatch(/\\\$\(mac\)/);
-      expect(correctRuntimeVars).toMatch(/\\\$\(ip\)/);
-      expect(correctRuntimeVars).toMatch(/\\\$\(link-login-only\)/);
+      // Must use \24( hex escape
+      expect(correctRuntimeVars).toMatch(/\\24\(mac\)/);
+      expect(correctRuntimeVars).toMatch(/\\24\(ip\)/);
+      expect(correctRuntimeVars).toMatch(/\\24\(link-login-only\)/);
+      // Must NOT use \$( (breaks RouterOS 6.x /import)
+      expect(correctRuntimeVars).not.toMatch(/\\\$\(/);
     });
 
-    it('should NOT have double-escaped runtime vars (\\\\$(mac))', () => {
-      const badPattern = '&mac=\\\\$(mac)';
-      const goodPattern = '&mac=\\$(mac)';
+    it('should NOT have \\$( escape pattern (v6.9.41)', () => {
+      // v6.9.41: \$( is invalid in RouterOS 6.x /import - use \24( instead
+      const badPattern = '&mac=\\$(mac)';
+      const goodPattern = '&mac=\\24(mac)';
       
-      expect(badPattern).toMatch(/\\\\\$\(mac\)/);
-      expect(goodPattern).not.toMatch(/\\\\\$\(mac\)/);
+      expect(badPattern).toMatch(/\\\$\(/);
+      expect(goodPattern).not.toMatch(/\\\$\(/);
+      expect(goodPattern).toMatch(/\\24\(/);
+    });
+
+    it('should NOT have double-escaped runtime vars (\\\\24(mac))', () => {
+      const badPattern = '&mac=\\\\24(mac)';
+      const goodPattern = '&mac=\\24(mac)';
+      
+      expect(badPattern).toMatch(/\\\\24\(mac\)/);
+      expect(goodPattern).not.toMatch(/\\\\24\(mac\)/);
     });
 
     it('should have no leftover placeholders in final output', () => {
       const placeholders = ['@@RUNTIME_MAC@@', '@@RUNTIME_IP@@', '@@RUNTIME_LINK_LOGIN_ONLY@@'];
-      const validOutput = ':local urlVars1 "&mac=\\$(mac)"';
+      const validOutput = ':local urlVars1 "&mac=\\24(mac)"';
       
       for (const ph of placeholders) {
         expect(validOutput).not.toContain(ph);
       }
     });
 
-    it('should validate replaceRuntimePlaceholders function', () => {
+    it('should validate replaceRuntimePlaceholders function (v6.9.41 hex)', () => {
       const input = ':local urlVars1 "&mac=@@RUNTIME_MAC@@"';
-      const expected = ':local urlVars1 "&mac=\\$(mac)"';
+      const expected = ':local urlVars1 "&mac=\\24(mac)"';
       
-      const output = input.replace(/@@RUNTIME_MAC@@/g, '\\$(mac)');
+      // v6.9.41: Uses \24 hex escape instead of \$
+      const output = input.replace(/@@RUNTIME_MAC@@/g, '\\24(mac)');
       expect(output).toBe(expected);
     });
 

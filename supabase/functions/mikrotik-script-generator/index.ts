@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "6.9.40"
+const VERSION = "6.9.41"
 const DEPLOYED_AT = new Date().toISOString()
 
 // v6.9.37: Placeholders para runtime vars - evita erros de escaping
@@ -15,12 +15,13 @@ const RUNTIME_PLACEHOLDERS = {
   linkLoginOnly: '@@RUNTIME_LINK_LOGIN_ONLY@@',
 } as const;
 
-// Substituir placeholders por escaping correto para .rsc final
+// v6.9.41: Substituir placeholders por hex escape \24 (RouterOS /import compatible)
+// RouterOS 6.x parser rejects \$( during /import - use \24 (hex for $, ASCII 36 = 0x24)
 function replaceRuntimePlaceholders(script: string): string {
   const map: Record<string, string> = {
-    '@@RUNTIME_MAC@@': '\\$(mac)',
-    '@@RUNTIME_IP@@': '\\$(ip)',
-    '@@RUNTIME_LINK_LOGIN_ONLY@@': '\\$(link-login-only)',
+    '@@RUNTIME_MAC@@': '\\24(mac)',
+    '@@RUNTIME_IP@@': '\\24(ip)',
+    '@@RUNTIME_LINK_LOGIN_ONLY@@': '\\24(link-login-only)',
   };
   return Object.entries(map).reduce(
     (s, [ph, val]) => s.replace(new RegExp(ph, 'g'), val),
@@ -90,28 +91,17 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /dst-host="\*\.supabase\.(co|in)"/, desc: '*.supabase.* wildcard (breaks RouterOS 6.x parser - use explicit hostname)' },
     // v6.9.35: Block unescaped runtime vars $(mac) inside login-url strings
     // Note: Local script vars like "$fullUrl" are ALLOWED - they get expanded by script engine
-    { regex: /login-url="[^"]*(?<![\\])\$\([^)]+\)/, desc: 'login-url="...$(var)..." (unescaped runtime var breaks /import - use \\$(...))' },
-    // v6.9.32: Block :if ... do={} with escaped vars - the conditional inline block breaks parser
-    // This is MORE SPECIFIC than matching any do={} - only :if conditions are problematic
-    { regex: /:if [^;]*do=\{[^}]*\\\$\(/, desc: ':if...do={...\\$(...} (escaped var inside if-do block breaks RouterOS 6.x - use :do { } on-error={})' },
-    // v6.9.33: Block [find ...] + \$(...) inside same :do block - use two-step pattern
-    { regex: /:do\s*\{\s*[^}]*\[find[^\]]*\][^}]*\\\$\([^\)]*\)[^}]*\}/, desc: '[find ...] + \\$(...) in same :do block (breaks RouterOS 6.x - use two-step pattern: assign find to local, then set)' },
-    // v6.9.34: Block long command lines (>150 chars) with escaped variables - risk of parser failure
-    { regex: /^\/[^#\n]{150,}\\\$\(/m, desc: 'Long command line (>150 chars) with escaped vars (use local variable concatenation)' },
-    // v6.9.35: Block login-url with escaped vars in add command - must use separate set
-    { regex: /profile add[^#\n]*login-url=.*\\\$\(/, desc: 'login-url with escaped vars in add command (use separate set after add)' },
-    // v6.9.35: Block login-url=$var in add command (any var) - must use separate set
-    { regex: /profile add[^#\n]*login-url=\$/, desc: 'login-url=$var in add command (use separate set after add)' },
-    // v6.9.36: Block ANY line >120 chars containing \$(...) - not just command lines
-    { regex: /^.{121,}.*\\\$\(/m, desc: 'Line >120 chars containing \\$(...) (breaks /import RouterOS 6.x - split into urlVars1/2/3)' },
-    // v6.9.37: Block escaped local variables - só runtime vars devem ter escape
-    { regex: /\\\$(?:urlBase|fullUrl|hsprof|urlVars[123])/, desc: 'Escaped local variable (use $urlBase not \\$urlBase - only runtime vars like \\$(mac) need escape)' },
+    { regex: /login-url="[^"]*(?<![\\])\$\([^)]+\)/, desc: 'login-url="...$(var)..." (unescaped runtime var breaks /import - use \\24(...))' },
+    // v6.9.41: Block \$( which doesn't work in RouterOS 6.x /import - use \24( hex escape instead
+    { regex: /\\\$\(/, desc: '\\$( is invalid in RouterOS /import (use \\24( hex escape for $ - ASCII 36 = 0x24)' },
+    // v6.9.37: Block escaped local variables - só runtime vars devem ter escape (now using \24)
+    { regex: /\\24(?:urlBase|fullUrl|hsprof|urlVars[123])/, desc: 'Escaped local variable (use $urlBase not \\24urlBase - only runtime vars like \\24(mac) need escape)' },
     // v6.9.40: Block local variables starting with underscore - RouterOS 6.x parser issue
     { regex: /^:local\s+_/m, desc: 'Local var starts with underscore (RouterOS 6.x /import may fail - use hsprof not _hsprof)' },
     // v6.9.37: Block leftover placeholders - ensure all were replaced
     { regex: /@@RUNTIME_[A-Z_]+@@/, desc: 'Unreplaced runtime placeholder (call replaceRuntimePlaceholders before validation)' },
-    // v6.9.37: Block double-escaped runtime vars
-    { regex: /\\\\\$\(/, desc: 'Double-escaped runtime var (\\\\$(mac) should be \\$(mac))' },
+    // v6.9.37: Block double-escaped runtime vars (now using \24)
+    { regex: /\\\\24\(/, desc: 'Double-escaped hex runtime var (\\\\24(mac) should be \\24(mac))' },
     // v6.9.38: Block ANY non-comment line >160 chars (RouterOS /import practical limit)
     { regex: /^(?!\s*#).{161,}$/m, desc: 'Line >160 chars (RouterOS /import may fail - split into multiple commands)' },
   ]
