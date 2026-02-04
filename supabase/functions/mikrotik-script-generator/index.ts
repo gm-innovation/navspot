@@ -368,7 +368,9 @@ ${migrationCommands}
 
 # 13. BAIXAR E INSTALAR SCRIPTS VIA API (CORE DO v7.1!)
 :log info "NAVSPOT v${VERSION}: Baixando scripts da API..."
-:local scriptsUrl "${scriptsUrl}?type=all&token=${hotspot.sync_token}"
+:local apiBase "${scriptsUrl}"
+:local tk "${hotspot.sync_token}"
+:local scriptsUrl ($apiBase . "?type=all&token=" . $tk)
 /tool fetch url=$scriptsUrl check-certificate=no dst-path="ns-install.rsc"
 :delay 3s
 :log info "NAVSPOT v${VERSION}: Importando scripts..."
