@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.13"
+const VERSION = "7.1.14"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**

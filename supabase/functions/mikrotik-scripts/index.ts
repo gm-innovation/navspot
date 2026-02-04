@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.13
+ * mikrotik-scripts v7.1.14
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -17,22 +17,22 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" (default: "all")
  *   - token: sync_token for authentication
  * 
+ * v7.1.14: CRITICAL FIX for RouterOS 6.x /import line length limit
+ *   - Long source="..." strings now use line continuation with \
+ *   - Improved sync logging (shows response prefix on invalid responses)
+ *   - Standardized find where name="..." syntax
+ *   - Validates RSC line lengths after generation
+ * 
  * v7.1.13: CRITICAL FIX for RouterOS 6.x strict syntax
  *   - All / commands inside do={} wrapped with :do { } on-error={}
  *   - Removed problematic ~ (regex) operator in walled-garden find
  *   - Variables used directly without ("" . $var) wrapper
  *   - navspotLock released in all error paths
  * 
- * v7.1.12: Variable expansion fix (login-url=("" . $loginUrl))
- * v7.1.11: Walled-garden handlers, sync lock
- * v7.1.10: RouterOS 6.x command separation
- * v7.1.9: Convert newlines to \r\n for RouterOS 6.x /import
- * v7.1.8: Use source="..." instead of source={...} for /import compatibility
- * 
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.13"
+const VERSION = "7.1.14"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -71,6 +71,78 @@ function escapeForSourceQuotes(script: string): string {
   
   // Restore runtime vars (unescaped)
   return escaped.replace(/@@RUNTIME_VAR@@/g, '$(')
+}
+
+/**
+ * v7.1.14: Wrap a RouterOS source string with line continuation for long content
+ * 
+ * RouterOS supports \ at end of line (inside quotes) for multi-line strings,
+ * exactly like /export generates. This bypasses the ~4KB per-line/command limit
+ * in RouterOS 6.x /import parser that was causing scripts to be truncated.
+ * 
+ * Max chunk ~120 chars to stay safely under 160 char line limit after prefixes.
+ * 
+ * @param escapedSource - Already escaped source string (from escapeForSourceQuotes)
+ * @param maxChunk - Maximum characters per chunk (default 120)
+ * @returns Quoted string with line continuation: "chunk1\
+ *          chunk2\
+ *          chunk3"
+ */
+function wrapSourceWithContinuation(escapedSource: string, maxChunk = 120): string {
+  // Short strings don't need continuation
+  if (escapedSource.length <= maxChunk) {
+    return `"${escapedSource}"`
+  }
+  
+  const chunks: string[] = []
+  let remaining = escapedSource
+  
+  while (remaining.length > 0) {
+    let chunkSize = Math.min(maxChunk, remaining.length)
+    
+    // Don't break on a backslash (would create \\\ at line end, confusing the parser)
+    while (chunkSize > 1 && remaining[chunkSize - 1] === '\\') {
+      chunkSize--
+    }
+    
+    const chunk = remaining.substring(0, chunkSize)
+    remaining = remaining.substring(chunkSize)
+    chunks.push(chunk)
+  }
+  
+  // Single chunk after processing (edge case)
+  if (chunks.length === 1) {
+    return `"${chunks[0]}"`
+  }
+  
+  // Join with \ continuation: "chunk1\
+  // chunk2\
+  // chunk3"
+  // The \ at end of each line (except last) tells RouterOS to continue
+  return '"' + chunks.slice(0, -1).map(c => c + '\\').join('\n') + '\n' + chunks[chunks.length - 1] + '"'
+}
+
+/**
+ * v7.1.14: Validate generated RSC doesn't have lines exceeding RouterOS limits
+ * Logs warnings for any problematic lines (useful for debugging)
+ */
+function validateRSCLineLength(rsc: string, context: string, maxLength = 160): void {
+  const lines = rsc.split('\n')
+  let hasWarning = false
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    // Skip comment lines and continuation lines (they're part of quoted string)
+    if (line.length > maxLength && !line.trim().startsWith('#')) {
+      // Check if it's a continuation line (ends with \ or is inside quoted string)
+      if (!line.endsWith('\\') && !line.endsWith('"')) {
+        console.warn(`[mikrotik-scripts ${VERSION}] ${context} line ${i+1} exceeds ${maxLength} chars: ${line.length} chars`)
+        hasWarning = true
+      }
+    }
+  }
+  if (!hasWarning) {
+    console.log(`[mikrotik-scripts ${VERSION}] ${context} RSC validation passed`)
+  }
 }
 
 Deno.serve(async (req) => {
@@ -293,16 +365,16 @@ function generateAllScripts(
 }
 
 # ===== 4. SCHEDULERS (idempotent remove-then-add) =====
-:do { /system scheduler remove [find name="navspot-sync-scheduler"] } on-error={}
+:do { /system scheduler remove [find where name="navspot-sync-scheduler"] } on-error={}
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup start-date=jan/01/1970
 :log info "NAVSPOT-SCRIPTS: Scheduler sync criado"
 
-:do { /system scheduler remove [find name="navspot-guardian-scheduler"] } on-error={}
+:do { /system scheduler remove [find where name="navspot-guardian-scheduler"] } on-error={}
 /system scheduler add name="navspot-guardian-scheduler" interval=10m on-event="/system script run navspot-guardian" start-time=startup start-date=jan/01/1970
 :log info "NAVSPOT-SCRIPTS: Scheduler guardian criado"
 
 # ===== 5. NETWATCH =====
-:do { /tool netwatch remove [find comment="navspot-netwatch"] } on-error={}
+:do { /tool netwatch remove [find where comment="navspot-netwatch"] } on-error={}
 /tool netwatch add host=8.8.8.8 interval=30s up-script="/system script run navspot-sync" comment="navspot-netwatch"
 :log info "NAVSPOT-SCRIPTS: Netwatch configurado"
 
@@ -321,42 +393,48 @@ function generateAllScripts(
 
 /**
  * Generate individual sync script RSC (legacy - with wrapper)
+ * v7.1.14: Updated to use find where
  * v7.1.8: Uses source="..." instead of source={...}
  */
 function generateSyncScript(syncUrl: string, syncToken: string): string {
   const source = generateSyncSource(syncUrl, syncToken)
   const escapedSource = escapeForSourceQuotes(source)
+  const wrappedSource = wrapSourceWithContinuation(escapedSource)
   return `# NAVSPOT Sync Script v${VERSION}
-:do { /system script remove [find name="navspot-sync"] } on-error={}
-/system script add name="navspot-sync" policy=read,write,test source="${escapedSource}"
+:do { /system script remove [find where name="navspot-sync"] } on-error={}
+/system script add name="navspot-sync" policy=read,write,test source=${wrappedSource}
 :log info "NAVSPOT: Script sync v${VERSION} instalado"
 `
 }
 
 /**
  * Generate individual action-processor script RSC (legacy - with wrapper)
+ * v7.1.14: Updated to use find where and line continuation
  * v7.1.8: Uses source="..." instead of source={...}
  */
 function generateActionProcessorScript(): string {
   const source = generateActionProcessorSource()
   const escapedSource = escapeForSourceQuotes(source)
+  const wrappedSource = wrapSourceWithContinuation(escapedSource)
   return `# NAVSPOT Action Processor v${VERSION}
-:do { /system script remove [find name="navspot-action-processor"] } on-error={}
-/system script add name="navspot-action-processor" policy=read,write,test source="${escapedSource}"
+:do { /system script remove [find where name="navspot-action-processor"] } on-error={}
+/system script add name="navspot-action-processor" policy=read,write,test source=${wrappedSource}
 :log info "NAVSPOT: Script action-processor v${VERSION} instalado"
 `
 }
 
 /**
  * Generate individual guardian script RSC (legacy - with wrapper)
+ * v7.1.14: Updated to use find where and line continuation
  * v7.1.8: Uses source="..." instead of source={...}
  */
 function generateGuardianScript(recoveryUrl: string, syncToken: string): string {
   const source = generateGuardianSource(recoveryUrl, syncToken)
   const escapedSource = escapeForSourceQuotes(source)
+  const wrappedSource = wrapSourceWithContinuation(escapedSource)
   return `# NAVSPOT Guardian Script v${VERSION}
-:do { /system script remove [find name="navspot-guardian"] } on-error={}
-/system script add name="navspot-guardian" policy=read,write,test source="${escapedSource}"
+:do { /system script remove [find where name="navspot-guardian"] } on-error={}
+/system script add name="navspot-guardian" policy=read,write,test source=${wrappedSource}
 :log info "NAVSPOT: Script guardian v${VERSION} instalado"
 `
 }
@@ -368,46 +446,61 @@ function generateGuardianScript(recoveryUrl: string, syncToken: string): string 
 
 /**
  * Generate sync RSC with source="..." wrapper for direct /import
+ * v7.1.14: Uses line continuation for long source strings
  * v7.1.8: Uses source="..." syntax compatible with RouterOS 6.x /import
  */
 function generateSyncRSC(syncUrl: string, syncToken: string): string {
   const source = generateSyncSource(syncUrl, syncToken)
   const escapedSource = escapeForSourceQuotes(source)
-  return `# NAVSPOT Sync v${VERSION} - RSC for /import
-:do { /system script remove [find name="navspot-sync"] } on-error={}
-/system script add name="navspot-sync" policy=read,write,test source="${escapedSource}"
+  const wrappedSource = wrapSourceWithContinuation(escapedSource)
+  
+  const rsc = `# NAVSPOT Sync v${VERSION} - RSC for /import
+:do { /system script remove [find where name="navspot-sync"] } on-error={}
+/system script add name="navspot-sync" policy=read,write,test source=${wrappedSource}
 :log info "NAVSPOT: Sync v${VERSION} instalado"
 `
+  validateRSCLineLength(rsc, 'sync-source')
+  return rsc
 }
 
 /**
  * Generate action-processor RSC with source="..." wrapper for direct /import
- * v7.1.10: Fixed RouterOS 6.x syntax with proper command separation
+ * v7.1.14: Uses line continuation for long source strings (CRITICAL FIX)
+ * v7.1.13: Fixed RouterOS 6.x syntax with proper command separation
  * v7.1.8: Uses source="..." syntax compatible with RouterOS 6.x /import
  * v7.1.6: MINIFIED to <4KB with essential handlers only
  */
 function generateActionProcessorRSC(): string {
   const source = generateActionProcessorSource()
   const escapedSource = escapeForSourceQuotes(source)
-  return `# NAVSPOT Action Processor v${VERSION} - RSC for /import
-:do { /system script remove [find name="navspot-action-processor"] } on-error={}
-/system script add name="navspot-action-processor" policy=read,write,test source="${escapedSource}"
+  const wrappedSource = wrapSourceWithContinuation(escapedSource)
+  
+  const rsc = `# NAVSPOT Action Processor v${VERSION} - RSC for /import
+:do { /system script remove [find where name="navspot-action-processor"] } on-error={}
+/system script add name="navspot-action-processor" policy=read,write,test source=${wrappedSource}
 :log info "NAVSPOT: Action-processor v${VERSION} instalado"
 `
+  validateRSCLineLength(rsc, 'action-source')
+  return rsc
 }
 
 /**
  * Generate guardian RSC with source="..." wrapper for direct /import
+ * v7.1.14: Uses line continuation for long source strings
  * v7.1.8: Uses source="..." syntax compatible with RouterOS 6.x /import
  */
 function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
   const source = generateGuardianSource(recoveryUrl, syncToken)
   const escapedSource = escapeForSourceQuotes(source)
-  return `# NAVSPOT Guardian v${VERSION} - RSC for /import
-:do { /system script remove [find name="navspot-guardian"] } on-error={}
-/system script add name="navspot-guardian" policy=read,write,test source="${escapedSource}"
+  const wrappedSource = wrapSourceWithContinuation(escapedSource)
+  
+  const rsc = `# NAVSPOT Guardian v${VERSION} - RSC for /import
+:do { /system script remove [find where name="navspot-guardian"] } on-error={}
+/system script add name="navspot-guardian" policy=read,write,test source=${wrappedSource}
 :log info "NAVSPOT: Guardian v${VERSION} instalado"
 `
+  validateRSCLineLength(rsc, 'guardian-source')
+  return rsc
 }
 
 // ==========================================
@@ -492,10 +585,10 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :do { /file remove "navspot-actions.txt" } on-error={}
 /file print file=navspot-actions.txt where name="__never__"
 :delay 1s
-:do { /file set [find name="navspot-actions.txt"] contents=$actions } on-error={ :log error "NAVSPOT-SYNC: Falha ao salvar arquivo" }
+:do { /file set [find where name="navspot-actions.txt"] contents=$actions } on-error={ :log error "NAVSPOT-SYNC: Falha ao salvar arquivo" }
 :delay 500ms
 :local fsize 0
-:do { :set fsize [/file get [find name="navspot-actions.txt"] size] } on-error={}
+:do { :set fsize [/file get [find where name="navspot-actions.txt"] size] } on-error={}
 :log info ("NAVSPOT-SYNC: Arquivo salvo (size=" . $fsize . "), acionando action-processor...")
 :do {
 /system script run navspot-action-processor
@@ -503,7 +596,13 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 } on-error={ :log error "NAVSPOT-SYNC: action-processor FALHOU na execucao" }
 }
 } else={
-:log warning "NAVSPOT-SYNC: Resposta invalida (sem marcadores [[]])"
+:local respPrefix ""
+:if ([:len $resp] > 80) do={
+:set respPrefix [:pick $resp 0 80]
+} else={
+:set respPrefix $resp
+}
+:log warning ("NAVSPOT-SYNC: Resposta invalida (prefix=" . $respPrefix . ")")
 }
 }
 :set navspotSyncLock "0"
@@ -535,7 +634,7 @@ function generateActionProcessorSource(): string {
 :global navspotLock
 :if ($navspotLock = "1") do={ :log info "NAVSPOT-ACTION: lock ativo"; :return }
 :set navspotLock "1"
-:local fid [/file find name="navspot-actions.txt"]
+:local fid [/file find where name="navspot-actions.txt"]
 :if ([:len $fid] = 0) do={
 :set navspotLock "0"
 :log warning "NAVSPOT-ACTION: Arquivo nao encontrado"
@@ -574,7 +673,7 @@ function generateActionProcessorSource(): string {
 :local loginUrl [:pick $rest 0 $p2]
 :local dnsName [:pick $rest ($p2 + 1) [:len $rest]]
 :if (([:len $loginUrl] > 0) && ([:len $dnsName] > 0)) do={
-:local hsprof [/ip hotspot profile find name="hsprof-navspot"]
+:local hsprof [/ip hotspot profile find where name="hsprof-navspot"]
 :if ([:len $hsprof] > 0) do={
 :do { /ip hotspot profile set $hsprof login-url=$loginUrl } on-error={ :log warning "NAVSPOT: falha login-url" }
 :do { /ip hotspot profile set $hsprof dns-name=$dnsName } on-error={ :log warning "NAVSPOT: falha dns-name" }
@@ -751,9 +850,9 @@ function generateGuardianSource(recoveryUrl: string, syncToken: string): string 
   return `:log info "NAVSPOT-GUARDIAN v${VERSION}: Verificando integridade..."
 :local needsRepair 0
 :local missing ""
-:local syncScript [/system script find name="navspot-sync"]
-:local apScript [/system script find name="navspot-action-processor"]
-:local syncSched [/system scheduler find name="navspot-sync-scheduler"]
+:local syncScript [/system script find where name="navspot-sync"]
+:local apScript [/system script find where name="navspot-action-processor"]
+:local syncSched [/system scheduler find where name="navspot-sync-scheduler"]
 :if ([:len $syncScript] = 0) do={
 :set needsRepair 1
 :set missing ($missing . "navspot-sync ")
@@ -766,7 +865,7 @@ function generateGuardianSource(recoveryUrl: string, syncToken: string): string 
 :set needsRepair 1
 :set missing ($missing . "navspot-sync-scheduler ")
 }
-:local hsprof [/ip hotspot profile find name="hsprof-navspot"]
+:local hsprof [/ip hotspot profile find where name="hsprof-navspot"]
 :local loginUrl ""
 :if ([:len $hsprof] > 0) do={
 :set loginUrl [/ip hotspot profile get $hsprof login-url]
