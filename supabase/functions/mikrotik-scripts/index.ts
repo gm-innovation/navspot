@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.8
+ * mikrotik-scripts v7.1.9
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -17,18 +17,19 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" (default: "all")
  *   - token: sync_token for authentication
  * 
- * v7.1.8: CRITICAL FIX - Use source="..." instead of source={...}
- *   - RouterOS 6.x /import does NOT support source={} syntax in .rsc files
- *   - source={} only works in interactive terminal, not in imported files
- *   - Now uses source="escaped_content" with proper escaping
+ * v7.1.9: CRITICAL FIX - Convert newlines to \r\n for RouterOS 6.x /import
+ *   - RouterOS 6.x does NOT accept literal newlines inside source="..." in .rsc files
+ *   - The parser interprets each line as a separate command, breaking syntax
+ *   - Now converts all \n to \\r\\n which RouterOS interprets as line breaks
  * 
+ * v7.1.8: Use source="..." instead of source={...} for /import compatibility
  * v7.1.7: escapeForSourceBlock() called on all RSC generators
  * v7.1.6: Direct /import bypasses 4KB variable limit
  * 
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.8"
+const VERSION = "7.1.9"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -38,13 +39,20 @@ function maskToken(token: string): string {
 
 /**
  * Escape script source for embedding in source="..." block
- * RouterOS requires escaping " and $ inside source="" quoted strings
- * v7.1.8: Uses placeholder pattern to preserve runtime vars $(...)
+ * RouterOS requires:
+ * - Escaping " and $ inside source="" quoted strings
+ * - Converting newlines to \r\n for multiline content in .rsc files
+ * 
+ * v7.1.9: CRITICAL - Convert newlines to \r\n for RouterOS 6.x /import compatibility
+ *   RouterOS 6.x does NOT accept literal newlines inside source="..." in .rsc files
+ *   The parser interprets each line as a separate command, breaking syntax
  * 
  * Escaping rules for source="...":
  * - Backslashes: \ -> \\
  * - Double quotes: " -> \"
  * - Dollar signs (local vars): $ -> \$
+ * - CRLF: \r\n -> \\r\\n
+ * - LF: \n -> \\r\\n
  * - Runtime vars $(...): preserved unescaped
  */
 function escapeForSourceQuotes(script: string): string {
@@ -52,9 +60,11 @@ function escapeForSourceQuotes(script: string): string {
   const preserved = script.replace(/\$\(/g, '@@RUNTIME_VAR@@')
   
   const escaped = preserved
-    .replace(/\\/g, '\\\\')   // Escape backslashes first
-    .replace(/"/g, '\\"')      // Escape double quotes
-    .replace(/\$/g, '\\$')     // Escape dollar signs (local vars)
+    .replace(/\\/g, '\\\\')     // Escape backslashes first
+    .replace(/"/g, '\\"')        // Escape double quotes
+    .replace(/\$/g, '\\$')       // Escape dollar signs (local vars)
+    .replace(/\r\n/g, '\\r\\n')  // Convert CRLF to escaped \r\n
+    .replace(/\n/g, '\\r\\n')    // Convert LF to escaped \r\n
   
   // Restore runtime vars (unescaped)
   return escaped.replace(/@@RUNTIME_VAR@@/g, '$(')

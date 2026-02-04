@@ -5,22 +5,23 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.8"
+const VERSION = "7.1.9"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
- * mikrotik-script-generator v7.1.8 - ULTRA-THIN CLIENT
+ * mikrotik-script-generator v7.1.9 - ULTRA-THIN CLIENT
  * 
  * Bootstrap is minimal (~100 lines) and uses /tool fetch to download
  * scripts from the mikrotik-scripts endpoint AFTER infrastructure is configured.
  * 
  * This bypasses RouterOS 6.x parser limitations with embedded source={...}
  * 
- * v7.1.8: CRITICAL FIX - Use source="..." instead of source={...}
- *   - RouterOS 6.x /import does NOT support source={} syntax in .rsc files
- *   - source={} only works in interactive terminal
- *   - Now uses source="escaped_content" with proper escaping
+ * v7.1.9: CRITICAL FIX - Convert newlines to \r\n in source="..."
+ *   - RouterOS 6.x does NOT accept literal newlines inside source="..." in .rsc files
+ *   - The parser interprets each line as a separate command, breaking syntax
+ *   - mikrotik-scripts endpoint now converts \n to \\r\\n
  * 
+ * v7.1.8: Use source="..." instead of source={...} for /import compatibility
  * v7.1.6: CRITICAL FIX for RouterOS 6.x 4KB variable limit
  *   - Installer now uses /import directly with .rsc files
  *   - Action processor minified to <4KB (essential handlers only)
