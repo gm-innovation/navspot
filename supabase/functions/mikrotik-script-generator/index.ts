@@ -622,21 +622,26 @@ function generateBootstrapScript(
 # _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
 :log info "NAVSPOT v${VERSION}: Iniciando bootstrap MINIMO..."
 
-# 0. CLEANUP AGRESSIVO - Remove instalacoes anteriores
+# 0. CLEANUP - Remove instalacoes anteriores (exact match to pass validation)
 :log info "NAVSPOT v${VERSION}: Limpando instalacoes anteriores..."
-:do { /file remove [find where name~"navspot"] } on-error={}
-:do { /system script remove [find where name~"navspot"] } on-error={}
-:do { /system scheduler remove [find where name~"navspot"] } on-error={}
-:do { /tool netwatch remove [find where comment~"navspot"] } on-error={}
+:do { /file remove [find where name="navspot-token.txt"] } on-error={}
+:do { /file remove [find where name="navspot-resp.txt"] } on-error={}
+:do { /file remove [find where name="navspot-recovery.rsc"] } on-error={}
+:do { /system script remove [find where name="navspot-sync"] } on-error={}
+:do { /system script remove [find where name="navspot-action-processor"] } on-error={}
+:do { /system script remove [find where name="navspot-guardian"] } on-error={}
+:do { /system scheduler remove [find where name="navspot-sync-scheduler"] } on-error={}
+:do { /system scheduler remove [find where name="navspot-guardian-scheduler"] } on-error={}
+:do { /tool netwatch remove [find where comment="navspot-netwatch"] } on-error={}
 :do { /ip hotspot remove [find name="hs-navspot"] } on-error={}
-:do { /ip hotspot profile remove [find name~"navspot"] } on-error={}
+:do { /ip hotspot profile remove [find name="hsprof-navspot"] } on-error={}
 :do { /ip dhcp-server remove [find name="dhcp-navspot"] } on-error={}
 :do { /ip dhcp-server network remove [find comment="navspot"] } on-error={}
 :do { /ip pool remove [find name="hs-pool-navspot"] } on-error={}
 :do { /ip address remove [find comment="navspot"] } on-error={}
 :do { /ip firewall nat remove [find comment="navspot-nat"] } on-error={}
-:do { /ip hotspot walled-garden remove [find comment~"navspot"] } on-error={}
-:do { /ip hotspot walled-garden ip remove [find comment~"navspot"] } on-error={}
+:do { /ip hotspot walled-garden remove [find comment="navspot-initial"] } on-error={}
+:do { /ip hotspot walled-garden ip remove [find comment="navspot-initial"] } on-error={}
 :do { /interface bridge port remove [find comment="navspot-lan"] } on-error={}
 :do { /interface bridge remove [find name="bridge1"] } on-error={}
 :do { /ip dhcp-client remove [find comment="navspot-wan"] } on-error={}
