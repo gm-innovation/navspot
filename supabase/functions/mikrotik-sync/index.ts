@@ -5,6 +5,14 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// v7.0.0: Version identifier
+const VERSION = "7.0.0"
+
+// v7.0: Sanitize pipe delimiter in URLs
+function sanitizeForPipe(value: string): string {
+  return value.replace(/\|/g, '%7C')
+}
+
 // v6.9.15: Simple hash function for firewall rules change detection
 async function hashString(str: string): Promise<string> {
   const encoder = new TextEncoder()
@@ -446,7 +454,7 @@ Deno.serve(async (req) => {
       JSON.stringify({ 
         status: 'ok', 
         timestamp: new Date().toISOString(),
-        version: '6.9.12'
+        version: VERSION
       }),
       { 
         status: 200, 
@@ -497,10 +505,10 @@ Deno.serve(async (req) => {
       )
     }
 
-    // v6.9.15: Include firewall_rules_hash for loop prevention
+    // v7.0: Include initial_config_sent for first-sync detection
     const { data: hotspot, error: hotspotError } = await supabase
       .from('hotspots')
-      .select('id, embarcacao_id, nome, status, synced_profiles, synced_users, firewall_rules_hash')
+      .select('id, embarcacao_id, nome, status, synced_profiles, synced_users, firewall_rules_hash, initial_config_sent')
       .eq('sync_token', payload.sync_token)
       .single()
 
@@ -940,60 +948,103 @@ Deno.serve(async (req) => {
       for (const mac of violation.macs_to_kick) {
         formattedActions.push({
           id: `auto-kick-${violation.user}-${mac}`,
-          type: 'kick_device',
-          payload: {
-            user: violation.user,
-            mac: mac,
-            reason: `Limite de ${violation.max_allowed} dispositivo(s) excedido`
-          }
+          type: 'kick_session',
+          payload: { user: violation.user, mac }
         })
       }
     }
 
-    // Add kick actions for blocked devices currently connected
-    if (payload.active_users) {
-      for (const activeUser of payload.active_users) {
-        const blocked = blockedDevices.find(bd => bd.mac === activeUser.mac)
-        if (blocked) {
-          formattedActions.push({
-            id: `auto-kick-blocked-${activeUser.mac}`,
-            type: 'kick_device',
-            payload: {
-              user: activeUser.user,
-              mac: activeUser.mac,
-              reason: blocked.reason
-            }
-          })
-        }
-      }
+    // Add kick actions for blocked devices
+    for (const bd of blockedDevices) {
+      formattedActions.push({
+        id: `auto-kick-blocked-${bd.mac}`,
+        type: 'kick_session',
+        payload: { user: '', mac: bd.mac }
+      })
     }
 
-    // Fetch active access rules for this hotspot
+    // v7.0: First-sync detection - inject initial configuration
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!
+    const backendHost = new URL(supabaseUrl).hostname
+    
+    if (!hotspot.initial_config_sent) {
+      console.log('[mikrotik-sync] v7.0: First sync detected - injecting initial configuration')
+      
+      // 1. Configure hotspot profile (login-url + dns-name)
+      const hotspotSlug = hotspot.nome.toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9-]/g, '')
+      const loginUrl = `https://navspot.lovable.app/hotspot-login?h=${encodeURIComponent(hotspot.id)}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
+      const dnsName = `${hotspotSlug}.navspot.local`
+      
+      // Inject as FIRST action (use unshift for highest priority)
+      formattedActions.unshift({
+        id: 'initial-config-profile',
+        type: 'configure_hotspot_profile',
+        payload: { login_url: loginUrl, dns_name: dnsName }
+      })
+      
+      // 2. Inject essential walled garden domains (explicit, NO wildcards)
+      const essentialDomains = [
+        // Portal
+        'navspot.lovable.app',
+        // Backend
+        backendHost,
+        // Android CPD
+        'connectivitycheck.gstatic.com',
+        'clients3.google.com',
+        // Apple CPD  
+        'captive.apple.com',
+        'www.apple.com',
+        // Windows CPD
+        'msftconnecttest.com',
+        'www.msftconnecttest.com',
+        'msftncsi.com',
+        'www.msftncsi.com'
+      ]
+      
+      for (const domain of essentialDomains) {
+        formattedActions.push({
+          id: `initial-wg-${domain.replace(/[^a-z0-9]/gi, '')}`,
+          type: 'add_whitelist_domain',
+          payload: { list_name: 'essential', domain }
+        })
+      }
+      
+      // 3. Mark as configured (will not repeat on next sync)
+      await supabase
+        .from('hotspots')
+        .update({ initial_config_sent: true })
+        .eq('id', hotspot.id)
+      
+      console.log(`[mikrotik-sync] v7.0: Injected initial config for ${hotspot.nome}`)
+    }
+
+    // Fetch and process firewall rules for this empresa
     let firewallRules: { action: string; domains: string[]; apps: string[] }[] = []
     
-    // v6.9.17: Track if any profile uses "bloquear_tudo" mode for whitelist firewall
+    // v6.9.17: Track if we have any profiles with restrictive modes
     let hasRestrictiveProfile = false
     let restrictiveWhitelistDomains: string[] = []
-    
+
     if (embarcacao) {
-      // v6.9.17: Check for profiles with modo_acesso = 'bloquear_tudo'
-      // These need firewall whitelist (allow only specified domains, block everything else)
-      const { data: restrictivePerfis } = await supabase
+      // Check for profiles with bloquear_tudo mode
+      const { data: restrictiveProfiles } = await supabase
         .from('perfis_velocidade')
-        .select('id, nome, modo_acesso')
+        .select('id, modo_acesso')
         .eq('empresa_id', embarcacao.empresa_id)
         .eq('modo_acesso', 'bloquear_tudo')
-
-      if (restrictivePerfis && restrictivePerfis.length > 0) {
+      
+      if (restrictiveProfiles && restrictiveProfiles.length > 0) {
         hasRestrictiveProfile = true
-        console.log(`[mikrotik-sync] v6.9.17: Found ${restrictivePerfis.length} restrictive profiles (bloquear_tudo)`)
-
-        // Get all whitelists for these profiles
-        const perfilIds = restrictivePerfis.map(p => p.id)
+        console.log(`[mikrotik-sync] v6.9.17: Found ${restrictiveProfiles.length} profile(s) with bloquear_tudo mode`)
         
+        // Get whitelist domains for these profiles (from regras_acesso linked to the profile)
+        const perfilIds = restrictiveProfiles.map(p => p.id)
         const { data: whitelistRegras } = await supabase
           .from('regras_acesso')
           .select(`
+            lista_id,
             listas_acesso(dominios, tipo)
           `)
           .eq('empresa_id', embarcacao.empresa_id)
@@ -1255,6 +1306,7 @@ Deno.serve(async (req) => {
     const expandedActions: typeof formattedActions = []
     
     // v6.9.18: Separate actions by priority
+    const configureProfileActions: typeof formattedActions = [] // v7.0: Highest priority
     const firewallAllowActions: typeof formattedActions = []
     const firewallBlockActions: typeof formattedActions = []
     const profileActions: typeof formattedActions = []
@@ -1265,8 +1317,12 @@ Deno.serve(async (req) => {
     for (const action of formattedActions) {
       const p = action.payload as Record<string, unknown>
       
+      // v7.0: Configure hotspot profile (highest priority)
+      if (action.type === 'configure_hotspot_profile') {
+        configureProfileActions.push(action)
+      }
       // Expand walled garden with multiple domains
-      if (action.type === 'add_walled_garden' && Array.isArray(p.dominios)) {
+      else if (action.type === 'add_walled_garden' && Array.isArray(p.dominios)) {
         for (const domain of p.dominios as string[]) {
           if (domain) {
             walledGardenActions.push({
@@ -1310,13 +1366,15 @@ Deno.serve(async (req) => {
       }
     }
     
-    // v6.9.18: Assemble in priority order (most critical first to avoid truncation)
-    // 1. Firewall ALLOW (bloquear_tudo whitelist) - HIGHEST priority
+    // v7.0: Assemble in priority order (most critical first to avoid truncation)
+    // 0. Configure hotspot profile (v7.0 first-sync - HIGHEST priority)
+    // 1. Firewall ALLOW (bloquear_tudo whitelist)
     // 2. Firewall BLOCK (blacklist)
     // 3. Profiles (must exist before users)
     // 4. Users
     // 5. Walled Garden (pre-login, less critical since firewall handles post-login)
     // 6. Other actions
+    expandedActions.push(...configureProfileActions)
     expandedActions.push(...firewallAllowActions)
     expandedActions.push(...firewallBlockActions)
     expandedActions.push(...profileActions)
@@ -1324,12 +1382,12 @@ Deno.serve(async (req) => {
     expandedActions.push(...walledGardenActions)
     expandedActions.push(...otherActions)
     
-    console.log(`[mikrotik-sync] v6.9.18: Action priority order - firewall_allow:${firewallAllowActions.length}, firewall_block:${firewallBlockActions.length}, profiles:${profileActions.length}, users:${userActions.length}, walled_garden:${walledGardenActions.length}, other:${otherActions.length}`)
+    console.log(`[mikrotik-sync] v7.0: Action priority order - configure_profile:${configureProfileActions.length}, firewall_allow:${firewallAllowActions.length}, firewall_block:${firewallBlockActions.length}, profiles:${profileActions.length}, users:${userActions.length}, walled_garden:${walledGardenActions.length}, other:${otherActions.length}`)
 
     // v6.9: Auto-mark as executed after 1 delivery (fire-and-forget pattern)
     if (expandedActions.length > 0) {
       const actionIds = expandedActions
-        .filter(a => !a.id.startsWith('auto-'))
+        .filter(a => !a.id.startsWith('auto-') && !a.id.startsWith('initial-'))
         .map(a => a.id)
       
       if (actionIds.length > 0) {
@@ -1344,13 +1402,17 @@ Deno.serve(async (req) => {
       }
     }
 
-    // v6.9: Generate pipe-delimited format for RouterOS parsing
+    // v7.0: Generate pipe-delimited format for RouterOS parsing
     // Format: cmd|param1|param2;cmd2|param1|param2;
     // Wrapped in [[ ]] markers for extraction by navspot-sync script
     const pipeDelimitedActions = expandedActions.map(action => {
       const p = action.payload
       
       switch (action.type) {
+        // v7.0: New action for configuring hotspot profile at runtime
+        case 'configure_hotspot_profile':
+          // Format: configure_hotspot_profile|login_url|dns_name
+          return `configure_hotspot_profile|${sanitizeForPipe(String(p.login_url || ''))}|${p.dns_name || ''}`
         case 'kick_session':
         case 'kick_device':
           return `kick_session|${p.user || ''}|${p.mac || ''}`
@@ -1407,7 +1469,7 @@ Deno.serve(async (req) => {
     // v6.9.5: Wrap em [[ ]] SEM espaços extras para extração limpa
     const formattedPipe = pipeDelimitedActions ? `[[${pipeDelimitedActions};]]` : ''
 
-    console.log(`[mikrotik-sync] v6.9: Returning ${expandedActions.length} pending actions, ${firewallRules.length} firewall rules, ${blockedDevices.length} blocked devices`)
+    console.log(`[mikrotik-sync] v7.0: Returning ${expandedActions.length} pending actions, ${firewallRules.length} firewall rules, ${blockedDevices.length} blocked devices`)
 
     return new Response(
       JSON.stringify({
