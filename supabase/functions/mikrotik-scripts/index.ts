@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.10
+ * mikrotik-scripts v7.1.11
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -17,25 +17,23 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" (default: "all")
  *   - token: sync_token for authentication
  * 
- * v7.1.10: SYNTAX FIX - RouterOS 6.x command separation
- *   - All commands inside do={} and on-error={} blocks now separated by ;
- *   - All internal commands prefixed with : (:log, :set, :return)
- *   - Proper spacing: do={ :cmd } instead of do={:cmd}
- *   - Empty parameter handling in pipe-delimited actions
- *   - check-certificate=no added to sync fetch
- *   - Increased delays for Flash memory (500ms -> 1s)
- *   - Specific error logs: "FETCH falhou" vs "action-processor FALHOU"
- *   - Idempotent schedulers with remove-then-add pattern
+ * v7.1.11: CRITICAL FIXES for RouterOS 6.x syntax
+ *   - login-url and dns-name use QUOTED strings: login-url="$loginUrl"
+ *   - Empty parameter validation in create_user (skip empty password)
+ *   - Added sync lock to prevent concurrent executions
+ *   - Added walled-garden handlers: create_whitelist_domain, create_blacklist_domain
+ * 
+ * v7.1.10: RouterOS 6.x command separation
+ *   - All commands inside do={} separated by ;
+ *   - All internal commands prefixed with :
  * 
  * v7.1.9: Convert newlines to \r\n for RouterOS 6.x /import
  * v7.1.8: Use source="..." instead of source={...} for /import compatibility
- * v7.1.7: escapeForSourceBlock() called on all RSC generators
- * v7.1.6: Direct /import bypasses 4KB variable limit
  * 
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.10"
+const VERSION = "7.1.11"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -419,14 +417,16 @@ function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
 // ==========================================
 
 /**
- * v7.1.10: Sync source with proper error handling
- * - check-certificate=no added
- * - Specific error messages (FETCH vs PROCESSAMENTO)
- * - Increased delays for Flash memory
- * - Skip action-processor if no actions
+ * v7.1.11: Sync source with concurrency lock to prevent parallel executions
+ * - navspotSyncLock global to prevent scheduler + netwatch + manual conflicts
+ * - check-certificate=no for SSL bypass
+ * - Specific error messages for debugging
  */
 function generateSyncSource(syncUrl: string, syncToken: string): string {
   return `:log info "NAVSPOT-SYNC v${VERSION}: Iniciando..."
+:global navspotSyncLock
+:if ($navspotSyncLock = "1") do={ :log info "NAVSPOT-SYNC: sync em andamento, ignorando"; :return }
+:set navspotSyncLock "1"
 :local token ""
 :do { :set token [/file get "navspot-token.txt" contents] } on-error={}
 :if ([:len $token] < 10) do={
@@ -469,7 +469,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :do {
 /tool fetch url=$syncUrl mode=https http-method=post http-data=$body http-header-field=$hdr check-certificate=no dst-path="navspot-resp.txt"
 :set fetchOk true
-} on-error={ :log warning "NAVSPOT-SYNC: FETCH falhou (rede/TLS/DNS)" }
+} on-error={ :log warning "NAVSPOT-SYNC: FETCH falhou (rede/TLS/DNS)"; :set navspotSyncLock "0" }
 :if ($fetchOk = true) do={
 :delay 500ms
 :local resp ""
@@ -485,7 +485,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :while (($j >= $i) && ([:pick $raw $j ($j + 1)] = " ")) do={ :set j ($j - 1) }
 :local actions ""
 :if ($j >= $i) do={ :set actions [:pick $raw $i ($j + 1)] }
-:log info ("NAVSPOT-SYNC: pending_actions_pipe extraido (" . [:len $actions] . " chars)")
+:log info ("NAVSPOT-SYNC: pending_actions_pipe (" . [:len $actions] . " chars)")
 :if ([:len $actions] = 0) do={
 :log info "NAVSPOT-SYNC: Nenhuma acao pendente"
 :set syncOk true
@@ -504,9 +504,10 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 } on-error={ :log error "NAVSPOT-SYNC: action-processor FALHOU na execucao" }
 }
 } else={
-:log warning "NAVSPOT-SYNC: Resposta invalida (sem pending_actions_pipe)"
+:log warning "NAVSPOT-SYNC: Resposta invalida (sem marcadores [[]])"
 }
 }
+:set navspotSyncLock "0"
 :if ($syncOk = true) do={
 :log info "NAVSPOT-SYNC v${VERSION}: OK"
 } else={
@@ -515,18 +516,19 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 
 /**
- * v7.1.10: Action Processor with PROPER RouterOS 6.x syntax
+ * v7.1.11: Action Processor with QUOTED login-url/dns-name and walled-garden handlers
  * 
- * CRITICAL FIXES:
+ * CRITICAL FIXES v7.1.11:
+ * - login-url and dns-name use QUOTED strings to handle special chars (&, ?, =)
+ * - Added create_whitelist_domain and create_blacklist_domain handlers
+ * - Skip password update if empty (update profile only)
  * - All commands inside do={} separated by ;
- * - All internal commands prefixed with : (:log, :set, :return)
- * - Proper spacing: do={ :cmd } instead of do={:cmd}
- * - Empty parameter validation with [:len]
- * - Lock released on all exit paths
+ * - All internal commands prefixed with :
  * 
- * Essential handlers only (under 4KB):
- * - configure_hotspot_profile
+ * Essential handlers:
+ * - configure_hotspot_profile (quoted values!)
  * - create_profile / create_user / remove_user
+ * - create_whitelist_domain / create_blacklist_domain (walled-garden)
  * - disable_user / enable_user / kick_session / update_password
  */
 function generateActionProcessorSource(): string {
@@ -561,8 +563,8 @@ function generateActionProcessorSource(): string {
 :if (([:len $loginUrl] > 0) && ([:len $dnsName] > 0)) do={
 :local hsprof [/ip hotspot profile find name="hsprof-navspot"]
 :if ([:len $hsprof] > 0) do={
-:do { /ip hotspot profile set $hsprof login-url=$loginUrl } on-error={}
-:do { /ip hotspot profile set $hsprof dns-name=$dnsName } on-error={}
+:do { /ip hotspot profile set $hsprof login-url="$loginUrl" } on-error={ :log warning "NAVSPOT: falha set login-url" }
+:do { /ip hotspot profile set $hsprof dns-name="$dnsName" } on-error={ :log warning "NAVSPOT: falha set dns-name" }
 :do { /ip hotspot profile set $hsprof login-by=http-pap,http-chap } on-error={}
 :log info ("NAVSPOT: Hotspot profile configurado - " . $dnsName)
 :set processedCount ($processedCount + 1)
@@ -618,11 +620,19 @@ function generateActionProcessorSource(): string {
 :if ([:len $profExists] = 0) do={ /ip hotspot user profile add name=$uProf }
 :local existing [/ip hotspot user find name=$uName]
 :if ([:len $existing] = 0) do={
+:if ([:len $uPass] > 0) do={
 /ip hotspot user add name=$uName password=$uPass profile=$uProf comment="navspot-sync"
 :log info ("NAVSPOT: Usuario criado - " . $uName)
 :set processedCount ($processedCount + 1)
 } else={
+:log warning ("NAVSPOT: Usuario sem senha, ignorando - " . $uName)
+}
+} else={
+:if ([:len $uPass] > 0) do={
 /ip hotspot user set $existing password=$uPass profile=$uProf
+} else={
+/ip hotspot user set $existing profile=$uProf
+}
 }}}
 }
 :if ($cmd = "remove_user") do={
@@ -633,6 +643,28 @@ function generateActionProcessorSource(): string {
 :log info ("NAVSPOT: Usuario removido - " . $rest)
 :set processedCount ($processedCount + 1)
 }}
+}
+:if ($cmd = "create_whitelist_domain") do={
+:local p2 [:find $rest "|"]
+:if ($p2 >= 0) do={
+:local domain [:pick $rest ($p2 + 1) [:len $rest]]
+:if ([:len $domain] > 0) do={
+:local wgExists [/ip hotspot walled-garden find where dst-host~$domain comment~"navspot"]
+:if ([:len $wgExists] = 0) do={
+:do { /ip hotspot walled-garden add dst-host=("*" . $domain . "*") action=allow comment="navspot-whitelist" } on-error={}
+:set processedCount ($processedCount + 1)
+}}}
+}
+:if ($cmd = "create_blacklist_domain") do={
+:local p2 [:find $rest "|"]
+:if ($p2 >= 0) do={
+:local domain [:pick $rest ($p2 + 1) [:len $rest]]
+:if ([:len $domain] > 0) do={
+:local wgExists [/ip hotspot walled-garden find where dst-host~$domain comment~"navspot"]
+:if ([:len $wgExists] = 0) do={
+:do { /ip hotspot walled-garden add dst-host=("*" . $domain . "*") action=deny comment="navspot-blacklist" } on-error={}
+:set processedCount ($processedCount + 1)
+}}}
 }
 :if ($cmd = "disable_user") do={
 :if ([:len $rest] > 0) do={
@@ -654,7 +686,7 @@ function generateActionProcessorSource(): string {
 :if ($p2 >= 0) do={
 :local uName [:pick $rest 0 $p2]
 :local uPass [:pick $rest ($p2 + 1) [:len $rest]]
-:if ([:len $uName] > 0) do={
+:if (([:len $uName] > 0) && ([:len $uPass] > 0)) do={
 :do { /ip hotspot user set [find name=$uName] password=$uPass } on-error={}
 }}}
 }}

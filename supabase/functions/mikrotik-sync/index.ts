@@ -5,12 +5,19 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.0.1: Version identifier - reduced cooldown, update_profile_config support
-const VERSION = "7.0.1"
+// v7.1.11: Version identifier - escape RouterOS placeholders, return [[]] when empty
+const VERSION = "7.1.11"
 
 // v7.0: Sanitize pipe delimiter in URLs
 function sanitizeForPipe(value: string): string {
   return value.replace(/\|/g, '%7C')
+}
+
+// v7.1.11: Escape RouterOS runtime placeholders for storage in scripts
+// $(mac) -> \$(mac) so RouterOS stores it as literal $(mac) for hotspot to expand at runtime
+function escapeRouterOSPlaceholders(value: string): string {
+  // Match $(word) patterns like $(mac), $(ip), $(link-login-only)
+  return value.replace(/\$\(([^)]+)\)/g, '\\$($1)')
 }
 
 // v6.9.15: Simple hash function for firewall rules change detection
@@ -1410,9 +1417,12 @@ Deno.serve(async (req) => {
       
       switch (action.type) {
         // v7.0: New action for configuring hotspot profile at runtime
+        // v7.1.11: Escape $(mac), $(ip), etc. placeholders so RouterOS stores them as literals
         case 'configure_hotspot_profile':
           // Format: configure_hotspot_profile|login_url|dns_name
-          return `configure_hotspot_profile|${sanitizeForPipe(String(p.login_url || ''))}|${p.dns_name || ''}`
+          // Escape placeholders BEFORE sanitizing pipe characters
+          const escapedLoginUrl = escapeRouterOSPlaceholders(String(p.login_url || ''))
+          return `configure_hotspot_profile|${sanitizeForPipe(escapedLoginUrl)}|${p.dns_name || ''}`
         case 'kick_session':
         case 'kick_device':
           return `kick_session|${p.user || ''}|${p.mac || ''}`
@@ -1476,8 +1486,9 @@ Deno.serve(async (req) => {
       }
     }).join(';')
 
-    // v6.9.5: Wrap em [[ ]] SEM espaços extras para extração limpa
-    const formattedPipe = pipeDelimitedActions ? `[[${pipeDelimitedActions};]]` : ''
+    // v7.1.11: ALWAYS wrap in [[ ]] markers - even when empty
+    // This prevents "Resposta invalida" warnings when no actions are pending
+    const formattedPipe = pipeDelimitedActions ? `[[${pipeDelimitedActions};]]` : '[[]]'
 
     console.log(`[mikrotik-sync] v7.0: Returning ${expandedActions.length} pending actions, ${firewallRules.length} firewall rules, ${blockedDevices.length} blocked devices`)
 
