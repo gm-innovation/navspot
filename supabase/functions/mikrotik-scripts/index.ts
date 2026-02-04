@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.12
+ * mikrotik-scripts v7.1.13
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -17,27 +17,22 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" (default: "all")
  *   - token: sync_token for authentication
  * 
- * v7.1.12: CRITICAL FIX for RouterOS 6.x variable expansion
- *   - login-url and dns-name use CONCATENATION: login-url=("" . $loginUrl)
- *   - In RouterOS, "$var" does NOT expand - it passes literal "$var"
- *   - Using ("" . $var) forces expression context, properly expanding the variable
+ * v7.1.13: CRITICAL FIX for RouterOS 6.x strict syntax
+ *   - All / commands inside do={} wrapped with :do { } on-error={}
+ *   - Removed problematic ~ (regex) operator in walled-garden find
+ *   - Variables used directly without ("" . $var) wrapper
+ *   - navspotLock released in all error paths
  * 
- * v7.1.11: CRITICAL FIXES for RouterOS 6.x syntax
- *   - Empty parameter validation in create_user (skip empty password)
- *   - Added sync lock to prevent concurrent executions
- *   - Added walled-garden handlers: create_whitelist_domain, create_blacklist_domain
- * 
+ * v7.1.12: Variable expansion fix (login-url=("" . $loginUrl))
+ * v7.1.11: Walled-garden handlers, sync lock
  * v7.1.10: RouterOS 6.x command separation
- *   - All commands inside do={} separated by ;
- *   - All internal commands prefixed with :
- * 
  * v7.1.9: Convert newlines to \r\n for RouterOS 6.x /import
  * v7.1.8: Use source="..." instead of source={...} for /import compatibility
  * 
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.12"
+const VERSION = "7.1.13"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -520,17 +515,17 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 
 /**
- * v7.1.11: Action Processor with QUOTED login-url/dns-name and walled-garden handlers
+ * v7.1.13: Action Processor with STRICT RouterOS 6.x syntax
  * 
- * CRITICAL FIXES v7.1.11:
- * - login-url and dns-name use QUOTED strings to handle special chars (&, ?, =)
- * - Added create_whitelist_domain and create_blacklist_domain handlers
- * - Skip password update if empty (update profile only)
- * - All commands inside do={} separated by ;
- * - All internal commands prefixed with :
+ * CRITICAL FIXES v7.1.13:
+ * - All / commands wrapped in :do { } on-error={}
+ * - Removed ~ (regex) operator from walled-garden find (causes parsing issues)
+ * - Variables used directly (login-url=$loginUrl instead of ("" . $loginUrl))
+ * - Each handler wrapped in :do { } on-error={} for isolation
+ * - Lock released in all error paths
  * 
  * Essential handlers:
- * - configure_hotspot_profile (quoted values!)
+ * - configure_hotspot_profile
  * - create_profile / create_user / remove_user
  * - create_whitelist_domain / create_blacklist_domain (walled-garden)
  * - disable_user / enable_user / kick_session / update_password
@@ -541,15 +536,28 @@ function generateActionProcessorSource(): string {
 :if ($navspotLock = "1") do={ :log info "NAVSPOT-ACTION: lock ativo"; :return }
 :set navspotLock "1"
 :local fid [/file find name="navspot-actions.txt"]
-:if ([:len $fid] = 0) do={ :set navspotLock "0"; :log warning "NAVSPOT-ACTION: Arquivo nao encontrado"; :return }
+:if ([:len $fid] = 0) do={
+:set navspotLock "0"
+:log warning "NAVSPOT-ACTION: Arquivo nao encontrado"
+:return
+}
 :local rawData ""
-:do { :set rawData [/file get $fid contents] } on-error={ :log error "NAVSPOT-ACTION: Erro leitura"; :set navspotLock "0"; :return }
+:do {
+:set rawData [/file get $fid contents]
+} on-error={
+:log error "NAVSPOT-ACTION: Erro leitura"
+:set navspotLock "0"
+:return
+}
 :log info ("NAVSPOT-ACTION: len=" . [:len $rawData])
 :do { /file remove $fid } on-error={}
-:if ([:len $rawData] = 0) do={ :set navspotLock "0"; :log info "NAVSPOT-ACTION: Nenhuma acao pendente"; :return }
+:if ([:len $rawData] = 0) do={
+:set navspotLock "0"
+:log info "NAVSPOT-ACTION: Nenhuma acao pendente"
+:return
+}
 :local pos 0
 :local processedCount 0
-:do {
 :while ([:find $rawData ";" $pos] >= 0) do={
 :local endPos [:find $rawData ";" $pos]
 :local line [:pick $rawData $pos $endPos]
@@ -560,6 +568,7 @@ function generateActionProcessorSource(): string {
 :local cmd [:pick $line 0 $p1]
 :local rest [:pick $line ($p1 + 1) [:len $line]]
 :if ($cmd = "configure_hotspot_profile") do={
+:do {
 :local p2 [:find $rest "|"]
 :if ($p2 >= 0) do={
 :local loginUrl [:pick $rest 0 $p2]
@@ -567,14 +576,18 @@ function generateActionProcessorSource(): string {
 :if (([:len $loginUrl] > 0) && ([:len $dnsName] > 0)) do={
 :local hsprof [/ip hotspot profile find name="hsprof-navspot"]
 :if ([:len $hsprof] > 0) do={
-:do { /ip hotspot profile set $hsprof login-url=("" . $loginUrl) } on-error={ :log warning "NAVSPOT: falha set login-url" }
-:do { /ip hotspot profile set $hsprof dns-name=("" . $dnsName) } on-error={ :log warning "NAVSPOT: falha set dns-name" }
+:do { /ip hotspot profile set $hsprof login-url=$loginUrl } on-error={ :log warning "NAVSPOT: falha login-url" }
+:do { /ip hotspot profile set $hsprof dns-name=$dnsName } on-error={ :log warning "NAVSPOT: falha dns-name" }
 :do { /ip hotspot profile set $hsprof login-by=http-pap,http-chap } on-error={}
-:log info ("NAVSPOT: Hotspot profile configurado - " . $dnsName)
+:log info ("NAVSPOT: Profile config OK - " . $dnsName)
 :set processedCount ($processedCount + 1)
-}}}
+}
+}
+}
+} on-error={ :log warning "NAVSPOT: Erro configure_hotspot_profile" }
 }
 :if ($cmd = "create_profile") do={
+:do {
 :local p2 [:find $rest "|"]
 :if ($p2 >= 0) do={
 :local pName [:pick $rest 0 $p2]
@@ -585,28 +598,32 @@ function generateActionProcessorSource(): string {
 :local pShared "1"
 :if ($p3 >= 0) do={
 :set pRate [:pick $sub 0 $p3]
-:local sub2 [:pick $sub ($p3 + 1) [:len $sub]]
-:local p4 [:find $sub2 "|"]
-:if ($p4 >= 0) do={ :set pShared [:pick $sub2 0 $p4] } else={ :set pShared $sub2 }
-} else={ :set pRate $sub }
+:set pShared [:pick $sub ($p3 + 1) [:len $sub]]
+} else={
+:set pRate $sub
+}
 :local existing [/ip hotspot user profile find name=$pName]
 :if ([:len $existing] = 0) do={
 :if ([:len $pRate] > 0) do={
-/ip hotspot user profile add name=$pName rate-limit=$pRate shared-users=$pShared
+:do { /ip hotspot user profile add name=$pName rate-limit=$pRate shared-users=$pShared } on-error={}
 } else={
-/ip hotspot user profile add name=$pName shared-users=$pShared
+:do { /ip hotspot user profile add name=$pName shared-users=$pShared } on-error={}
 }
 :log info ("NAVSPOT: Perfil criado - " . $pName)
 :set processedCount ($processedCount + 1)
 } else={
 :if ([:len $pRate] > 0) do={
-/ip hotspot user profile set $existing rate-limit=$pRate shared-users=$pShared
+:do { /ip hotspot user profile set $existing rate-limit=$pRate shared-users=$pShared } on-error={}
 } else={
-/ip hotspot user profile set $existing shared-users=$pShared
+:do { /ip hotspot user profile set $existing shared-users=$pShared } on-error={}
 }
-}}}
+}
+}
+}
+} on-error={ :log warning "NAVSPOT: Erro create_profile" }
 }
 :if ($cmd = "create_user") do={
+:do {
 :local p2 [:find $rest "|"]
 :if ($p2 >= 0) do={
 :local uName [:pick $rest 0 $p2]
@@ -618,14 +635,18 @@ function generateActionProcessorSource(): string {
 :if ($p3 >= 0) do={
 :set uPass [:pick $sub 0 $p3]
 :set uProf [:pick $sub ($p3 + 1) [:len $sub]]
-} else={ :set uPass $sub }
+} else={
+:set uPass $sub
+}
 :if ([:len $uProf] = 0) do={ :set uProf "default" }
 :local profExists [/ip hotspot user profile find name=$uProf]
-:if ([:len $profExists] = 0) do={ /ip hotspot user profile add name=$uProf }
+:if ([:len $profExists] = 0) do={
+:do { /ip hotspot user profile add name=$uProf } on-error={}
+}
 :local existing [/ip hotspot user find name=$uName]
 :if ([:len $existing] = 0) do={
 :if ([:len $uPass] > 0) do={
-/ip hotspot user add name=$uName password=$uPass profile=$uProf comment="navspot-sync"
+:do { /ip hotspot user add name=$uName password=$uPass profile=$uProf comment="navspot-sync" } on-error={}
 :log info ("NAVSPOT: Usuario criado - " . $uName)
 :set processedCount ($processedCount + 1)
 } else={
@@ -633,69 +654,95 @@ function generateActionProcessorSource(): string {
 }
 } else={
 :if ([:len $uPass] > 0) do={
-/ip hotspot user set $existing password=$uPass profile=$uProf
+:do { /ip hotspot user set $existing password=$uPass profile=$uProf } on-error={}
 } else={
-/ip hotspot user set $existing profile=$uProf
+:do { /ip hotspot user set $existing profile=$uProf } on-error={}
 }
-}}}
+}
+}
+}
+} on-error={ :log warning "NAVSPOT: Erro create_user" }
 }
 :if ($cmd = "remove_user") do={
+:do {
 :if ([:len $rest] > 0) do={
 :local existing [/ip hotspot user find name=$rest]
 :if ([:len $existing] > 0) do={
-/ip hotspot user remove $existing
+:do { /ip hotspot user remove $existing } on-error={}
 :log info ("NAVSPOT: Usuario removido - " . $rest)
 :set processedCount ($processedCount + 1)
-}}
+}
+}
+} on-error={ :log warning "NAVSPOT: Erro remove_user" }
 }
 :if ($cmd = "create_whitelist_domain") do={
+:do {
 :local p2 [:find $rest "|"]
 :if ($p2 >= 0) do={
 :local domain [:pick $rest ($p2 + 1) [:len $rest]]
 :if ([:len $domain] > 0) do={
-:local wgExists [/ip hotspot walled-garden find where dst-host~$domain comment~"navspot"]
-:if ([:len $wgExists] = 0) do={
-:do { /ip hotspot walled-garden add dst-host=("*" . $domain . "*") action=allow comment="navspot-whitelist" } on-error={}
+:local dstHost ("*" . $domain . "*")
+:do { /ip hotspot walled-garden add dst-host=$dstHost action=allow comment="navspot-whitelist" } on-error={}
+:log info ("NAVSPOT: Whitelist adicionado - " . $domain)
 :set processedCount ($processedCount + 1)
-}}}
+}
+}
+} on-error={ :log warning "NAVSPOT: Erro create_whitelist_domain" }
 }
 :if ($cmd = "create_blacklist_domain") do={
+:do {
 :local p2 [:find $rest "|"]
 :if ($p2 >= 0) do={
 :local domain [:pick $rest ($p2 + 1) [:len $rest]]
 :if ([:len $domain] > 0) do={
-:local wgExists [/ip hotspot walled-garden find where dst-host~$domain comment~"navspot"]
-:if ([:len $wgExists] = 0) do={
-:do { /ip hotspot walled-garden add dst-host=("*" . $domain . "*") action=deny comment="navspot-blacklist" } on-error={}
+:local dstHost ("*" . $domain . "*")
+:do { /ip hotspot walled-garden add dst-host=$dstHost action=deny comment="navspot-blacklist" } on-error={}
+:log info ("NAVSPOT: Blacklist adicionado - " . $domain)
 :set processedCount ($processedCount + 1)
-}}}
+}
+}
+} on-error={ :log warning "NAVSPOT: Erro create_blacklist_domain" }
 }
 :if ($cmd = "disable_user") do={
+:do {
 :if ([:len $rest] > 0) do={
 :do { /ip hotspot user set [find name=$rest] disabled=yes } on-error={}
-}}
+}
+} on-error={}
+}
 :if ($cmd = "enable_user") do={
+:do {
 :if ([:len $rest] > 0) do={
 :do { /ip hotspot user set [find name=$rest] disabled=no } on-error={}
-}}
+}
+} on-error={}
+}
 :if ($cmd = "kick_session") do={
+:do {
 :local p2 [:find $rest "|"]
 :if ($p2 >= 0) do={
 :local kMac [:pick $rest ($p2 + 1) [:len $rest]]
 :if ([:len $kMac] > 0) do={
 :do { /ip hotspot active remove [find mac-address=$kMac] } on-error={}
-}}}
+}
+}
+} on-error={}
+}
 :if ($cmd = "update_password") do={
+:do {
 :local p2 [:find $rest "|"]
 :if ($p2 >= 0) do={
 :local uName [:pick $rest 0 $p2]
 :local uPass [:pick $rest ($p2 + 1) [:len $rest]]
 :if (([:len $uName] > 0) && ([:len $uPass] > 0)) do={
 :do { /ip hotspot user set [find name=$uName] password=$uPass } on-error={}
-}}}
-}}
 }
-} on-error={ :log error "NAVSPOT-ACTION: Erro processamento"; :set navspotLock "0"; :return }
+}
+} on-error={}
+}
+}
+}
+}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION v${VERSION}: OK - " . $processedCount . " acoes")`
 }
