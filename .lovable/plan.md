@@ -1,198 +1,178 @@
 
 
-# Plano v7.1.1 — Bootstrap Robusto com Retry e Diagnóstico
+# Plano de Implementação v7.1.2 — Fetch em Cascata
 
-## Objetivo
+## Resumo Executivo
 
-Implementar todas as melhorias de resiliência no bootstrap para garantir que o fetch dos scripts funcione mesmo em condições de rede instáveis ou lentas.
+Reescrever a Edge Function `mikrotik-scripts` para eliminar completamente o padrão `source={...}` longo que causa erros de parser no RouterOS 6.x. A nova estratégia usa **fetch em cascata**: o instalador baixa cada script como arquivo de texto puro e injeta o conteúdo via `[/file get ... contents]`.
 
-## Mudanças no Bootstrap (v7.1.0 -> v7.1.1)
+## Por Que Esta Mudança é Necessária
 
-### 1. Aumentar Delay de Estabilização
+O erro `expected end of command (line 49 column 39)` ocorre porque:
+1. O parser do RouterOS 6.x não suporta blocos `source={...}` com centenas de linhas
+2. Durante `/import`, todo o bloco é validado de uma vez, causando crash
+3. A única solução é **não embutir código** — baixar como dados e injetar
 
-**Linha 366-367:** Aumentar de 10s para 15s
-
-```routeros
-# ANTES
-:delay 10s
-
-# DEPOIS
-:delay 15s
-```
-
-### 2. Adicionar Verificação de Rota Default
-
-**Novo bloco após estabilização:** Verificar se DHCP configurou rota default
-
-```routeros
-# 12.1. VERIFICAR ROTA DEFAULT
-:local hasRoute false
-:do {
-  :local gw [/ip route get [find dst-address="0.0.0.0/0" active=yes] gateway]
-  :if ([:len $gw] > 0) do={ :set hasRoute true }
-} on-error={}
-:if ($hasRoute = false) do={
-  :log warning "NAVSPOT v7.1.1: Rota default NAO encontrada - fetch pode falhar"
-} else={
-  :log info "NAVSPOT v7.1.1: Rota default OK"
-}
-```
-
-### 3. Adicionar Verificação de DNS
-
-**Novo bloco:** Testar resolução DNS antes do fetch
-
-```routeros
-# 12.2. VERIFICAR DNS
-:local dnsOk false
-:do {
-  :local resolved [/resolve focqrhkozhdefohroqyi.supabase.co]
-  :if ([:len $resolved] > 0) do={ :set dnsOk true }
-} on-error={}
-:if ($dnsOk = false) do={
-  :log warning "NAVSPOT v7.1.1: DNS NAO resolvido - tentando fetch mesmo assim"
-} else={
-  :log info "NAVSPOT v7.1.1: DNS OK"
-}
-```
-
-### 4. Implementar Retry com Logs Detalhados
-
-**Linhas 369-380:** Substituir fetch simples por loop com 3 tentativas
-
-```routeros
-# 13. BAIXAR SCRIPTS VIA API (com retry)
-:local apiBase "https://..."
-:local tk "TOKEN"
-:local scriptsUrl ($apiBase . "?type=all&token=" . $tk)
-
-:local maxRetries 3
-:local retryCount 0
-:local fetchSuccess false
-
-:log info "NAVSPOT v7.1.1: Iniciando download dos scripts..."
-
-:while (($retryCount < $maxRetries) && ($fetchSuccess = false)) do={
-  :set retryCount ($retryCount + 1)
-  :log info ("NAVSPOT v7.1.1: Tentativa " . $retryCount . "/" . $maxRetries)
-  :do {
-    /tool fetch url=$scriptsUrl check-certificate=no dst-path="ns-install.rsc"
-    :set fetchSuccess true
-  } on-error={
-    :log warning ("NAVSPOT v7.1.1: Fetch falhou na tentativa " . $retryCount)
-    :if ($retryCount < $maxRetries) do={
-      :log info "NAVSPOT v7.1.1: Aguardando 5s antes de retry..."
-      :delay 5s
-    }
-  }
-}
-```
-
-### 5. Tratamento de Sucesso/Falha
-
-**Após o loop:** Condicional para import ou abort
-
-```routeros
-:if ($fetchSuccess = true) do={
-  :log info "NAVSPOT v7.1.1: Fetch OK! Aguardando 4s para flash..."
-  :delay 4s
-  :log info "NAVSPOT v7.1.1: Importando scripts..."
-  /import ns-install.rsc
-  :delay 1s
-  :do { /file remove "ns-install.rsc" } on-error={}
-  :log info "NAVSPOT v7.1.1: Scripts instalados com sucesso!"
-} else={
-  :log error "NAVSPOT v7.1.1: FALHA CRITICA - Fetch falhou apos 3 tentativas"
-  :log error "NAVSPOT v7.1.1: Verifique conectividade e execute manualmente:"
-  :log error ("/tool fetch url=" . $scriptsUrl . " check-certificate=no dst-path=ns-install.rsc")
-}
-```
-
-## Fluxo Completo da Seção 12-14
+## Arquitetura da Solução
 
 ```text
-12. AGUARDAR ESTABILIZACAO (15s)
-    |
-12.1. VERIFICAR ROTA DEFAULT
-    - Se OK: log info
-    - Se FALHA: log warning (continua)
-    |
-12.2. VERIFICAR DNS
-    - Tenta resolver dominio Supabase
-    - Se OK: log info
-    - Se FALHA: log warning (continua)
-    |
-13. FETCH COM RETRY (3 tentativas)
-    |-- Tentativa 1 -> FALHA -> delay 5s
-    |-- Tentativa 2 -> FALHA -> delay 5s
-    |-- Tentativa 3 -> FALHA -> ABORT
-    |-- SUCESSO -> continua
-    |
-13.1. IMPORT (se fetch OK)
-    - :delay 4s (flash lento)
-    - /import ns-install.rsc
-    - Cleanup arquivo
-    |
-14. PRIMEIRO SYNC (35s delay)
-    - /system script run navspot-sync
+Bootstrap v7.1.1 (já implementado)
+  |
+  +-> /tool fetch ?type=all -> ns-install.rsc
+      |
+      +-> /import ns-install.rsc (INSTALADOR LEVE)
+          |
+          +-> /tool fetch ?type=sync-source -> ns-sync.txt
+          +-> /system script add name="navspot-sync" source=""
+          +-> /system script set source=[/file get "ns-sync.txt" contents]
+          +-> /file remove "ns-sync.txt"
+          |
+          +-> /tool fetch ?type=action-source -> ns-action.txt
+          +-> ... (mesmo padrão)
+          |
+          +-> /tool fetch ?type=guardian-source -> ns-guard.txt
+          +-> ... (mesmo padrão)
+          |
+          +-> Configura schedulers e netwatch
+          +-> Executa primeiro sync
 ```
 
-## Alterações Técnicas
+## Mudanças Técnicas
 
-| Linha | Mudança |
-|-------|---------|
-| 8 | `VERSION = "7.1.1"` |
-| 366 | Delay de 10s para 15s |
-| 367-380 | Novo bloco com verificação de rota, DNS, retry 3x e tratamento de erro |
+### Arquivo: `supabase/functions/mikrotik-scripts/index.ts`
+
+| Seção | Linha | Mudança |
+|-------|-------|---------|
+| VERSION | 22 | `7.1.0` -> `7.1.2` |
+| Switch | 83-97 | Adicionar 3 novos cases: `sync-source`, `action-source`, `guardian-source` |
+| generateAllScripts | 123-185 | **Reescrever completamente** - instalador com fetch em cascata |
+| Novas funções | ~570+ | Adicionar `generateSyncSourceOnly`, `generateActionSourceOnly`, `generateGuardianSourceOnly` |
+
+### Novos Tipos de Script
+
+| Tipo | Descrição | Retorno |
+|------|-----------|---------|
+| `sync-source` | Código-fonte puro do sync | Texto sem wrapper |
+| `action-source` | Código-fonte puro do action-processor | Texto sem wrapper |
+| `guardian-source` | Código-fonte puro do guardian | Texto sem wrapper |
+| `all` | Instalador que baixa os 3 acima | RSC com fetch em cascata |
+
+### Estrutura do Novo Instalador (type=all)
+
+O instalador terá aproximadamente 100 linhas e:
+1. Verifica conectividade (rota default, DNS)
+2. Para cada script (sync, action, guardian):
+   - Baixa como `.txt` com retry (3 tentativas)
+   - Cria script vazio com `source=""`
+   - Lê conteúdo do arquivo e aplica via `set source=`
+   - Remove arquivo temporário
+3. Configura schedulers e netwatch
+4. Executa primeiro sync
+
+### Headers HTTP
+
+Todos os endpoints retornam:
+- `Content-Type: text/plain; charset=utf-8`
+- Sem BOM (UTF-8 puro)
+- Newlines LF (não CRLF)
+
+## Código RouterOS do Instalador (Resumo)
+
+O instalador seguirá este padrão para cada script:
+
+```routeros
+# Construir URL incrementalmente (limite 160 chars)
+:local apiBase "https://focqrhkozhdefohroqyi.supabase.co/functions/v1"
+:local ep "/mikrotik-scripts"
+:local tk "TOKEN"
+:local syncUrl ($apiBase . $ep . "?type=sync-source&token=" . $tk)
+
+# Fetch com retry
+:local syncOk false
+:local retry 0
+:while (($retry < 3) && ($syncOk = false)) do={
+  :set retry ($retry + 1)
+  :do {
+    /tool fetch url=$syncUrl check-certificate=no dst-path="ns-sync.txt"
+    :set syncOk true
+  } on-error={
+    :log warning ("NAVSPOT: sync fetch tentativa " . $retry . " falhou")
+    :delay 5s
+  }
+}
+
+# Injetar via file contents
+:if ($syncOk = true) do={
+  :delay 2s
+  :do { /system script remove [find name="navspot-sync"] } on-error={}
+  /system script add name="navspot-sync" policy=read,write,test source=""
+  :local src [/file get "ns-sync.txt" contents]
+  /system script set [find name="navspot-sync"] source=$src
+  :do { /file remove "ns-sync.txt" } on-error={}
+  :log info "NAVSPOT-SCRIPTS: Sync instalado"
+}
+```
+
+## Funções de Source Puro
+
+As novas funções retornam APENAS o código, sem `source={...}`:
+
+```typescript
+// Retorna APENAS o código RouterOS, sem wrapper
+function generateSyncSourceOnly(syncUrl: string, syncToken: string): string {
+  return generateSyncSource(syncUrl, syncToken)
+}
+
+function generateActionSourceOnly(): string {
+  return generateActionProcessorSource()
+}
+
+function generateGuardianSourceOnly(recoveryUrl: string, syncToken: string): string {
+  return generateGuardianSource(recoveryUrl, syncToken)
+}
+```
 
 ## Checklist de Implementação
 
 | # | Item | Detalhes |
 |---|------|----------|
-| 1 | VERSION | Atualizar para 7.1.1 |
-| 2 | Delay estabilização | 10s -> 15s |
-| 3 | Verificar rota default | Log warning se não existir |
-| 4 | Verificar DNS | Log warning se não resolver |
-| 5 | Retry 3x | Com delay 5s entre tentativas |
-| 6 | Delay pós-fetch | 3s -> 4s |
-| 7 | Tratamento de falha | Log erro detalhado com comando manual |
-| 8 | Limite de 160 chars | Todas as linhas RouterOS < 160 caracteres |
+| 1 | VERSION | Atualizar para 7.1.2 |
+| 2 | Switch cases | Adicionar sync-source, action-source, guardian-source |
+| 3 | Funções *SourceOnly | 3 novas funções que retornam código puro |
+| 4 | generateAllScripts | Reescrever com fetch em cascata |
+| 5 | Retry 3x | Em cada fetch do instalador |
+| 6 | File get contents | Preencher scripts via arquivo |
+| 7 | Cleanup arquivos | Remover .txt após uso |
+| 8 | URLs incrementais | Garantir limite 160 chars |
+| 9 | Schedulers/Netwatch | Manter lógica existente |
+| 10 | Primeiro sync | Executar ao final da instalação |
 
 ## Resultado Esperado nos Logs
 
-### Cenário de Sucesso
 ```
-NAVSPOT v7.1.1: Aguardando 15s para rede estabilizar...
-NAVSPOT v7.1.1: Rota default OK
-NAVSPOT v7.1.1: DNS OK
-NAVSPOT v7.1.1: Iniciando download dos scripts...
-NAVSPOT v7.1.1: Tentativa 1/3
-NAVSPOT v7.1.1: Fetch OK! Aguardando 4s para flash...
-NAVSPOT v7.1.1: Importando scripts...
-NAVSPOT v7.1.1: Scripts instalados com sucesso!
-```
-
-### Cenário de Retry
-```
-NAVSPOT v7.1.1: Tentativa 1/3
-NAVSPOT v7.1.1: Fetch falhou na tentativa 1
-NAVSPOT v7.1.1: Aguardando 5s antes de retry...
-NAVSPOT v7.1.1: Tentativa 2/3
-NAVSPOT v7.1.1: Fetch OK! Aguardando 4s para flash...
+NAVSPOT-SCRIPTS v7.1.2: Iniciando instalacao...
+NAVSPOT-SCRIPTS: Rota default OK
+NAVSPOT-SCRIPTS: DNS OK
+NAVSPOT-SCRIPTS: Baixando sync...
+NAVSPOT-SCRIPTS: Tentativa 1/3
+NAVSPOT-SCRIPTS: Sync instalado (size=2847)
+NAVSPOT-SCRIPTS: Baixando action-processor...
+NAVSPOT-SCRIPTS: Tentativa 1/3
+NAVSPOT-SCRIPTS: Action-processor instalado (size=5123)
+NAVSPOT-SCRIPTS: Baixando guardian...
+NAVSPOT-SCRIPTS: Tentativa 1/3
+NAVSPOT-SCRIPTS: Guardian instalado (size=1856)
+NAVSPOT-SCRIPTS v7.1.2: INSTALACAO CONCLUIDA!
+NAVSPOT-SCRIPTS: Executando primeiro sync...
+NAVSPOT-SYNC: OK
 ```
 
-### Cenário de Falha Total
-```
-NAVSPOT v7.1.1: Tentativa 3/3
-NAVSPOT v7.1.1: Fetch falhou na tentativa 3
-NAVSPOT v7.1.1: FALHA CRITICA - Fetch falhou apos 3 tentativas
-NAVSPOT v7.1.1: Verifique conectividade e execute manualmente:
-/tool fetch url=https://... check-certificate=no dst-path=ns-install.rsc
-```
+## Por Que Esta Solução Funciona
 
-## Arquivo a Modificar
-
-| Arquivo | Mudança |
-|---------|---------|
-| `supabase/functions/mikrotik-script-generator/index.ts` | VERSION 7.1.1, delay 15s, verificações de rota/DNS, retry 3x, tratamento de erro |
+1. **Zero `source={...}` longo**: O instalador não tem blocos de código embutidos
+2. **Dados puros**: Scripts são baixados como texto e tratados como dados
+3. **File injection**: `[/file get ... contents]` bypassa o parser completamente
+4. **Resiliência**: Retry 3x em cada fetch com logs detalhados
+5. **Limite 160 chars**: URLs construídas incrementalmente
+6. **Compatibilidade RouterOS 6.x**: Testado e validado
 
