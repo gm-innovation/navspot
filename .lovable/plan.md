@@ -1,236 +1,207 @@
 
-# Correção v7.1.13: Sintaxe RouterOS 6.x Rigorosa
+# Correção v7.1.14: Quebra de Linha para `source="..."` no RouterOS 6.x
 
-## Problemas Identificados no Código Atual
+## Diagnóstico Confirmado
 
-### 1) Comandos `/` sem prefixo `:do` em contextos de bloco
+O script `navspot-action-processor` está marcado como **Invalid (I)** porque o arquivo RSC gerado contém uma única linha gigantesca:
 
-Em RouterOS 6.x, comandos que começam com `/` (como `/ip hotspot user profile add`) dentro de blocos `do={...}` precisam estar encapsulados em `:do { ... } on-error={}` ou ser precedidos por `:` quando são statements simples.
-
-**Linhas problemáticas:**
-- Linha 595: `/ip hotspot user profile add name=$pName rate-limit=$pRate shared-users=$pShared`
-- Linha 597: `/ip hotspot user profile add name=$pName shared-users=$pShared`
-- Linha 603-605: `/ip hotspot user profile set $existing ...`
-- Linha 624: `/ip hotspot user profile add name=$uProf`
-- Linha 628: `/ip hotspot user add name=$uName ...`
-- Linha 636-638: `/ip hotspot user set $existing ...`
-- Linha 646: `/ip hotspot user remove $existing`
-
-### 2) Lock `navspotLock` não liberado em todos os caminhos
-
-O bloco `on-error` na linha 698 libera o lock, mas se houver erro em sub-blocos internos (ex: dentro de `:if ($cmd = "create_profile")`), o fluxo pode continuar sem liberar o lock corretamente.
-
-### 3) Uso do operador `~` (regex) no `find where`
-
-Linhas 656 e 667:
 ```routeros
-:local wgExists [/ip hotspot walled-garden find where dst-host~$domain comment~"navspot"]
+/system script add name="navspot-action-processor" policy=read,write,test source="<3000+ chars escapados em uma linha>"
 ```
 
-O operador `~` em RouterOS 6.x requer que o padrão regex esteja entre aspas. Além disso, múltiplas condições `where` precisam de `and` explícito:
-```routeros
-# ERRADO
-find where dst-host~$domain comment~"navspot"
+O RouterOS 6.x tem limitações no parser de `/import`:
+- Limite de ~4096 bytes por linha/comando
+- Truncamento silencioso de strings muito longas em source="..."
+- O script é salvo incompleto → braces/comandos cortados → **Invalid**
 
-# CORRETO
-find where dst-host~(".*" . $domain . ".*") and comment~"navspot"
+## Solução: Quebra de Linha com Continuação `\`
+
+O RouterOS aceita continuação de linha com `\` no final (dentro das aspas), exatamente como faz o comando `/export`:
+
+```routeros
+/system script add name="test" source="linha1\
+linha2\
+linha3"
 ```
 
-### 4) Sintaxe `("" . $var)` dentro de propriedades com `=`
+Isso mantém o valor final do `source` idêntico, mas evita limites do `/import`.
 
-A sintaxe `login-url=("" . $loginUrl)` pode não funcionar em todos os contextos do RouterOS 6.x. O mais seguro é fazer em duas etapas:
-```routeros
-:local urlValue ("" . $loginUrl)
-/ip hotspot profile set $hsprof login-url=$urlValue
-```
+## Implementação Técnica
 
-## Plano de Correção v7.1.13
+### 1) Criar helper `wrapSourceWithContinuation()`
 
-### Princípios RouterOS 6.x
+Adicionar função em `supabase/functions/mikrotik-scripts/index.ts`:
 
-1. **Todos os comandos dentro de `do={...}` devem começar com `:`**
-   - Usar `:do { /comando } on-error={}` para comandos `/`
-   
-2. **Separação explícita com `;`**
-   - Múltiplos statements no mesmo bloco: `do={ :cmd1; :cmd2; :cmd3 }`
-
-3. **Lock liberado em TODOS os caminhos**
-   - Inclusive após erros em sub-blocos
-
-4. **Variáveis intermediárias para valores complexos**
-   - Evitar expressões inline em propriedades
-
-### Mudanças Técnicas
-
-#### Arquivo: `supabase/functions/mikrotik-scripts/index.ts`
-
-**1) Refatorar `generateActionProcessorSource()` completamente**
-
-Estrutura corrigida:
-
-```routeros
-:log info "NAVSPOT-ACTION v7.1.13: Start"
-:global navspotLock
-:if ($navspotLock = "1") do={ :log info "NAVSPOT-ACTION: lock ativo"; :return }
-:set navspotLock "1"
-
-:local fid [/file find name="navspot-actions.txt"]
-:if ([:len $fid] = 0) do={ 
-  :set navspotLock "0"
-  :log warning "NAVSPOT-ACTION: Arquivo nao encontrado"
-  :return 
-}
-
-:local rawData ""
-:do { 
-  :set rawData [/file get $fid contents] 
-} on-error={ 
-  :log error "NAVSPOT-ACTION: Erro leitura"
-  :set navspotLock "0"
-  :return 
-}
-
-:log info ("NAVSPOT-ACTION: len=" . [:len $rawData])
-:do { /file remove $fid } on-error={}
-
-:if ([:len $rawData] = 0) do={ 
-  :set navspotLock "0"
-  :log info "NAVSPOT-ACTION: Nenhuma acao pendente"
-  :return 
-}
-
-:local pos 0
-:local processedCount 0
-
-:while ([:find $rawData ";" $pos] >= 0) do={
-  :local endPos [:find $rawData ";" $pos]
-  :local line [:pick $rawData $pos $endPos]
-  :set pos ($endPos + 1)
+```typescript
+/**
+ * Wrap a RouterOS source string with line continuation for long content
+ * RouterOS supports \ at end of line (inside quotes) for multi-line strings
+ * Max chunk ~120 chars to stay safely under 160 char line limit
+ */
+function wrapSourceWithContinuation(escapedSource: string, maxChunk = 120): string {
+  if (escapedSource.length <= maxChunk) {
+    return `"${escapedSource}"`
+  }
   
-  :if ([:len $line] > 0) do={
-    :local p1 [:find $line "|"]
-    :if ($p1 >= 0) do={
-      :local cmd [:pick $line 0 $p1]
-      :local rest [:pick $line ($p1 + 1) [:len $line]]
-      
-      # configure_hotspot_profile handler
-      :if ($cmd = "configure_hotspot_profile") do={
-        :do {
-          :local p2 [:find $rest "|"]
-          :if ($p2 >= 0) do={
-            :local loginUrl [:pick $rest 0 $p2]
-            :local dnsName [:pick $rest ($p2 + 1) [:len $rest]]
-            :if (([:len $loginUrl] > 0) && ([:len $dnsName] > 0)) do={
-              :local hsprof [/ip hotspot profile find name="hsprof-navspot"]
-              :if ([:len $hsprof] > 0) do={
-                :do { /ip hotspot profile set $hsprof login-url=$loginUrl } on-error={ :log warning "NAVSPOT: falha login-url" }
-                :do { /ip hotspot profile set $hsprof dns-name=$dnsName } on-error={ :log warning "NAVSPOT: falha dns-name" }
-                :do { /ip hotspot profile set $hsprof login-by=http-pap,http-chap } on-error={}
-                :log info ("NAVSPOT: Profile config OK - " . $dnsName)
-                :set processedCount ($processedCount + 1)
-              }
-            }
-          }
-        } on-error={ :log warning "NAVSPOT: Erro configure_hotspot_profile" }
-      }
-      
-      # create_profile handler
-      :if ($cmd = "create_profile") do={
-        :do {
-          :local p2 [:find $rest "|"]
-          :if ($p2 >= 0) do={
-            :local pName [:pick $rest 0 $p2]
-            :if ([:len $pName] > 0) do={
-              :local sub [:pick $rest ($p2 + 1) [:len $rest]]
-              :local p3 [:find $sub "|"]
-              :local pRate ""
-              :local pShared "1"
-              :if ($p3 >= 0) do={
-                :set pRate [:pick $sub 0 $p3]
-                :set pShared [:pick $sub ($p3 + 1) [:len $sub]]
-              } else={
-                :set pRate $sub
-              }
-              :local existing [/ip hotspot user profile find name=$pName]
-              :if ([:len $existing] = 0) do={
-                :if ([:len $pRate] > 0) do={
-                  :do { /ip hotspot user profile add name=$pName rate-limit=$pRate shared-users=$pShared } on-error={}
-                } else={
-                  :do { /ip hotspot user profile add name=$pName shared-users=$pShared } on-error={}
-                }
-                :log info ("NAVSPOT: Perfil criado - " . $pName)
-                :set processedCount ($processedCount + 1)
-              } else={
-                :if ([:len $pRate] > 0) do={
-                  :do { /ip hotspot user profile set $existing rate-limit=$pRate shared-users=$pShared } on-error={}
-                } else={
-                  :do { /ip hotspot user profile set $existing shared-users=$pShared } on-error={}
-                }
-              }
-            }
-          }
-        } on-error={ :log warning "NAVSPOT: Erro create_profile" }
-      }
-      
-      # ... (demais handlers com mesma estrutura)
+  const chunks: string[] = []
+  let remaining = escapedSource
+  
+  while (remaining.length > 0) {
+    let chunkSize = Math.min(maxChunk, remaining.length)
+    
+    // Don't break on a backslash (would create \\\ at line end)
+    while (chunkSize > 1 && remaining[chunkSize - 1] === '\\') {
+      chunkSize--
+    }
+    
+    const chunk = remaining.substring(0, chunkSize)
+    remaining = remaining.substring(chunkSize)
+    chunks.push(chunk)
+  }
+  
+  // Join with \ continuation: "chunk1\
+  // chunk2\
+  // chunk3"
+  if (chunks.length === 1) {
+    return `"${chunks[0]}"`
+  }
+  
+  return '"' + chunks.join('\\\n') + '"'
+}
+```
+
+### 2) Atualizar funções RSC para usar o helper
+
+Modificar `generateSyncRSC()`, `generateActionProcessorRSC()`, e `generateGuardianRSC()`:
+
+```typescript
+function generateActionProcessorRSC(): string {
+  const source = generateActionProcessorSource()
+  const escapedSource = escapeForSourceQuotes(source)
+  const wrappedSource = wrapSourceWithContinuation(escapedSource)
+  
+  return `# NAVSPOT Action Processor v${VERSION} - RSC for /import
+:do { /system script remove [find where name="navspot-action-processor"] } on-error={}
+/system script add name="navspot-action-processor" policy=read,write,test source=${wrappedSource}
+:log info "NAVSPOT: Action-processor v${VERSION} instalado"
+`
+}
+```
+
+### 3) Melhorar log de resposta inválida no `navspot-sync`
+
+Atualizar `generateSyncSource()` para incluir diagnóstico:
+
+```routeros
+# Antes (linha ~506):
+:log warning "NAVSPOT-SYNC: Resposta invalida (sem marcadores [[]])"
+
+# Depois:
+:local respPrefix ""
+:if ([:len $resp] > 80) do={
+  :set respPrefix [:pick $resp 0 80]
+} else={
+  :set respPrefix $resp
+}
+:log warning ("NAVSPOT-SYNC: Resposta invalida (prefix=" . $respPrefix . ")")
+```
+
+### 4) Padronizar `find where` (baixo risco)
+
+Atualizar comandos críticos para usar `find where name=` em vez de `find name=`:
+
+```routeros
+# Antes:
+:local fid [/file find name="navspot-actions.txt"]
+
+# Depois:
+:local fid [/file find where name="navspot-actions.txt"]
+```
+
+### 5) Validação automática no backend
+
+Adicionar verificação após gerar o RSC:
+
+```typescript
+function validateRSCLineLength(rsc: string, maxLength = 160): void {
+  const lines = rsc.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].length > maxLength && !lines[i].trim().startsWith('#')) {
+      console.warn(`[mikrotik-scripts] Line ${i+1} exceeds ${maxLength} chars: ${lines[i].length}`)
     }
   }
 }
-
-:set navspotLock "0"
-:log info ("NAVSPOT-ACTION v7.1.13: OK - " . $processedCount . " acoes")
 ```
 
-**2) Simplificar walled-garden find (remover operador ~)**
+### 6) Version bump para 7.1.14
 
-O operador `~` pode causar problemas. Usar busca exata com wildcard no dst-host:
+Atualizar em todos os arquivos:
+- `supabase/functions/mikrotik-scripts/index.ts`: `VERSION = "7.1.14"`
+- `supabase/functions/mikrotik-script-generator/index.ts`: `VERSION = "7.1.14"`
+- `src/components/modals/ScriptModal.tsx`: `scriptVersion="7.1.14"`
+- `src/pages/Embarcacoes.tsx`: `currentScriptVersion="7.1.14"`
+
+## Exemplo de RSC Gerado (v7.1.14)
 
 ```routeros
-# Ao invés de find where dst-host~$domain
-# Usar: buscar todos e filtrar manualmente, ou aceitar duplicatas com :do { add } on-error={}
+# NAVSPOT Action Processor v7.1.14 - RSC for /import
+:do { /system script remove [find where name="navspot-action-processor"] } on-error={}
+/system script add name="navspot-action-processor" policy=read,write,test source=":log info \"NAVSPOT-ACTION v7.1.14: Start\"\
+\\r\\n:global navspotLock\
+\\r\\n:if (\$navspotLock = \"1\") do={ :log info \"NAVSPOT-ACTION: lock ativo\"; :return }\
+\\r\\n:set navspotLock \"1\"\
+... (continua em múltiplas linhas de ~120 chars cada)"
+:log info "NAVSPOT: Action-processor v7.1.14 instalado"
 ```
 
-Como o `add` com `:do { } on-error={}` é idempotente na prática (erro se já existe), podemos simplificar:
-
-```routeros
-:if ($cmd = "create_whitelist_domain") do={
-  :do {
-    :local p2 [:find $rest "|"]
-    :if ($p2 >= 0) do={
-      :local domain [:pick $rest ($p2 + 1) [:len $rest]]
-      :if ([:len $domain] > 0) do={
-        :local dstHost ("*" . $domain . "*")
-        :do { /ip hotspot walled-garden add dst-host=$dstHost action=allow comment="navspot-whitelist" } on-error={}
-        :set processedCount ($processedCount + 1)
-      }
-    }
-  } on-error={ :log warning "NAVSPOT: Erro create_whitelist_domain" }
-}
-```
-
-**3) Bump versão para 7.1.13**
-
-### Arquivos Alterados
+## Arquivos Alterados
 
 | Arquivo | Mudança |
 |---------|---------|
-| `supabase/functions/mikrotik-scripts/index.ts` | Refatorar `generateActionProcessorSource()` com sintaxe rigorosa |
-| `supabase/functions/mikrotik-script-generator/index.ts` | Bump VERSION para 7.1.13 |
-| `src/components/modals/ScriptModal.tsx` | Bump scriptVersion para 7.1.13 |
-| `src/pages/Embarcacoes.tsx` | Bump currentScriptVersion para 7.1.13 |
+| `supabase/functions/mikrotik-scripts/index.ts` | + helper `wrapSourceWithContinuation()`, atualizar RSC generators, melhorar log sync, padronizar `find where`, bump 7.1.14 |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Bump VERSION 7.1.14 |
+| `src/components/modals/ScriptModal.tsx` | Bump scriptVersion 7.1.14 |
+| `src/pages/Embarcacoes.tsx` | Bump currentScriptVersion 7.1.14 |
 
-### Checklist de Sintaxe RouterOS 6.x
+## Checklist de Testes
 
-- [ ] Todo comando `/` encapsulado em `:do { } on-error={}`
-- [ ] Todo statement em bloco separado por `;` ou quebra de linha
-- [ ] Lock `navspotLock` liberado em TODOS os caminhos (início de cada handler com on-error)
-- [ ] Sem operador `~` em contextos problemáticos
-- [ ] Variáveis usadas diretamente (sem `("" . $var)`)
-- [ ] Logs em todos os handlers
+1. **Testar helper com strings variadas**:
+   - String curta (<120 chars) → sem quebra
+   - String longa (3000+ chars) → múltiplas linhas de ~120
+   - String com `\` no meio → não quebrar em cima de `\`
 
-### Validação no MikroTik
+2. **Validar RSC antes do deploy**:
+   - Nenhuma linha não-comentário >160 chars
+   - Estrutura de continuação `\` correta
 
-1. Gerar e importar v7.1.13
-2. Verificar: `/system script print where name="navspot-action-processor"` (sem flag I)
-3. Rodar: `/system script run navspot-action-processor`
-4. Logs: `/log print where message~"NAVSPOT-ACTION"`
+3. **Testar /import no RouterOS 6.49.x**:
+   - `/import navspot-bootstrap-v7.1.14.rsc`
+   - `/system script print where name="navspot-action-processor"` → sem flag **I**
+
+4. **Monitorar logs**:
+   - `/log print where message~"NAVSPOT-ACTION"`
+   - Esperado: `NAVSPOT-ACTION v7.1.14: Start` e `OK`
+
+5. **Testar resposta inválida (diagnóstico)**:
+   - Simular erro de rede e verificar se log mostra prefixo da resposta
+
+## Validação no MikroTik
+
+```routeros
+# 1. Importar bootstrap
+/import navspot-bootstrap-v7.1.14.rsc
+
+# 2. Verificar script válido (sem flag I)
+/system script print where name="navspot-action-processor"
+
+# 3. Rodar manualmente
+/system script run navspot-action-processor
+
+# 4. Verificar logs
+/log print where message~"NAVSPOT-ACTION"
+# Esperado: "NAVSPOT-ACTION v7.1.14: Start" + "OK" ou "Nenhuma acao pendente"
+
+# 5. Testar sync completo
+/system script run navspot-sync
+/log print where message~"NAVSPOT"
+```
