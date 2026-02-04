@@ -1,203 +1,243 @@
 
 
-# Revisão Completa v6.9.40 — Checklist Crítico de Erros RouterOS
+# Correção v6.9.41 — Escape `\$()` Inválido em Strings
 
-## Problemas Identificados na Revisão
+## Problema Identificado
 
-Após análise detalhada aplicando sua lista de orientações, encontrei **5 problemas críticos** que explicam o erro "syntax error (line 117 column 8)":
+O erro **"expected end of command (line 123 column 39)"** ocorre porque:
 
----
-
-### PROBLEMA 1: Variáveis locais com underscore (`_hsprof`)
-
-**Localização:**
-- `mikrotik-script-generator/index.ts` linhas 842-850
-- `mikrotik-recovery-download/index.ts` linhas 774-782
-
-**Código problemático:**
 ```routeros
-:local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
-:do { /ip hotspot profile set $_hsprof dns-name="${dnsName}" } on-error={}
+:local urlVars1 "&mac=\$(mac)"
 ```
 
-**Problema:** O RouterOS 6.x pode ter problemas com identificadores de variável começando com `_` durante `/import`. A coluna 8 do erro aponta exatamente para o `_` em `:local _hsprof`.
+O caractere **`\$`** dentro de aspas duplas **não é válido** no RouterOS 6.x durante `/import`. A coluna 39 aponta exatamente para o `(` após `\$`, indicando que o parser não reconhece esse escape.
 
-**Correção:** Renomear `_hsprof` para `hsprof` (sem underscore).
+### Por que funciona em alguns contextos mas não em `/import`?
+- No terminal interativo, certos escapes funcionam
+- Durante `/import` de arquivo `.rsc`, o parser é mais restritivo
+- O `\$` não é um escape válido em strings; RouterOS espera `\n`, `\t`, `\r`, `\"`, etc.
 
 ---
 
-### PROBLEMA 2: Linter não bloqueia `:local _...` 
+## Solução: Construir a URL Sem Escape Inválido
 
-**Localização:**
-- `mikrotik-script-generator/index.ts` linha 108
-- `mikrotik-recovery-download/index.ts` linha 107
+### Abordagem A: Concatenação Pura (RECOMENDADA)
 
-**Código atual:**
-```typescript
-{ regex: /\\\$(?:urlBase|fullUrl|_hsprof|urlVars[123])/, desc: 'Escaped local variable...' },
+Em vez de colocar `\$(mac)` dentro de uma string, concatenamos as partes:
+
+```routeros
+# ANTES (quebra):
+:local urlVars1 "&mac=\$(mac)"
+
+# DEPOIS (funciona):
+:local dSign "\$"
+:local urlVars1 ("&mac=" . $dSign . "(mac)")
 ```
 
-**Problema:** Essa regra apenas bloqueia se a variável estiver **escapada** (`\$_hsprof`), mas não impede a criação de `:local _hsprof` que é o problema real.
+Assim, o `$` literal é armazenado em uma variável e concatenado, evitando qualquer problema de escape.
 
-**Correção:** Adicionar regra para bloquear qualquer `:local _...`:
-```typescript
-{ regex: /^:local\s+_/m, desc: 'Local var starts with underscore (RouterOS 6.x /import may fail)' },
+### Abordagem B: Usar `\24` (hex escape para $)
+
+RouterOS aceita escapes hexadecimais `\XX`:
+```routeros
+:local urlVars1 "&mac=\24(mac)"
 ```
+
+O `\24` é o código ASCII para `$` (36 decimal = 24 hexadecimal).
 
 ---
 
-### PROBLEMA 3: Versão desatualizada no linter de variáveis locais
-
-Após renomear `_hsprof` para `hsprof`, a regex precisa ser atualizada:
-
-```typescript
-// DE:
-{ regex: /\\\$(?:urlBase|fullUrl|_hsprof|urlVars[123])/, ... }
-
-// PARA:
-{ regex: /\\\$(?:urlBase|fullUrl|hsprof|urlVars[123])/, ... }
-```
-
----
-
-### PROBLEMA 4: Testes desatualizados ainda usam `$_hsprof`
-
-**Localização:** `test/useMikrotikSync.test.ts` linhas 70, 93, 133-147, 274-280
-
-**Exemplos:**
-```typescript
-const setCommand = `/ip hotspot profile set $_hsprof login-url=$fullUrl`;
-const createIfMissing = `:if ([:len $_hsprof] = 0) do={`;
-```
-
-**Correção:** Atualizar para `$hsprof` e remover testes do padrão `:if ([:len` que não é mais usado.
-
----
-
-### PROBLEMA 5: Versão não atualizada
-
-**Localização:**
-- `mikrotik-script-generator/index.ts` linha 8: `VERSION = "6.9.39"`
-- `mikrotik-recovery-download/index.ts` linha 29: `VERSION = "6.9.39"`
-- `ScriptModal.tsx` linha 34: `scriptVersion = "6.9.39"`
-
-**Correção:** Bump para `6.9.40`.
-
----
-
-## Plano de Implementação v6.9.40
+## Plano de Implementação v6.9.41
 
 ### Arquivo 1: `supabase/functions/mikrotik-script-generator/index.ts`
 
-| Linha | Mudança |
-|-------|---------|
-| 8 | `VERSION = "6.9.40"` |
-| 108 | Atualizar regex: `_hsprof` → `hsprof` |
-| ~113 | Adicionar nova regra: `/^:local\s+_/m` |
-| 842 | `:local _hsprof` → `:local hsprof` |
-| 845-850 | `$_hsprof` → `$hsprof` (6 ocorrências) |
+**Mudanças no template bootstrap (linhas 825-840):**
+
+```routeros
+# DE:
+:local urlVars1 "&mac=${RUNTIME_PLACEHOLDERS.mac}"
+:local urlVars2 "&ip=${RUNTIME_PLACEHOLDERS.ip}"
+:local urlVars3 "&link-login-only=${RUNTIME_PLACEHOLDERS.linkLoginOnly}"
+
+# PARA (usando placeholder para $):
+:local dSign "\$"
+:local urlVars1 ("&mac=" . $dSign . "(mac)")
+:local urlVars2 ("&ip=" . $dSign . "(ip)")
+:local urlVars3 ("&link-login-only=" . $dSign . "(link-login-only)")
+```
+
+**OU usando hex escape (mais limpo):**
+
+```routeros
+:local urlVars1 "&mac=\24(mac)"
+:local urlVars2 "&ip=\24(ip)"
+:local urlVars3 "&link-login-only=\24(link-login-only)"
+```
+
+**Mudança na função `replaceRuntimePlaceholders`:**
+- Alterar para gerar `\24(...)` em vez de `\$(...)`
+
+```typescript
+// DE:
+'@@RUNTIME_MAC@@': '\\$(mac)',
+
+// PARA (hex escape):
+'@@RUNTIME_MAC@@': '\\24(mac)',
+```
+
+**OU remover placeholders e usar a abordagem de concatenação diretamente no template:**
+
+```typescript
+// No template, usar:
+:local dSign "\\$"
+:local urlVars1 ("&mac=" . $dSign . "(mac)")
+```
+
+**Bump VERSION para 6.9.41**
 
 ### Arquivo 2: `supabase/functions/mikrotik-recovery-download/index.ts`
 
-| Linha | Mudança |
-|-------|---------|
-| 29 | `VERSION = "6.9.40"` |
-| 107 | Atualizar regex: `_hsprof` → `hsprof` |
-| ~112 | Adicionar nova regra: `/^:local\s+_/m` |
-| 774 | `:local _hsprof` → `:local hsprof` |
-| 777-782 | `$_hsprof` → `$hsprof` (6 ocorrências) |
+Mesmas mudanças:
+- Linhas 761-763: atualizar urlVars
+- Função `replaceRuntimePlaceholders`: usar `\24` ou remover
+- VERSION para 6.9.41
 
 ### Arquivo 3: `src/components/modals/ScriptModal.tsx`
 
-| Linha | Mudança |
-|-------|---------|
-| 34 | `scriptVersion = "6.9.40"` |
+- scriptVersion para 6.9.41
 
 ### Arquivo 4: `test/useMikrotikSync.test.ts`
 
-| Seção | Mudança |
-|-------|---------|
-| Linhas 70, 274-280 | `$_hsprof` → `$hsprof` |
-| Linhas 92-98 | Remover ou atualizar teste de `:if ([:len $_hsprof]` (padrão não mais usado) |
-| Linhas 133-147 | Atualizar para `$hsprof` |
+- Atualizar testes para refletir novo padrão de escape
 
 ---
 
-## Checklist Final de Validação ✅ COMPLETO
-
-| # | Verificação | Status |
-|---|-------------|--------|
-| 1 | Aspas balanceadas (`"`) | ✅ OK |
-| 2 | Chaves balanceadas (`{}`) | ✅ OK |
-| 3 | Parênteses balanceados (`()`) | ✅ OK |
-| 4 | Linhas não-comentário ≤160 chars | ✅ OK |
-| 5 | Escapes corretos (`\$(mac)`) | ✅ OK |
-| 6 | Sem placeholders residuais | ✅ OK |
-| 7 | Sem BOM/CRLF | ✅ OK |
-| 8 | Variáveis declaradas no escopo | ✅ OK |
-| 9 | Comandos compatíveis RouterOS 6.x | ✅ OK |
-| 10 | JSON incremental | ✅ OK |
-| 11 | on-event curto | ✅ OK |
-| 12 | profile add mínimo + sets | ✅ OK |
-| 13 | Sem `:if ([:len [/...` aninhado | ✅ OK |
-| 14 | Sem `*.apple.com` wildcard | ✅ OK |
-| 15 | Sem `*.supabase.*` wildcard | ✅ OK |
-| 16 | **Variáveis sem underscore** | ✅ CORRIGIDO v6.9.40 |
-| 17 | **Linter para `:local _`** | ✅ ADICIONADO v6.9.40 |
-
----
-
-## Código Corrigido para Hotspot Profile (v6.9.40)
+## Código Final Corrigido (Abordagem Hex Escape)
 
 ```routeros
-# Passo A: Criar profile (idempotente - on-error ignora se ja existe)
+# 7. HOTSPOT v6.9.41 (hex escape para $ runtime vars)
+:local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspotIdSafe}"
+:local urlVars1 "&mac=\24(mac)"
+:local urlVars2 "&ip=\24(ip)"
+:local urlVars3 "&link-login-only=\24(link-login-only)"
+
+:local fullUrl $urlBase
+:set fullUrl ($fullUrl . $urlVars1)
+:set fullUrl ($fullUrl . $urlVars2)
+:set fullUrl ($fullUrl . $urlVars3)
+
+:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl])
+
+# Profile add + sets...
 :do { /ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} } on-error={}
-
-# Passo B: Obter handle do profile (SEM underscore!)
 :local hsprof [/ip hotspot profile find name="hsprof-navspot"]
-
-# Passo C: Aplicar configuracoes via sets SEPARADOS (cada linha <100 chars)
-:do { /ip hotspot profile set $hsprof dns-name="${dnsName}" } on-error={}
-:do { /ip hotspot profile set $hsprof html-directory=hotspot } on-error={}
-:do { /ip hotspot profile set $hsprof login-by=http-pap,http-chap } on-error={}
-:do { /ip hotspot profile set $hsprof keepalive-timeout=2m } on-error={}
-:do { /ip hotspot profile set $hsprof idle-timeout=5m } on-error={}
 :do { /ip hotspot profile set $hsprof login-url=$fullUrl } on-error={}
 ```
 
 ---
 
-## Nova Regra de Linter
+## Função replaceRuntimePlaceholders Atualizada
 
 ```typescript
-// v6.9.40: Block local variables starting with underscore - RouterOS 6.x parser issue
-{ regex: /^:local\s+_/m, desc: 'Local var starts with underscore (RouterOS 6.x /import may fail - use hsprof not _hsprof)' },
+function replaceRuntimePlaceholders(script: string): string {
+  const map: Record<string, string> = {
+    // v6.9.41: Use hex escape \24 for $ (RouterOS compatible in /import)
+    '@@RUNTIME_MAC@@': '\\24(mac)',
+    '@@RUNTIME_IP@@': '\\24(ip)',
+    '@@RUNTIME_LINK_LOGIN_ONLY@@': '\\24(link-login-only)',
+  };
+  return Object.entries(map).reduce(
+    (s, [ph, val]) => s.replace(new RegExp(ph, 'g'), val),
+    script
+  );
+}
 ```
 
 ---
 
-## Teste Esperado
+## Atualização do Linter
+
+Adicionar regra para bloquear `\$(` que não funciona:
+
+```typescript
+// v6.9.41: Block \$( which doesn't work in /import - use \24( instead
+{ regex: /\\\$\(/, desc: '\\$( is invalid in RouterOS /import (use \\24( hex escape for $)' },
+```
+
+E atualizar a regra existente:
+```typescript
+// DE:
+{ regex: /\\\$(?:urlBase|fullUrl|hsprof|urlVars[123])/, desc: 'Escaped local variable...' },
+
+// PARA (mais específico):
+{ regex: /\\\$(?:urlBase|fullUrl|hsprof|urlVars[123]|dSign)/, desc: 'Escaped local variable (use $urlBase not \\$urlBase)' },
+```
+
+---
+
+## Testes Atualizados
+
+```typescript
+it('should use hex escape \\24 for runtime vars (v6.9.41)', () => {
+  const hexPattern = ':local urlVars1 "&mac=\\24(mac)"';
+  
+  // Deve conter \24( e não \$(
+  expect(hexPattern).toContain('\\24(mac)');
+  expect(hexPattern).not.toContain('\\$(mac)');
+});
+
+it('should NOT have \\$( in output (v6.9.41)', () => {
+  const badPattern = ':local urlVars1 "&mac=\\$(mac)"';
+  const goodPattern = ':local urlVars1 "&mac=\\24(mac)"';
+  
+  // Bad: \$( doesn't work in /import
+  expect(badPattern).toMatch(/\\\$\(/);
+  
+  // Good: \24( works
+  expect(goodPattern).not.toMatch(/\\\$\(/);
+  expect(goodPattern).toMatch(/\\24\(/);
+});
+```
+
+---
+
+## Checklist de Validação
+
+| # | Verificação | Status |
+|---|-------------|--------|
+| 1 | Aspas balanceadas | ✅ Será validado |
+| 2 | Chaves balanceadas | ✅ Será validado |
+| 3 | Parênteses balanceados | ✅ Será validado |
+| 4 | Linhas ≤160 chars | ✅ Linter existe |
+| 5 | **Sem `\$(` inválido** | ⚠️ **CORRIGIR** |
+| 6 | Usar `\24(` para $ | ⚠️ **IMPLEMENTAR** |
+| 7 | Sem placeholders residuais | ✅ Linter bloqueia |
+| 8 | Sem BOM/CRLF | ✅ normalizeNewlines |
+| 9 | Variáveis sem underscore | ✅ Corrigido v6.9.40 |
+
+---
+
+## Resultado Esperado
 
 ```routeros
-/import navspot-bootstrap-v6.9.40.rsc
-# Deve completar SEM "syntax error"
+/import navspot-bootstrap-v6.9.41.rsc
+# Deve completar SEM "expected end of command"
 
 /ip hotspot profile print where name="hsprof-navspot"
-# Deve mostrar profile com login-url configurada
+# Deve mostrar login-url com $(mac), $(ip), $(link-login-only)
 
-/log print where message~"NAVSPOT"
-# Deve mostrar: NAVSPOT v6.9.40: INSTALACAO CONCLUIDA!
+# O \24 no script é convertido para $ pelo RouterOS ao executar
 ```
 
 ---
 
-## Resumo das Mudanças
+## Arquivos a Modificar
 
 | Arquivo | Mudanças |
 |---------|----------|
-| `mikrotik-script-generator/index.ts` | VERSION 6.9.40, `_hsprof` → `hsprof`, nova regra linter |
-| `mikrotik-recovery-download/index.ts` | VERSION 6.9.40, `_hsprof` → `hsprof`, nova regra linter |
-| `ScriptModal.tsx` | scriptVersion 6.9.40 |
-| `test/useMikrotikSync.test.ts` | Atualizar testes para `$hsprof` |
-| `.lovable/plan.md` | Documentar correção v6.9.40 |
+| `mikrotik-script-generator/index.ts` | VERSION 6.9.41, replaceRuntimePlaceholders usa `\24`, linter bloqueia `\$(` |
+| `mikrotik-recovery-download/index.ts` | VERSION 6.9.41, mesmas mudanças |
+| `ScriptModal.tsx` | scriptVersion 6.9.41 |
+| `test/useMikrotikSync.test.ts` | Testes para `\24(` pattern |
+| `.lovable/plan.md` | Documentar correção v6.9.41 |
 
