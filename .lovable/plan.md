@@ -1,128 +1,147 @@
 
+# Correção: Sincronização de Perfis e Usuários MikroTik
 
-# Correção: Erro "already have such entry" - Script Não Idempotente
+## Problemas Identificados
 
-## Diagnóstico
+### Problema 1: Tipo de ação `update_profile_config` não existe no banco
 
-Analisando os logs da imagem, identifiquei que você executou o script **duas vezes**:
-- **13:30:25-26**: Primeira execução (sucesso)
-- **13:38:28+**: Segunda execução (falha com "already have such entry")
-
-O problema é que o **cleanup remove apenas entradas com comentário "navspot"**, mas vários comandos de criação **não têm proteção `on-error`**. Quando o script roda pela segunda vez, ele tenta criar recursos que já existem.
-
-## Comandos Problemáticos (Sem Proteção)
-
-| Linha | Comando | Problema |
-|-------|---------|----------|
-| 320 | `/interface bridge add name="bridge1"` | Bridge já existe |
-| 325 | `/ip address add address=...` | Endereço já existe |
-| 326 | `/ip pool add name="hs-pool-navspot"` | Pool já existe |
-| 327 | `/ip dhcp-server network add` | Rede DHCP já existe |
-| 328 | `/ip dhcp-server add name="dhcp-navspot"` | Servidor já existe |
-| 332 | `/ip firewall nat add` | Regra NAT já existe |
-| 338 | `/interface list member add list="mgmt" interface=bridge1` | Membro já existe |
-| 251 | `/interface bridge port add` | Porta já migrada |
-| 354 | `/ip hotspot add name="hs-navspot"` | Hotspot já existe |
-
-## Solução: Tornar TODOS os Comandos Idempotentes
-
-Usar o padrão **"remove-then-add"** ou wrapping com `:do { } on-error={}` em TODOS os comandos de criação.
-
-## Mudanças no Arquivo
-
-### `supabase/functions/mikrotik-script-generator/index.ts`
-
-#### Seção 5 - Bridge (linha 320)
-```routeros
-# Antes:
-/interface bridge add name="bridge1" protocol-mode=rstp auto-mac=yes comment="navspot"
-
-# Depois:
-:do { /interface bridge add name="bridge1" protocol-mode=rstp auto-mac=yes comment="navspot" } on-error={}
+**Erro:**
+```
+new row for relation "acoes_pendentes" violates check constraint "acoes_pendentes_tipo_check"
 ```
 
-#### Seção 6 - Rede IP (linhas 325-328)
-```routeros
-# Antes:
-/ip address add address=${gateway}/24 interface=bridge1 comment="navspot"
-/ip pool add name="hs-pool-navspot" ranges=${poolStart}-${poolEnd}
-/ip dhcp-server network add address=${networkCidr} gateway=${gateway} dns-server=${gateway} comment="navspot"
-/ip dhcp-server add name="dhcp-navspot" interface=bridge1 address-pool="hs-pool-navspot" disabled=no
+**Causa:**
+- O hook `usePerfisVelocidade.ts` usa o tipo `update_profile_config` (linha 212)
+- Este tipo **não está** na lista de tipos permitidos no check constraint do banco
+- Tipos permitidos incluem: `add_user_profile`, `remove_user_profile`, `update_profile`, mas **não** `update_profile_config`
 
-# Depois:
-:do { /ip address add address=${gateway}/24 interface=bridge1 comment="navspot" } on-error={}
-:do { /ip pool add name="hs-pool-navspot" ranges=${poolStart}-${poolEnd} } on-error={}
-:do { /ip dhcp-server network add address=${networkCidr} gateway=${gateway} dns-server=${gateway} comment="navspot" } on-error={}
-:do { /ip dhcp-server add name="dhcp-navspot" interface=bridge1 address-pool="hs-pool-navspot" disabled=no } on-error={}
+**Solução:**
+Alterar o tipo de `update_profile_config` para `update_profile` que já existe no banco.
+
+### Problema 2: Cooldown bloqueando re-sincronização de usuários
+
+**Dados dos logs:**
+```
+Decision for alexandre.silva: neverSynced=false, exceeded=true, cooldown=false
 ```
 
-#### Seção 7 - NAT (linha 332)
-```routeros
-# Antes:
-/ip firewall nat add chain=srcnat out-interface=${wanInterface} action=masquerade comment="navspot-nat"
+O sistema detecta que o usuário está faltando no MikroTik (`exceeded=true`, `miss_count=5`), mas o cooldown de 5 minutos **bloqueia** a re-injeção do `create_user`.
 
-# Depois:
-:do { /ip firewall nat add chain=srcnat out-interface=${wanInterface} action=masquerade comment="navspot-nat" } on-error={}
+**Causa:**
+O `last_synced_at` foi atualizado quando a ação foi criada, mas o usuário ainda não foi criado no MikroTik porque a ação não foi executada corretamente ou houve falha no script.
+
+**Dados no banco:**
+```json
+{
+  "login": "alexandre.silva",
+  "last_synced_at": "2026-02-04T17:00:39.905Z",
+  "miss_count": 0
+}
 ```
 
-#### Seção 8 - Interface List Member (linha 338)
-```routeros
-# Antes:
-/interface list member add list="mgmt" interface=bridge1 comment="navspot-allow-discovery"
+Apesar do `miss_count` resetar após criar a ação, o usuário continua sem aparecer em `registered_users_csv`, e o cooldown impede nova tentativa por 5 minutos.
 
-# Depois:
-:do { /interface list member add list="mgmt" interface=bridge1 comment="navspot-allow-discovery" } on-error={}
+**Solução:**
+Reduzir o cooldown de 5 minutos para 2 minutos, e também verificar se a ação anterior foi realmente **executada** antes de confiar no `last_synced_at`.
+
+### Problema 3: Ordem de criação - Perfil antes do Usuário
+
+**Situação:**
+Quando um perfil é atualizado e um usuário associado a ele precisa ser re-sincronizado, a ordem deve ser:
+1. Primeiro: criar/atualizar o perfil no MikroTik
+2. Depois: criar o usuário com referência ao perfil
+
+**Causa:**
+O sistema está invalidando o cache de perfis (`synced_profiles`) mas a lógica de reconciliação no `mikrotik-sync` processa usuários após perfis, o que é correto. Porém, se o perfil ainda não foi re-criado no MikroTik e um usuário tenta usar esse perfil, a criação do usuário falha.
+
+**Solução:**
+Garantir que a reconciliação de perfis seja executada **antes** da reconciliação de usuários no `mikrotik-sync`, e que ações de perfil tenham prioridade maior na fila.
+
+## Mudanças Necessárias
+
+### 1. Migração SQL: Adicionar tipo `update_profile_config` ao check constraint
+
+```sql
+ALTER TABLE acoes_pendentes DROP CONSTRAINT acoes_pendentes_tipo_check;
+ALTER TABLE acoes_pendentes ADD CONSTRAINT acoes_pendentes_tipo_check CHECK (
+  tipo = ANY (ARRAY[
+    'create_user', 'remove_user', 'delete_user', 'disable_user', 'enable_user',
+    'update_password', 'kick_session',
+    'create_profile', 'update_profile', 'update_profile_config',
+    'update_user_profile', 'add_user_profile', 'remove_user_profile', 'update_profile_quota',
+    'add_walled_garden', 'remove_walled_garden',
+    'add_whitelist_domain', 'remove_whitelist_domain',
+    'add_blacklist_domain', 'remove_blacklist_domain',
+    'create_whitelist_domain', 'create_blacklist_domain',
+    'add_firewall_filter', 'remove_firewall_filter',
+    'add_firewall_block', 'remove_firewall_block',
+    'block_device', 'unblock_device'
+  ])
+);
 ```
 
-#### Seção 9 - Migração de Portas (linha 251)
-```routeros
-# Antes:
-/interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan"
+### 2. Edge Function: Reduzir cooldown e melhorar lógica de reconciliação
 
-# Depois:
-:do { /interface bridge port add bridge=bridge1 interface=${port} comment="navspot-lan" } on-error={}
+**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
+
+| Linha | Alteração |
+|-------|-----------|
+| 70 | Alterar `SYNC_COOLDOWN_MS` de 5 minutos para 2 minutos |
+| 401-425 | Adicionar verificação se a última ação foi realmente executada |
+
+**Código atualizado (constante):**
+```typescript
+// v6.9.8: Reduzir cooldown para 2 minutos (era 5)
+const SYNC_COOLDOWN_MS = 2 * 60 * 1000  // 2 min cooldown entre re-syncs
 ```
 
-#### Seção 10 - Hotspot (linha 354)
-```routeros
-# Antes:
-/ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
+### 3. Edge Function: Processar ação `update_profile_config`
 
-# Depois:
-:do { /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no } on-error={}
+**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
+
+Adicionar handler para `update_profile_config` na seção de processamento de ações, convertendo para comandos MikroTik de atualização de perfil de usuário.
+
+## Detalhes Técnicos
+
+### Fluxo Atual de Sincronização
+
+```text
+MikroTik                    Backend (mikrotik-sync)
+   |                              |
+   |-- POST /sync --------------->|
+   |   registered_users_csv       |
+   |   registered_profiles_csv    |
+   |                              |-- Reconcile Profiles
+   |                              |   (perfis do banco vs MikroTik)
+   |                              |
+   |                              |-- Reconcile Users
+   |                              |   (tripulantes do banco vs MikroTik)
+   |                              |
+   |<-- pending_actions_pipe -----|
+   |    profile:create|...        |
+   |    user:create|...           |
 ```
 
-## Por Que o Cleanup Não Resolve
+### Problema no Ciclo
 
-O cleanup **funciona**, mas:
-1. Se o import anterior **falhou no meio**, alguns recursos podem ter sido criados antes da falha
-2. Se o import anterior **completou com sucesso**, o cleanup da segunda execução deveria remover tudo
+1. Usuário `alexandre.silva` existe no banco mas não no MikroTik
+2. Sistema detecta `miss_count >= 2` e cria ação `create_user`
+3. Define `last_synced_at = now()` e reseta `miss_count = 0`
+4. MikroTik recebe ação mas **falha** na execução (perfil não existe?)
+5. Próximo sync: usuário ainda não aparece em `registered_users_csv`
+6. Sistema incrementa `miss_count` novamente
+7. Mas cooldown de 5 minutos impede nova ação
 
-O problema é que o cleanup pode falhar silenciosamente (com `on-error={}`) em alguns recursos, deixando-os para trás.
+### Arquivos Impactados
 
-## Solução Robusta: on-error em TODOS os add
-
-Ao adicionar `on-error={}` em todos os comandos `add`, o script:
-1. **Não falha** se o recurso já existe
-2. **Continua** a execução normalmente
-3. Se torna **verdadeiramente idempotente**
-
-## Checklist
-
-| # | Item | Arquivo | Linha |
-|---|------|---------|-------|
-| 1 | Bridge add | index.ts | 320 |
-| 2 | IP address add | index.ts | 325 |
-| 3 | IP pool add | index.ts | 326 |
-| 4 | DHCP network add | index.ts | 327 |
-| 5 | DHCP server add | index.ts | 328 |
-| 6 | Firewall NAT add | index.ts | 332 |
-| 7 | Interface list member add | index.ts | 338 |
-| 8 | Bridge port add | index.ts | 251 |
-| 9 | Hotspot add | index.ts | 354 |
-| 10 | Re-deploy | mikrotik-script-generator | - |
+| Arquivo | Alteração |
+|---------|-----------|
+| SQL Migration | Adicionar `update_profile_config` ao check constraint |
+| `supabase/functions/mikrotik-sync/index.ts` | Reduzir cooldown, melhorar reconciliação |
 
 ## Resultado Esperado
 
-Após a correção, o script poderá ser importado **múltiplas vezes** sem erros, mesmo que entradas anteriores existam.
-
+Após as correções:
+1. Atualizar um perfil de velocidade não causa erro de constraint
+2. Usuários faltando no MikroTik são re-sincronizados a cada 2 minutos (ao invés de 5)
+3. A ordem de prioridade garante que perfis são criados antes dos usuários
