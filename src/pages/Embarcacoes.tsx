@@ -64,7 +64,7 @@ export default function Embarcacoes() {
   const [finalizeScript, setFinalizeScript] = useState("");
   const [currentHotspotName, setCurrentHotspotName] = useState("");
   const [currentHotspotId, setCurrentHotspotId] = useState("");
-  const [currentScriptVersion, setCurrentScriptVersion] = useState("7.1.6");
+  const [currentScriptVersion, setCurrentScriptVersion] = useState("7.1.7");
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -138,7 +138,7 @@ export default function Embarcacoes() {
       onSuccess: (data) => {
         setBootstrapScript(data.bootstrap_script || "# Script não gerado");
         setFinalizeScript(data.finalize_script || "# Script não gerado");
-        setCurrentScriptVersion(data.version || "7.1.6");
+        setCurrentScriptVersion(data.version || "7.1.7");
         setScriptModalOpen(true);
         setGeneratingFor(null);
       },
@@ -154,7 +154,7 @@ export default function Embarcacoes() {
         onSuccess: (data) => {
           setBootstrapScript(data.bootstrap_script || "# Script não gerado");
           setFinalizeScript(data.finalize_script || "# Script não gerado");
-          setCurrentScriptVersion(data.version || "7.1.6");
+          setCurrentScriptVersion(data.version || "7.1.7");
         },
       });
     }
