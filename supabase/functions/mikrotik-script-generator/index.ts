@@ -338,9 +338,10 @@ ${wanConfig}
 /interface list member add list="mgmt" interface=bridge1 comment="navspot-allow-discovery"
 /ip neighbor discovery-settings set discover-interface-list=mgmt
 :do { /ip firewall filter remove [find comment="navspot-allow-winbox-mgmt"] } on-error={}
-/ip firewall filter add chain=input in-interface=ether2 protocol=tcp dst-port=8291 action=accept comment="navspot-allow-winbox-mgmt" place-before=0
+# v7.1.2: place-before com fallback para roteadores sem regras
+:do { /ip firewall filter add chain=input in-interface=ether2 protocol=tcp dst-port=8291 action=accept comment="navspot-allow-winbox-mgmt" place-before=0 } on-error={ /ip firewall filter add chain=input in-interface=ether2 protocol=tcp dst-port=8291 action=accept comment="navspot-allow-winbox-mgmt" }
 :do { /ip firewall filter remove [find comment="navspot-allow-mndp-mgmt"] } on-error={}
-/ip firewall filter add chain=input in-interface=ether2 protocol=udp dst-port=5678 action=accept comment="navspot-allow-mndp-mgmt" place-before=0
+:do { /ip firewall filter add chain=input in-interface=ether2 protocol=udp dst-port=5678 action=accept comment="navspot-allow-mndp-mgmt" place-before=0 } on-error={ /ip firewall filter add chain=input in-interface=ether2 protocol=udp dst-port=5678 action=accept comment="navspot-allow-mndp-mgmt" }
 :log info "NAVSPOT: Gerencia configurada"
 
 # 9. MIGRAR PORTAS LAN
