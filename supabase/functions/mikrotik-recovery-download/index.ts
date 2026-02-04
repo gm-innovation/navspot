@@ -31,7 +31,7 @@ const corsHeaders = {
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.34"
+const VERSION = "6.9.35"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -59,6 +59,10 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /:do\s*\{\s*[^}]*\[find[^\]]*\][^}]*\\\$\([^\)]*\)[^}]*\}/, desc: '[find ...] + \\$(...) in same :do block (breaks RouterOS 6.x - use two-step pattern: assign find to local, then set)' },
     // v6.9.34: Block long command lines (>150 chars) with escaped variables - risk of parser failure
     { regex: /^\/[^#\n]{150,}\\\$\(/m, desc: 'Long command line (>150 chars) with escaped vars (use local variable concatenation)' },
+    // v6.9.35: Block login-url with escaped vars in add command - must use separate set
+    { regex: /profile add[^#\n]*login-url=.*\\\$\(/, desc: 'login-url with escaped vars in add command (use separate set after add)' },
+    // v6.9.35: Block login-url=$var in add command (any var) - must use separate set
+    { regex: /profile add[^#\n]*login-url=\$/, desc: 'login-url=$var in add command (use separate set after add)' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
@@ -692,16 +696,24 @@ ${syncScriptSource}
 
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial configurado"
 
-# 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.34
-# Safe URL construction: build URL in local vars, then set profile
-# Nota: $fullUrl sem aspas pois e variavel local (aspas causam erro no linter)
+# 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.35
+# Padrao definitivo: construir URL em vars locais, criar profile se nao existir, aplicar via set com aspas
 :log info "NAVSPOT-RECOVERY: Configurando hotspot profile login-url..."
 :local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspotId}"
 :local urlVars "&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
 :local fullUrl (\$urlBase . \$urlVars)
+
+# Garantir que profile existe (create-if-missing)
 :local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
+:if ([:len \$_hsprof] = 0) do={
+:log warning "NAVSPOT-RECOVERY: profile nao existe, criando..."
+/ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 dns-name="navspot.local" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m
+:set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
+}
+
+# Aplicar login-url via set (com aspas)
 :do {
-/ip hotspot profile set \$_hsprof login-url=\$fullUrl
+/ip hotspot profile set \$_hsprof login-url="\$fullUrl"
 :log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
 } on-error={
 :log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
@@ -710,7 +722,7 @@ ${syncScriptSource}
 
 :log info "=========================================="
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
-:log info "FIX v6.9.34: login-url built via local vars (safe URL construction)"
+:log info "FIX v6.9.35: add curto + set separado + create-if-missing (padrao definitivo)"
 :log info "FIX v6.9.31: Replaced *.supabase.* wildcards with explicit host"
 :log info "FIX v6.9.31: Token file uses explicit .txt extension"
 :log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"
