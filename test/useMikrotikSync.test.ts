@@ -129,6 +129,86 @@ describe('useMikrotikSync', () => {
     });
   });
 
+  describe('Script Generator v6.9.37 Escaping Validation', () => {
+    it('should NOT escape local script variables ($urlBase, $fullUrl, $_hsprof)', () => {
+      const correctLocalVars = `
+:local fullUrl $urlBase
+:set fullUrl ($fullUrl . $urlVars1)
+:if ([:len $_hsprof] = 0) do={
+/ip hotspot profile set $_hsprof login-url=$fullUrl
+`;
+      
+      // Variáveis locais NÃO devem ter backslash
+      expect(correctLocalVars).toContain('$urlBase');
+      expect(correctLocalVars).toContain('$fullUrl');
+      expect(correctLocalVars).toContain('$_hsprof');
+      expect(correctLocalVars).not.toMatch(/\\\$urlBase/);
+      expect(correctLocalVars).not.toMatch(/\\\$fullUrl/);
+      expect(correctLocalVars).not.toMatch(/\\\$_hsprof/);
+    });
+
+    it('should ONLY escape runtime hotspot variables with single backslash in .rsc', () => {
+      const correctRuntimeVars = `
+:local urlVars1 "&mac=\\$(mac)"
+:local urlVars2 "&ip=\\$(ip)"
+:local urlVars3 "&link-login-only=\\$(link-login-only)"
+`;
+      
+      expect(correctRuntimeVars).toMatch(/\\\$\(mac\)/);
+      expect(correctRuntimeVars).toMatch(/\\\$\(ip\)/);
+      expect(correctRuntimeVars).toMatch(/\\\$\(link-login-only\)/);
+    });
+
+    it('should NOT have double-escaped runtime vars (\\\\$(mac))', () => {
+      const badPattern = '&mac=\\\\$(mac)';
+      const goodPattern = '&mac=\\$(mac)';
+      
+      expect(badPattern).toMatch(/\\\\\$\(mac\)/);
+      expect(goodPattern).not.toMatch(/\\\\\$\(mac\)/);
+    });
+
+    it('should have no leftover placeholders in final output', () => {
+      const placeholders = ['@@RUNTIME_MAC@@', '@@RUNTIME_IP@@', '@@RUNTIME_LINK_LOGIN_ONLY@@'];
+      const validOutput = ':local urlVars1 "&mac=\\$(mac)"';
+      
+      for (const ph of placeholders) {
+        expect(validOutput).not.toContain(ph);
+      }
+    });
+
+    it('should validate replaceRuntimePlaceholders function', () => {
+      const input = ':local urlVars1 "&mac=@@RUNTIME_MAC@@"';
+      const expected = ':local urlVars1 "&mac=\\$(mac)"';
+      
+      const output = input.replace(/@@RUNTIME_MAC@@/g, '\\$(mac)');
+      expect(output).toBe(expected);
+    });
+
+    it('should have no CRLF or BOM in output', () => {
+      const cleanScript = ':local test "value"\n:log info "ok"';
+      expect(cleanScript.includes('\r\n')).toBe(false);
+      expect(cleanScript.startsWith('\uFEFF')).toBe(false);
+    });
+
+    it('should have balanced braces and quotes', () => {
+      const balanced = ':if ([:len $var] = 0) do={ :log info "test" }';
+      const openBraces = (balanced.match(/{/g) || []).length;
+      const closeBraces = (balanced.match(/}/g) || []).length;
+      const quotes = (balanced.match(/"/g) || []).length;
+      
+      expect(openBraces).toBe(closeBraces);
+      expect(quotes % 2).toBe(0);
+    });
+
+    it('should have balanced parentheses', () => {
+      const balanced = ':if ([:len $var] = 0) do={ :set x ($a . $b) }';
+      const openParens = (balanced.match(/\(/g) || []).length;
+      const closeParens = (balanced.match(/\)/g) || []).length;
+      
+      expect(openParens).toBe(closeParens);
+    });
+  });
+
   describe('Script Generator Validation', () => {
     it('should use correct action values for walled-garden menus', () => {
       // Para /ip hotspot walled-garden (hostnames): action=allow ou action=deny
