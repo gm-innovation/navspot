@@ -5,19 +5,21 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.5"
+const VERSION = "7.1.6"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
- * mikrotik-script-generator v7.1.5 - ULTRA-THIN CLIENT
+ * mikrotik-script-generator v7.1.6 - ULTRA-THIN CLIENT
  * 
  * Bootstrap is minimal (~100 lines) and uses /tool fetch to download
  * scripts from the mikrotik-scripts endpoint AFTER infrastructure is configured.
  * 
  * This bypasses RouterOS 6.x parser limitations with embedded source={...}
  * 
- * v7.1.5: Improved action-processor robustness with early logging,
- *         file reading via ID with on-error blocks, simplified parsing
+ * v7.1.6: CRITICAL FIX for RouterOS 6.x 4KB variable limit
+ *   - Installer now uses /import directly with .rsc files
+ *   - Action processor minified to <4KB (essential handlers only)
+ *   - Bypasses [/file get ... contents] 4KB truncation issue
  */
 
 // Normalizar newlines (UTF-8 LF sem BOM/CRLF)
