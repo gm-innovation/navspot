@@ -45,9 +45,9 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /dst-host="\*\.apple\.com"/, desc: '*.apple.com (breaks RouterOS 6.x parser during /import)' },
     // v6.9.31: Block *.supabase.* wildcards - they break RouterOS 6.x parser inside [find ...]
     { regex: /dst-host="\*\.supabase\.(co|in)"/, desc: '*.supabase.* wildcard (breaks RouterOS 6.x parser - use explicit hostname)' },
-    // v6.9.30: Only detect MikroTik variables INSIDE strings (those break /import)
-    // Local script variables like $hsprof outside strings are fine and SHOULD NOT be escaped
-    { regex: /login-url="\$[a-zA-Z]/, desc: 'login-url="$var... (MikroTik variable in string breaks /import - use escaped \\$)' },
+    // v6.9.35: Block unescaped runtime vars $(mac) inside login-url strings
+    // Note: Local script vars like "$fullUrl" are ALLOWED - they get expanded by script engine
+    { regex: /login-url="[^"]*(?<![\\])\$\([^)]+\)/, desc: 'login-url="...$(var)..." (unescaped runtime var breaks /import - use \\$(...))' },
     // v6.9.32: Block :if ... do={} with escaped vars - the conditional inline block breaks parser
     // This is MORE SPECIFIC than matching any do={} - only :if conditions are problematic
     { regex: /:if [^;]*do=\{[^}]*\\\$\(/, desc: ':if...do={...\\$(...} (escaped var inside if-do block breaks RouterOS 6.x - use :do { } on-error={})' },
