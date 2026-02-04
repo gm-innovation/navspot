@@ -1,56 +1,60 @@
 
 
-# Correção v7.1.8: Usar `source="..."` em vez de `source={ }` para /import
+# Correção v7.1.9: Converter Newlines para `\r\n` em source="..."
 
-## Diagnóstico do Problema
+## Diagnóstico Confirmado
 
-O erro "syntax error (line 4 column 11)" ocorre porque:
-
-1. O RouterOS 6.x **não suporta `source={ }` em arquivos .rsc** importados via `/import`
-2. O bloco `source={ }` só funciona no **terminal interativo**
-3. Quando o parser encontra `source={` em arquivo .rsc, ele interpreta como início de bloco de código e falha
-
-### Evidência
-Os exemplos oficiais do MikroTik sempre usam:
-```routeros
-/system/script/add name="script" source="
-linha1
-linha2
-"
+Os logs mostram:
+```
+NAVSPOT-SYNC: Arquivo salvo (size=151), acionando action-processor...
+NAVSPOT-SYNC: action-processor FALHOU na execucao
 ```
 
-E **não**:
+O script `navspot-action-processor` foi **instalado**, mas **falha ao executar**. Isso indica um erro de **sintaxe no conteúdo do script**, não na instalação.
+
+### Causa Raiz
+
+O código gerado pelo endpoint `action-source` tem este formato:
+
 ```routeros
-/system/script/add name="script" source={
-linha1
-linha2
-}
+/system script add name="navspot-action-processor" source=":log info \"NAVSPOT-ACTION v7.1.8: Start\"
+:global navspotLock
+:if (\$navspotLock = \"1\") do={...}
+..."
 ```
 
-## Solução: Usar `source="..."` com Escape Correto
+**O problema**: RouterOS 6.x não aceita newlines literais dentro de `source="..."` em arquivos `.rsc` importados via `/import`. O parser interpreta cada linha como um comando separado, quebrando a sintaxe.
 
-### Mudanças Principais
+### Evidência da Documentação MikroTik
 
-O código precisa usar `source="..."` (com aspas) em vez de `source={...}` (com chaves), e aplicar escape correto:
-- `"` → `\"`
-- `$` → `\$` (apenas variáveis locais)
-- `\` → `\\`
+O formato correto para strings multi-linha em `.rsc` é usar `\r\n` escapado:
 
-**Runtime vars** como `$(mac)` devem permanecer **sem escape**.
+```routeros
+script="linha1\r\nlinha2\r\nlinha3"
+```
+
+Ou usar chaves `{...}`, mas estas só funcionam no terminal interativo.
+
+## Solução: Substituir Newlines por `\r\n` Escapado
+
+O código precisa converter todas as quebras de linha (`\n`) em `\\r\\n` (escape duplo, pois está dentro de uma string JavaScript que será interpretada pelo RouterOS).
+
+### Mudanças Técnicas
 
 ---
 
-## Mudanças no Código
-
 ### A) `supabase/functions/mikrotik-scripts/index.ts`
 
-#### 1) Corrigir `escapeForSourceBlock()` - Renomear para refletir o uso com aspas
+#### 1) Modificar `escapeForSourceQuotes()` para incluir conversão de newlines
 
 ```typescript
 /**
  * Escape script source for embedding in source="..." block
- * RouterOS requires escaping " and $ inside source="" blocks
- * Runtime vars $(...) are preserved unescaped
+ * RouterOS requires:
+ * - Escaping " and $ inside source="" quoted strings
+ * - Converting newlines to \r\n for multiline content in .rsc files
+ * 
+ * v7.1.9: Convert newlines to \r\n for RouterOS 6.x /import compatibility
  */
 function escapeForSourceQuotes(script: string): string {
   // Preserve runtime vars $(...) BEFORE escaping
@@ -60,64 +64,22 @@ function escapeForSourceQuotes(script: string): string {
     .replace(/\\/g, '\\\\')   // Escape backslashes first
     .replace(/"/g, '\\"')      // Escape double quotes
     .replace(/\$/g, '\\$')     // Escape dollar signs (local vars)
+    .replace(/\r\n/g, '\\r\\n') // Convert CRLF to escaped \r\n
+    .replace(/\n/g, '\\r\\n')   // Convert LF to escaped \r\n
   
   // Restore runtime vars (unescaped)
   return escaped.replace(/@@RUNTIME_VAR@@/g, '$(')
 }
 ```
 
-#### 2) Alterar `generateSyncRSC()` - Usar aspas em vez de chaves
+Essa mudança:
+- Converte `\r\n` (CRLF) em `\\r\\n` literal
+- Converte `\n` (LF) em `\\r\\n` literal
+- O RouterOS interpretará `\r\n` como quebra de linha real quando o script for carregado
 
-```typescript
-function generateSyncRSC(syncUrl: string, syncToken: string): string {
-  const source = generateSyncSource(syncUrl, syncToken)
-  const escapedSource = escapeForSourceQuotes(source)
-  return `# NAVSPOT Sync v${VERSION} - RSC for /import
-:do { /system script remove [find name="navspot-sync"] } on-error={}
-/system script add name="navspot-sync" policy=read,write,test source="${escapedSource}"
-:log info "NAVSPOT: Sync v${VERSION} instalado"
-`
-}
-```
+#### 2) Bump de versão para v7.1.9
 
-#### 3) Alterar `generateActionProcessorRSC()` - Usar aspas
-
-```typescript
-function generateActionProcessorRSC(): string {
-  const source = generateActionProcessorSource()
-  const escapedSource = escapeForSourceQuotes(source)
-  return `# NAVSPOT Action Processor v${VERSION} - RSC for /import
-:do { /system script remove [find name="navspot-action-processor"] } on-error={}
-/system script add name="navspot-action-processor" policy=read,write,test source="${escapedSource}"
-:log info "NAVSPOT: Action-processor v${VERSION} instalado"
-`
-}
-```
-
-#### 4) Alterar `generateGuardianRSC()` - Usar aspas
-
-```typescript
-function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
-  const source = generateGuardianSource(recoveryUrl, syncToken)
-  const escapedSource = escapeForSourceQuotes(source)
-  return `# NAVSPOT Guardian v${VERSION} - RSC for /import
-:do { /system script remove [find name="navspot-guardian"] } on-error={}
-/system script add name="navspot-guardian" policy=read,write,test source="${escapedSource}"
-:log info "NAVSPOT: Guardian v${VERSION} instalado"
-`
-}
-```
-
-#### 5) Também corrigir as funções legacy (generateSyncScript, etc.)
-
-Aplicar a mesma correção às funções:
-- `generateSyncScript()`
-- `generateActionProcessorScript()`
-- `generateGuardianScript()`
-
-#### 6) Bump de versão para v7.1.8
-
-- `VERSION = "7.1.8"`
+- Alterar `VERSION = "7.1.9"`
 - Atualizar docblock
 
 ---
@@ -126,37 +88,47 @@ Aplicar a mesma correção às funções:
 
 | Arquivo | Alteração |
 |---------|-----------|
-| `supabase/functions/mikrotik-script-generator/index.ts` | Bump VERSION para "7.1.8" |
-| `src/components/modals/ScriptModal.tsx` | Default scriptVersion="7.1.8" |
-| `src/pages/Embarcacoes.tsx` | Fallback currentScriptVersion="7.1.8" |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Bump VERSION para "7.1.9" |
+| `src/components/modals/ScriptModal.tsx` | Default scriptVersion="7.1.9" |
+| `src/pages/Embarcacoes.tsx` | Fallback currentScriptVersion="7.1.9" |
 
 ---
 
-## Consideração Importante: Newlines
+## Exemplo do Resultado Esperado
 
-Quando usamos `source="..."` com aspas, as quebras de linha precisam estar explícitas. O RouterOS aceita newlines literais dentro de strings, então o código vai funcionar.
+Antes (v7.1.8 - quebra):
+```routeros
+source=":log info \"Start\"
+:global navspotLock
+:if..."
+```
 
-Alternativa (se necessário): usar `\r\n` ou `\n` explícitos, mas isso aumenta a complexidade. Primeiro vamos testar com newlines literais.
+Depois (v7.1.9 - funciona):
+```routeros
+source=":log info \"Start\"\r\n:global navspotLock\r\n:if..."
+```
+
+O RouterOS processará `\r\n` como quebras de linha internas ao script.
 
 ---
 
 ## Validação Pós-Deploy
 
-1. Gerar bootstrap v7.1.8
-2. Importar no MikroTik: `/import navspot-bootstrap-v7.1.8.rsc`
-3. Verificar que não há mais "syntax error"
-4. Verificar `/system script print` → navspot-sync, navspot-action-processor com Source preenchido
-5. Executar `/system script run navspot-sync`
-6. Verificar logs `NAVSPOT-ACTION v7.1.8: Start`
+1. Gerar bootstrap v7.1.9
+2. Importar no MikroTik: `/import navspot-bootstrap-v7.1.9.rsc`
+3. Verificar instalação sem erros
+4. Executar `/system script run navspot-action-processor` manualmente
+5. Se funcionar sem erros, executar `/system script run navspot-sync`
+6. Verificar logs `NAVSPOT-ACTION v7.1.9: Start` e `NAVSPOT-ACTION v7.1.9: OK`
 7. Verificar `/ip hotspot user print where name="alexandre.silva"` → usuário criado
 
 ---
 
-## Resumo da Mudança
+## Resumo Técnico
 
-| Antes (v7.1.7) | Depois (v7.1.8) |
+| Antes (v7.1.8) | Depois (v7.1.9) |
 |----------------|-----------------|
-| `source={ código }` | `source="código_escapado"` |
-| Parser falha no RouterOS 6.x | Compatível com /import |
-| Chaves só funcionam no terminal | Aspas funcionam em .rsc |
+| Newlines literais em `source="..."` | `\r\n` escapado em `source="..."` |
+| Parser RouterOS 6.x falha | Parser processa corretamente |
+| Scripts instalados mas não executam | Scripts instalados E executam |
 
