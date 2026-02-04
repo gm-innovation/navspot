@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.4
+ * mikrotik-scripts v7.1.5
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -20,10 +20,13 @@ const corsHeaders = {
  * v7.1.2: Cascading fetch - installer downloads each script as .txt file
  *         and injects via [/file get ... contents] to bypass parser limits
  * 
+ * v7.1.5: RouterOS 6.x robustness - action-processor with early logging,
+ *         file reading via ID with on-error, simplified parsing
+ * 
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.4"
+const VERSION = "7.1.5"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -364,7 +367,8 @@ ${generateGuardianSource(recoveryUrl, syncToken)}
 // ==========================================
 
 function generateSyncSource(syncUrl: string, syncToken: string): string {
-  return `:local token ""
+  return `:log info "NAVSPOT-SYNC v${VERSION}: Iniciando..."
+:local token ""
 :do { :set token [/file get "navspot-token.txt" contents] } on-error={}
 :if ([:len $token] < 10) do={
 :set token "${syncToken}"
@@ -401,6 +405,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :set body ($body . "," . $q . "registered_profiles_csv" . $q)
 :set body ($body . ":" . $q . $profiles . $q . "}")
 :local hdr "Content-Type: application/json"
+:local syncOk false
 :do {
 /tool fetch url=$syncUrl mode=https http-method=post http-data=$body http-header-field=$hdr dst-path="navspot-resp.txt"
 :delay 500ms
@@ -417,54 +422,71 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local actions ""
 :if ($j >= $i) do={:set actions [:pick $raw $i ($j + 1)]}
 :log info ("NAVSPOT-SYNC: pending_actions_pipe extraido (" . [:len $actions] . " chars)")
-# v7.1.4: Usar arquivo ao inves de variavel global (evita race condition RouterOS 6.x)
+# v7.1.5: Salvar acoes em arquivo (evita race condition RouterOS 6.x)
 :do { /file remove "navspot-actions.txt" } on-error={}
 /file print file=navspot-actions.txt where name="__never__"
 :delay 500ms
 /file set [find name="navspot-actions.txt"] contents=$actions
-:log info ("NAVSPOT-SYNC: Acoes salvas em arquivo, acionando action-processor...")
+:local fsize 0
+:do { :set fsize [/file get [find name="navspot-actions.txt"] size] } on-error={}
+:log info ("NAVSPOT-SYNC: Arquivo salvo (size=" . $fsize . "), acionando action-processor...")
 :delay 500ms
+# v7.1.5: Executar com tratamento de erro
+:do {
 /system script run navspot-action-processor
+:set syncOk true
+} on-error={
+:log error "NAVSPOT-SYNC: action-processor FALHOU na execucao"
 }
-} on-error={:log warning "NAVSPOT-SYNC: Falha"}
-:log info "NAVSPOT-SYNC: OK"`
+}
+} on-error={:log warning "NAVSPOT-SYNC: Fetch FALHOU"}
+:if ($syncOk = true) do={
+:log info "NAVSPOT-SYNC v${VERSION}: OK"
+} else={
+:log warning "NAVSPOT-SYNC v${VERSION}: Concluido com erros"
+}`
 }
 
 function generateActionProcessorSource(): string {
-  return `:global navspotLock
+  return `:log info "NAVSPOT-ACTION v${VERSION}: Start"
+:global navspotLock
 :if ($navspotLock = "1") do={
 :log info "NAVSPOT-ACTION: processamento em andamento, abortando"
 :return
 }
 :set navspotLock "1"
-# v7.1.4: Ler acoes de arquivo ao inves de variavel global (evita race condition)
-:local actionsFile [/file find name="navspot-actions.txt"]
-:if ([:len $actionsFile] = 0) do={
+# v7.1.5: Leitura robusta via ID com tratamento de erro (RouterOS 6.x)
+:local fid [/file find name="navspot-actions.txt"]
+:if ([:len $fid] = 0) do={
 :set navspotLock "0"
 :log warning "NAVSPOT-ACTION: Arquivo navspot-actions.txt NAO encontrado"
 :return
 }
-:local rawData [/file get "navspot-actions.txt" contents]
-:log info ("NAVSPOT-ACTION: Acoes lidas do arquivo, len=" . [:len $rawData])
-:do { /file remove "navspot-actions.txt" } on-error={}
+:local rawData ""
+:do {
+:set rawData [/file get $fid contents]
+} on-error={
+:log error "NAVSPOT-ACTION: ERRO CRITICO ao ler arquivo"
+:set navspotLock "0"
+:return
+}
+:log info ("NAVSPOT-ACTION: Lido len=" . [:len $rawData])
+:do { /file remove $fid } on-error={}
 :if ([:len $rawData] = 0) do={
 :set navspotLock "0"
 :log warning "NAVSPOT-ACTION: Arquivo vazio - nada a processar"
 :return
 }
-:log info ("NAVSPOT-ACTION v${VERSION}: Iniciando - " . $rawData)
+:log info ("NAVSPOT-ACTION v${VERSION}: Processando - " . [:pick $rawData 0 80])
 :local pos 0
 :do {
 :while ([:find $rawData ";" $pos] >= 0) do={
 :local endPos [:find $rawData ";" $pos]
 :local line [:pick $rawData $pos $endPos]
 :set pos ($endPos + 1)
-:local i 0
-:local j ([:len $line] - 1)
-:while (($i <= $j) && ([:pick $line $i] = " ")) do={:set i ($i + 1)}
-:while (($j >= $i) && ([:pick $line $j] = " ")) do={:set j ($j - 1)}
-:if ($j < $i) do={:set pos ($endPos + 1)}
-:local trimmed [:pick $line $i ($j + 1)]
+# v7.1.5: Parsing simplificado (backend envia pipe sem espacos)
+:if ([:len $line] = 0) do={}
+:local trimmed $line
 :local p1 [:find $trimmed "|"]
 :if ($p1 >= 0) do={
 :local cmd [:pick $trimmed 0 $p1]
@@ -633,11 +655,10 @@ function generateActionProcessorSource(): string {
 }
 }
 } on-error={
-:log warning "NAVSPOT-ACTION: Erro no processamento"
+:log error "NAVSPOT-ACTION: Erro no processamento de acoes"
 :set navspotLock "0"
 :return
 }
-:set navspotActions ""
 :set navspotLock "0"
 :log info "NAVSPOT-ACTION v${VERSION}: Processamento concluido"`
 }
