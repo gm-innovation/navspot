@@ -23,7 +23,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.2"
+const VERSION = "7.1.3"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -418,7 +418,8 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ($j >= $i) do={:set actions [:pick $raw $i ($j + 1)]}
 :global navspotActions $actions
 :log info ("NAVSPOT-SYNC: pending_actions_pipe extraido (" . [:len $actions] . " chars)")
-:delay 250ms
+:log info ("NAVSPOT-SYNC: Variavel global setada, acionando action-processor...")
+:delay 500ms
 /system script run navspot-action-processor
 }
 } on-error={:log warning "NAVSPOT-SYNC: Falha"}
@@ -434,9 +435,10 @@ function generateActionProcessorSource(): string {
 }
 :set navspotLock "1"
 :local rawData $navspotActions
+:log info ("NAVSPOT-ACTION: Variavel recebida, len=" . [:len $rawData])
 :if ([:len $rawData] = 0) do={
 :set navspotLock "0"
-:log info "NAVSPOT: Sem acoes pendentes"
+:log warning "NAVSPOT-ACTION: Variavel navspotActions VAZIA - nada a processar"
 :return
 }
 :log info ("NAVSPOT-ACTION v${VERSION}: Iniciando - " . $rawData)
