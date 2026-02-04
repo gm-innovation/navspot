@@ -6,20 +6,24 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.0
+ * mikrotik-scripts v7.1.2
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
  * scripts AFTER the basic infrastructure is configured.
  * 
  * Parameters:
- *   - type: "sync" | "action-processor" | "guardian" | "all" (default: "all")
+ *   - type: "sync" | "action-processor" | "guardian" | "all" | 
+ *           "sync-source" | "action-source" | "guardian-source" (default: "all")
  *   - token: sync_token for authentication
+ * 
+ * v7.1.2: Cascading fetch - installer downloads each script as .txt file
+ *         and injects via [/file get ... contents] to bypass parser limits
  * 
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.0"
+const VERSION = "7.1.2"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -90,9 +94,19 @@ Deno.serve(async (req) => {
       case 'guardian':
         script = generateGuardianScript(recoveryUrl, syncToken)
         break
+      // v7.1.2: New source-only types for cascading fetch
+      case 'sync-source':
+        script = generateSyncSource(syncUrl, syncToken)
+        break
+      case 'action-source':
+        script = generateActionProcessorSource()
+        break
+      case 'guardian-source':
+        script = generateGuardianSource(recoveryUrl, syncToken)
+        break
       case 'all':
       default:
-        script = generateAllScripts(syncUrl, recoveryUrl, syncToken, syncIntervalMinutes)
+        script = generateAllScripts(supabaseUrl, syncToken, syncIntervalMinutes)
         break
     }
 
@@ -118,74 +132,195 @@ Deno.serve(async (req) => {
 })
 
 /**
- * Generate all scripts in one RSC file (for initial install)
+ * v7.1.2: Generate lightweight installer that uses cascading fetch
+ * Downloads each script as .txt and injects via [/file get ... contents]
+ * This bypasses RouterOS 6.x parser limitations with long source={} blocks
  */
 function generateAllScripts(
-  syncUrl: string,
-  recoveryUrl: string,
+  supabaseUrl: string,
   syncToken: string,
   syncIntervalMinutes: number
 ): string {
+  // Build API base URL (split to stay under 160 char limit)
+  const apiBase = `${supabaseUrl}/functions/v1`
+  
   return `# =========================================
 # NAVSPOT Scripts Installer v${VERSION}
-# Downloaded via /tool fetch from API
+# Cascading Fetch - bypasses parser limits
 # =========================================
 # _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
-:log info "NAVSPOT-SCRIPTS v${VERSION}: Instalando scripts..."
+:log info "NAVSPOT-SCRIPTS v${VERSION}: Iniciando instalacao..."
 
-# 1. ACTION PROCESSOR
-:log info "NAVSPOT-SCRIPTS: Instalando action-processor..."
-:do { /system script remove [find name="navspot-action-processor"] } on-error={}
-/system script add name="navspot-action-processor" policy=read,write,test source={
-${generateActionProcessorSource()}
+# URLs construidas incrementalmente (limite 160 chars)
+:local apiBase "${apiBase}"
+:local ep "/mikrotik-scripts"
+:local tk "${syncToken}"
+
+# Pre-flight checks
+:local hasRoute false
+:do {
+:local gw [/ip route get [find dst-address="0.0.0.0/0" active=yes] gateway]
+:if ([:len $gw] > 0) do={ :set hasRoute true }
+} on-error={}
+:if ($hasRoute = true) do={
+:log info "NAVSPOT-SCRIPTS: Rota default OK"
+} else={
+:log warning "NAVSPOT-SCRIPTS: Rota default NAO encontrada"
 }
-:delay 200ms
 
-# 2. SYNC SCRIPT
-:log info "NAVSPOT-SCRIPTS: Instalando sync..."
+# DNS check
+:local dnsOk false
+:do {
+:resolve "google.com"
+:set dnsOk true
+} on-error={}
+:if ($dnsOk = true) do={
+:log info "NAVSPOT-SCRIPTS: DNS OK"
+} else={
+:log warning "NAVSPOT-SCRIPTS: DNS pode estar com problemas"
+}
+
+# ===== 1. SYNC SCRIPT =====
+:log info "NAVSPOT-SCRIPTS: Baixando sync..."
+:local syncUrl ($apiBase . $ep . "?type=sync-source&token=" . $tk)
+:local syncOk false
+:local syncRetry 0
+:while (($syncRetry < 3) && ($syncOk = false)) do={
+:set syncRetry ($syncRetry + 1)
+:log info ("NAVSPOT-SCRIPTS: Tentativa " . $syncRetry . "/3")
+:do {
+/tool fetch url=$syncUrl check-certificate=no dst-path="ns-sync.txt"
+:set syncOk true
+} on-error={
+:log warning ("NAVSPOT-SCRIPTS: sync fetch tentativa " . $syncRetry . " falhou")
+:delay 5s
+}
+}
+:if ($syncOk = true) do={
+:delay 2s
+:local fid [/file find name="ns-sync.txt"]
+:if ([:len $fid] > 0) do={
+:local fsize [/file get $fid size]
 :do { /system script remove [find name="navspot-sync"] } on-error={}
-/system script add name="navspot-sync" policy=read,write,test source={
-${generateSyncSource(syncUrl, syncToken)}
+/system script add name="navspot-sync" policy=read,write,test source=""
+:local src [/file get "ns-sync.txt" contents]
+/system script set [find name="navspot-sync"] source=$src
+:do { /file remove "ns-sync.txt" } on-error={}
+:log info ("NAVSPOT-SCRIPTS: Sync instalado (size=" . $fsize . ")")
+} else={
+:log error "NAVSPOT-SCRIPTS: Arquivo ns-sync.txt nao encontrado"
 }
-:delay 200ms
+} else={
+:log error "NAVSPOT-SCRIPTS: Sync fetch falhou apos 3 tentativas"
+}
 
-# 3. GUARDIAN SCRIPT
-:log info "NAVSPOT-SCRIPTS: Instalando guardian..."
+# ===== 2. ACTION PROCESSOR =====
+:log info "NAVSPOT-SCRIPTS: Baixando action-processor..."
+:local actionUrl ($apiBase . $ep . "?type=action-source&token=" . $tk)
+:local actionOk false
+:local actionRetry 0
+:while (($actionRetry < 3) && ($actionOk = false)) do={
+:set actionRetry ($actionRetry + 1)
+:log info ("NAVSPOT-SCRIPTS: Tentativa " . $actionRetry . "/3")
+:do {
+/tool fetch url=$actionUrl check-certificate=no dst-path="ns-action.txt"
+:set actionOk true
+} on-error={
+:log warning ("NAVSPOT-SCRIPTS: action fetch tentativa " . $actionRetry . " falhou")
+:delay 5s
+}
+}
+:if ($actionOk = true) do={
+:delay 2s
+:local fid [/file find name="ns-action.txt"]
+:if ([:len $fid] > 0) do={
+:local fsize [/file get $fid size]
+:do { /system script remove [find name="navspot-action-processor"] } on-error={}
+/system script add name="navspot-action-processor" policy=read,write,test source=""
+:local src [/file get "ns-action.txt" contents]
+/system script set [find name="navspot-action-processor"] source=$src
+:do { /file remove "ns-action.txt" } on-error={}
+:log info ("NAVSPOT-SCRIPTS: Action-processor instalado (size=" . $fsize . ")")
+} else={
+:log error "NAVSPOT-SCRIPTS: Arquivo ns-action.txt nao encontrado"
+}
+} else={
+:log error "NAVSPOT-SCRIPTS: Action fetch falhou apos 3 tentativas"
+}
+
+# ===== 3. GUARDIAN =====
+:log info "NAVSPOT-SCRIPTS: Baixando guardian..."
+:local guardUrl ($apiBase . $ep . "?type=guardian-source&token=" . $tk)
+:local guardOk false
+:local guardRetry 0
+:while (($guardRetry < 3) && ($guardOk = false)) do={
+:set guardRetry ($guardRetry + 1)
+:log info ("NAVSPOT-SCRIPTS: Tentativa " . $guardRetry . "/3")
+:do {
+/tool fetch url=$guardUrl check-certificate=no dst-path="ns-guard.txt"
+:set guardOk true
+} on-error={
+:log warning ("NAVSPOT-SCRIPTS: guardian fetch tentativa " . $guardRetry . " falhou")
+:delay 5s
+}
+}
+:if ($guardOk = true) do={
+:delay 2s
+:local fid [/file find name="ns-guard.txt"]
+:if ([:len $fid] > 0) do={
+:local fsize [/file get $fid size]
 :do { /system script remove [find name="navspot-guardian"] } on-error={}
-/system script add name="navspot-guardian" policy=read,write,test source={
-${generateGuardianSource(recoveryUrl, syncToken)}
+/system script add name="navspot-guardian" policy=read,write,test source=""
+:local src [/file get "ns-guard.txt" contents]
+/system script set [find name="navspot-guardian"] source=$src
+:do { /file remove "ns-guard.txt" } on-error={}
+:log info ("NAVSPOT-SCRIPTS: Guardian instalado (size=" . $fsize . ")")
+} else={
+:log error "NAVSPOT-SCRIPTS: Arquivo ns-guard.txt nao encontrado"
 }
-:delay 200ms
+} else={
+:log error "NAVSPOT-SCRIPTS: Guardian fetch falhou apos 3 tentativas"
+}
 
-# 4. SCHEDULERS (update if exist)
+# ===== 4. SCHEDULERS =====
 :local syncSched [/system scheduler find name="navspot-sync-scheduler"]
 :if ([:len $syncSched] > 0) do={
 /system scheduler set $syncSched interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" disabled=no
+:log info "NAVSPOT-SCRIPTS: Scheduler sync atualizado"
 } else={
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup start-date=jan/01/1970
+:log info "NAVSPOT-SCRIPTS: Scheduler sync criado"
 }
 
 :local guardSched [/system scheduler find name="navspot-guardian-scheduler"]
 :if ([:len $guardSched] > 0) do={
 /system scheduler set $guardSched interval=10m on-event="/system script run navspot-guardian" disabled=no
+:log info "NAVSPOT-SCRIPTS: Scheduler guardian atualizado"
 } else={
 /system scheduler add name="navspot-guardian-scheduler" interval=10m on-event="/system script run navspot-guardian" start-time=startup start-date=jan/01/1970
+:log info "NAVSPOT-SCRIPTS: Scheduler guardian criado"
 }
 
-# 5. NETWATCH
+# ===== 5. NETWATCH =====
 :do { /tool netwatch remove [find comment="navspot-netwatch"] } on-error={}
 /tool netwatch add host=8.8.8.8 interval=30s up-script="/system script run navspot-sync" comment="navspot-netwatch"
+:log info "NAVSPOT-SCRIPTS: Netwatch configurado"
 
 :log info "=========================================="
 :log info "NAVSPOT-SCRIPTS v${VERSION}: INSTALACAO CONCLUIDA!"
 :log info "Scripts: navspot-sync, navspot-action-processor, navspot-guardian"
 :log info "Schedulers: sync a cada ${syncIntervalMinutes}m, guardian a cada 10m"
 :log info "=========================================="
+
+# ===== 6. PRIMEIRO SYNC =====
+:log info "NAVSPOT-SCRIPTS: Executando primeiro sync..."
+:delay 2s
+/system script run navspot-sync
 `
 }
 
 /**
- * Generate individual sync script RSC
+ * Generate individual sync script RSC (legacy - with wrapper)
  */
 function generateSyncScript(syncUrl: string, syncToken: string): string {
   return `# NAVSPOT Sync Script v${VERSION}
@@ -198,7 +333,7 @@ ${generateSyncSource(syncUrl, syncToken)}
 }
 
 /**
- * Generate individual action-processor script RSC
+ * Generate individual action-processor script RSC (legacy - with wrapper)
  */
 function generateActionProcessorScript(): string {
   return `# NAVSPOT Action Processor v${VERSION}
@@ -211,7 +346,7 @@ ${generateActionProcessorSource()}
 }
 
 /**
- * Generate individual guardian script RSC
+ * Generate individual guardian script RSC (legacy - with wrapper)
  */
 function generateGuardianScript(recoveryUrl: string, syncToken: string): string {
   return `# NAVSPOT Guardian Script v${VERSION}
@@ -224,7 +359,8 @@ ${generateGuardianSource(recoveryUrl, syncToken)}
 }
 
 // ==========================================
-// SCRIPT SOURCES (RouterOS code)
+// SCRIPT SOURCES (RouterOS code - pure, no wrapper)
+// These are returned directly for *-source types
 // ==========================================
 
 function generateSyncSource(syncUrl: string, syncToken: string): string {
