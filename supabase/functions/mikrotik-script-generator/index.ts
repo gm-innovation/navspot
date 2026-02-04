@@ -5,11 +5,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.1"
+const VERSION = "7.1.2"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
- * mikrotik-script-generator v7.1.0 - ULTRA-THIN CLIENT
+ * mikrotik-script-generator v7.1.2 - ULTRA-THIN CLIENT
  * 
  * Bootstrap is minimal (~100 lines) and uses /tool fetch to download
  * scripts from the mikrotik-scripts endpoint AFTER infrastructure is configured.
