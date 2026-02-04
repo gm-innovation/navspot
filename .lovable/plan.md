@@ -123,27 +123,27 @@ const createIfMissing = `:if ([:len $_hsprof] = 0) do={`;
 
 ---
 
-## Checklist Final de Validação (Todas Suas Orientações)
+## Checklist Final de Validação ✅ COMPLETO
 
-| # | Verificação | Status Atual | Ação |
-|---|-------------|--------------|------|
-| 1 | Aspas balanceadas (`"`) | ✅ OK | Validação já existe |
-| 2 | Chaves balanceadas (`{}`) | ✅ OK | Validação já existe |
-| 3 | Parênteses balanceados (`()`) | ✅ OK | Validação já existe |
-| 4 | Linhas não-comentário ≤160 chars | ✅ OK | Linter existe |
-| 5 | Escapes corretos (`\$(mac)`) | ✅ OK | Sistema de placeholders |
-| 6 | Sem placeholders residuais | ✅ OK | Linter bloqueia `@@RUNTIME_` |
-| 7 | Sem BOM/CRLF | ✅ OK | `normalizeNewlines()` |
-| 8 | Variáveis declaradas no escopo | ✅ OK | Todas `:local` antes do uso |
-| 9 | Comandos compatíveis RouterOS 6.x | ✅ OK | Testado em produção |
-| 10 | JSON incremental | ✅ OK | `:set body ($body . ...)` |
-| 11 | on-event curto | ✅ OK | `"/system script run X"` |
-| 12 | profile add mínimo + sets | ✅ OK | Implementado v6.9.38 |
-| 13 | Sem `:if ([:len [/...` aninhado | ✅ OK | Linter bloqueia |
-| 14 | Sem `*.apple.com` wildcard | ✅ OK | Hosts explícitos |
-| 15 | Sem `*.supabase.*` wildcard | ✅ OK | Host explícito do backend |
-| 16 | **Variáveis sem underscore** | ❌ FALHA | **Corrigir `_hsprof`** |
-| 17 | **Linter para `:local _`** | ❌ AUSENTE | **Adicionar regra** |
+| # | Verificação | Status |
+|---|-------------|--------|
+| 1 | Aspas balanceadas (`"`) | ✅ OK |
+| 2 | Chaves balanceadas (`{}`) | ✅ OK |
+| 3 | Parênteses balanceados (`()`) | ✅ OK |
+| 4 | Linhas não-comentário ≤160 chars | ✅ OK |
+| 5 | Escapes corretos (`\$(mac)`) | ✅ OK |
+| 6 | Sem placeholders residuais | ✅ OK |
+| 7 | Sem BOM/CRLF | ✅ OK |
+| 8 | Variáveis declaradas no escopo | ✅ OK |
+| 9 | Comandos compatíveis RouterOS 6.x | ✅ OK |
+| 10 | JSON incremental | ✅ OK |
+| 11 | on-event curto | ✅ OK |
+| 12 | profile add mínimo + sets | ✅ OK |
+| 13 | Sem `:if ([:len [/...` aninhado | ✅ OK |
+| 14 | Sem `*.apple.com` wildcard | ✅ OK |
+| 15 | Sem `*.supabase.*` wildcard | ✅ OK |
+| 16 | **Variáveis sem underscore** | ✅ CORRIGIDO v6.9.40 |
+| 17 | **Linter para `:local _`** | ✅ ADICIONADO v6.9.40 |
 
 ---
 

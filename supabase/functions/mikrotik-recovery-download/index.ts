@@ -26,7 +26,7 @@ const corsHeaders = {
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.39"
+const VERSION = "6.9.40"
 const DEPLOYED_AT = new Date().toISOString()
 
 // v6.9.37: Placeholders para runtime vars - evita erros de escaping
@@ -104,7 +104,9 @@ function validateRouterOSScript(script: string, context: string): void {
     // v6.9.36: Block ANY line >120 chars containing \$(...) - not just command lines
     { regex: /^.{121,}.*\\\$\(/m, desc: 'Line >120 chars containing \\$(...) (breaks /import RouterOS 6.x - split into urlVars1/2/3)' },
     // v6.9.37: Block escaped local variables - só runtime vars devem ter escape
-    { regex: /\\\$(?:urlBase|fullUrl|_hsprof|urlVars[123])/, desc: 'Escaped local variable (use $urlBase not \\$urlBase - only runtime vars like \\$(mac) need escape)' },
+    { regex: /\\\$(?:urlBase|fullUrl|hsprof|urlVars[123])/, desc: 'Escaped local variable (use $urlBase not \\$urlBase - only runtime vars like \\$(mac) need escape)' },
+    // v6.9.40: Block local variables starting with underscore - RouterOS 6.x parser issue
+    { regex: /^:local\s+_/m, desc: 'Local var starts with underscore (RouterOS 6.x /import may fail - use hsprof not _hsprof)' },
     // v6.9.37: Block leftover placeholders - ensure all were replaced
     { regex: /@@RUNTIME_[A-Z_]+@@/, desc: 'Unreplaced runtime placeholder (call replaceRuntimePlaceholders before validation)' },
     // v6.9.37: Block double-escaped runtime vars
@@ -753,7 +755,7 @@ ${syncScriptSource}
 
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial configurado"
 
-# 6. HOTSPOT PROFILE v6.9.38 (add curto + sets separados)
+# 6. HOTSPOT PROFILE v6.9.40 (add curto + sets separados)
 :log info "NAVSPOT-RECOVERY: Configurando hotspot profile login-url..."
 :local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspotIdSafe}"
 :local urlVars1 "&mac=${RUNTIME_PLACEHOLDERS.mac}"
@@ -770,16 +772,16 @@ ${syncScriptSource}
 # Criar profile (idempotente - on-error ignora se ja existe)
 :do { /ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 } on-error={}
 
-# Obter handle do profile
-:local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
+# Obter handle do profile (v6.9.40: SEM underscore - RouterOS 6.x parser issue)
+:local hsprof [/ip hotspot profile find name="hsprof-navspot"]
 
 # Aplicar configuracoes via sets SEPARADOS (cada linha <100 chars)
-:do { /ip hotspot profile set $_hsprof dns-name="navspot.local" } on-error={}
-:do { /ip hotspot profile set $_hsprof html-directory=hotspot } on-error={}
-:do { /ip hotspot profile set $_hsprof login-by=http-pap,http-chap } on-error={}
-:do { /ip hotspot profile set $_hsprof keepalive-timeout=2m } on-error={}
-:do { /ip hotspot profile set $_hsprof idle-timeout=5m } on-error={}
-:do { /ip hotspot profile set $_hsprof login-url=$fullUrl } on-error={}
+:do { /ip hotspot profile set $hsprof dns-name="navspot.local" } on-error={}
+:do { /ip hotspot profile set $hsprof html-directory=hotspot } on-error={}
+:do { /ip hotspot profile set $hsprof login-by=http-pap,http-chap } on-error={}
+:do { /ip hotspot profile set $hsprof keepalive-timeout=2m } on-error={}
+:do { /ip hotspot profile set $hsprof idle-timeout=5m } on-error={}
+:do { /ip hotspot profile set $hsprof login-url=$fullUrl } on-error={}
 :log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
 
 :log info "=========================================="

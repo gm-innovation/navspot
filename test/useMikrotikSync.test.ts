@@ -66,8 +66,8 @@ describe('useMikrotikSync', () => {
       expect(goodPattern).not.toMatch(/profile add[^#\n]*login-url=/);
     });
 
-    it('should have login-url in separate set command WITHOUT quotes (v6.9.36)', () => {
-      const setCommand = `/ip hotspot profile set $_hsprof login-url=$fullUrl`;
+    it('should have login-url in separate set command WITHOUT quotes (v6.9.40)', () => {
+      const setCommand = `/ip hotspot profile set $hsprof login-url=$fullUrl`;
       
       expect(setCommand).toContain('profile set');
       expect(setCommand).toContain('login-url=$fullUrl');
@@ -89,12 +89,13 @@ describe('useMikrotikSync', () => {
       expect(urlConstruction).toContain(':set fullUrl');
     });
 
-    it('should have create-if-missing pattern', () => {
-      const createIfMissing = `:if ([:len $_hsprof] = 0) do={`;
+    it('should use idempotent add pattern (v6.9.40)', () => {
+      // v6.9.40: Replaced :if ([:len...] with idempotent :do { add } on-error={}
+      const idempotentAdd = `:do { /ip hotspot profile add name="hsprof-navspot" } on-error={}`;
       
-      expect(createIfMissing).toContain(':if');
-      expect(createIfMissing).toContain('[:len');
-      expect(createIfMissing).toContain('= 0');
+      expect(idempotentAdd).toContain(':do {');
+      expect(idempotentAdd).toContain('profile add');
+      expect(idempotentAdd).toContain('on-error={}');
     });
 
     it('should produce \\$(mac) in final RSC (single backslash)', () => {
@@ -129,22 +130,23 @@ describe('useMikrotikSync', () => {
     });
   });
 
-  describe('Script Generator v6.9.37 Escaping Validation', () => {
-    it('should NOT escape local script variables ($urlBase, $fullUrl, $_hsprof)', () => {
+  describe('Script Generator v6.9.40 Escaping Validation', () => {
+    it('should NOT escape local script variables ($urlBase, $fullUrl, $hsprof)', () => {
+      // v6.9.40: Variable names without underscore prefix (RouterOS 6.x parser issue)
       const correctLocalVars = `
 :local fullUrl $urlBase
 :set fullUrl ($fullUrl . $urlVars1)
-:if ([:len $_hsprof] = 0) do={
-/ip hotspot profile set $_hsprof login-url=$fullUrl
+:local hsprof [/ip hotspot profile find name="hsprof-navspot"]
+/ip hotspot profile set $hsprof login-url=$fullUrl
 `;
       
       // Variáveis locais NÃO devem ter backslash
       expect(correctLocalVars).toContain('$urlBase');
       expect(correctLocalVars).toContain('$fullUrl');
-      expect(correctLocalVars).toContain('$_hsprof');
+      expect(correctLocalVars).toContain('$hsprof');
       expect(correctLocalVars).not.toMatch(/\\\$urlBase/);
       expect(correctLocalVars).not.toMatch(/\\\$fullUrl/);
-      expect(correctLocalVars).not.toMatch(/\\\$_hsprof/);
+      expect(correctLocalVars).not.toMatch(/\\\$hsprof/);
     });
 
     it('should ONLY escape runtime hotspot variables with single backslash in .rsc', () => {
@@ -269,14 +271,15 @@ describe('useMikrotikSync', () => {
       expect(incrementalPattern).toContain(':set body ($body');
     });
 
-    it('should use separate set commands for profile configuration', () => {
+    it('should use separate set commands for profile configuration (v6.9.40)', () => {
+      // v6.9.40: Variable name $hsprof (without underscore) for RouterOS 6.x compatibility
       const setCommands = `
-:do { /ip hotspot profile set $_hsprof dns-name="test.navspot.local" } on-error={}
-:do { /ip hotspot profile set $_hsprof html-directory=hotspot } on-error={}
-:do { /ip hotspot profile set $_hsprof login-by=http-pap,http-chap } on-error={}
-:do { /ip hotspot profile set $_hsprof keepalive-timeout=2m } on-error={}
-:do { /ip hotspot profile set $_hsprof idle-timeout=5m } on-error={}
-:do { /ip hotspot profile set $_hsprof login-url=$fullUrl } on-error={}
+:do { /ip hotspot profile set $hsprof dns-name="test.navspot.local" } on-error={}
+:do { /ip hotspot profile set $hsprof html-directory=hotspot } on-error={}
+:do { /ip hotspot profile set $hsprof login-by=http-pap,http-chap } on-error={}
+:do { /ip hotspot profile set $hsprof keepalive-timeout=2m } on-error={}
+:do { /ip hotspot profile set $hsprof idle-timeout=5m } on-error={}
+:do { /ip hotspot profile set $hsprof login-url=$fullUrl } on-error={}
 `;
       
       // Each set command should be under 100 chars
@@ -284,6 +287,18 @@ describe('useMikrotikSync', () => {
       for (const line of lines) {
         expect(line.length).toBeLessThan(100);
       }
+    });
+    
+    it('should NOT have underscore-prefixed local variables (v6.9.40)', () => {
+      // v6.9.40: Local variables starting with _ can break RouterOS 6.x /import
+      const badPattern = ':local _hsprof [/ip hotspot profile find name="hsprof-navspot"]';
+      const goodPattern = ':local hsprof [/ip hotspot profile find name="hsprof-navspot"]';
+      
+      // Bad: underscore prefix
+      expect(badPattern).toMatch(/^:local\s+_/);
+      
+      // Good: no underscore prefix
+      expect(goodPattern).not.toMatch(/^:local\s+_/);
     });
   });
 
