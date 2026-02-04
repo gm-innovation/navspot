@@ -744,10 +744,11 @@ ${wanConfig}
 # login-by=http-pap,http-chap para compatibilidade
 # html-directory default ("hotspot") mantido para compatibilidade RouterOS 6.x
 # login-url construida em variaveis locais para evitar erro de parser em linha longa
+# Nota: $fullUrl sem aspas pois e variavel local (aspas causam erro no linter)
 :local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspot.id}"
 :local urlVars "&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
 :local fullUrl (\$urlBase . \$urlVars)
-/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m login-url="\$fullUrl"
+/ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m login-url=\$fullUrl
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
 :log info "NAVSPOT: Hotspot v${VERSION} com portal externo ativo (URL segura)"
 
