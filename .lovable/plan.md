@@ -1,164 +1,152 @@
 
-# Correção v7.1.6: Limite de 4KB para Variáveis no RouterOS 6.x
+# Correção v7.1.7: Parser Error em source={...} no RouterOS 6.x
 
-## Diagnóstico Confirmado
+## Problema Identificado
 
-O script `navspot-action-processor` tem o campo **Source VAZIO** no MikroTik, mesmo com logs indicando "instalado com sucesso". 
+O erro "expected end of command (line 6 column 68)" ocorre durante o `/import ns-sync.rsc` (ou ns-action.rsc). 
 
-**Causa raiz**: No RouterOS 6.x, o comando `/file get ... contents` tem um limite de **~4KB** para transferir conteúdo para uma variável. Se o arquivo exceder esse tamanho, a variável retorna **vazia silenciosamente** (sem erro!).
+**Causa raiz**: O código gerado pelas funções `generate*RSC()` insere o script "puro" dentro de `source={...}`, mas **não aplica escape** nos caracteres especiais:
+- `"` precisa virar `\"`
+- `$` precisa virar `\$`
+- `\` precisa virar `\\`
 
-O `action-source` atual tem ~238 linhas (~8-9KB), muito acima do limite.
+A função `escapeForSourceBlock()` existe no código (linha 40-46), mas **não está sendo chamada**.
 
-## Arquitetura da Solução
+## Exemplo do Problema
 
-### Opção escolhida: **Chunked Import via /import direto**
-
-Em vez de:
+O script gerado atualmente:
 ```routeros
-:local src [/file get "ns-action.txt" contents]  # FALHA no 6.x
-/system script set ... source=$src
+/system script add name="navspot-sync" source={
+:log info "NAVSPOT-SYNC v7.1.6: Iniciando..."
+:local token ""
+...
+}
 ```
 
-Usar:
+Deveria ser:
 ```routeros
-/import ns-action.rsc  # Funciona com qualquer tamanho!
+/system script add name="navspot-sync" source={
+:log info \"NAVSPOT-SYNC v7.1.6: Iniciando...\"
+:local token \"\"
+...
+}
 ```
 
-O truque é que o arquivo `.rsc` já contenha o comando de criação do script com `source={...}` embutido. O `/import` processa o arquivo diretamente do disco, sem passar por variável.
+## Solução
 
-## Mudanças Técnicas
+Aplicar `escapeForSourceBlock()` nas três funções que geram RSC com `source={...}`:
 
-### A) `mikrotik-scripts/index.ts`
+1. **`generateSyncRSC()`** (linha 352-360)
+2. **`generateActionProcessorRSC()`** (linha 367-375)  
+3. **`generateGuardianRSC()`** (linha 381-389)
 
-#### 1) Alterar `generateAllScripts()` - Installer com /import direto
+## Mudanças no Código
 
-Para cada script (sync, action-processor, guardian), em vez de:
-```routeros
-/tool fetch url=... dst-path="ns-action.txt"
-:local src [/file get "ns-action.txt" contents]  # PROBLEMA!
-/system script set ... source=$src
-```
+### `supabase/functions/mikrotik-scripts/index.ts`
 
-Usar:
-```routeros
-/tool fetch url=... dst-path="ns-action.rsc"
-:delay 2s
-/import ns-action.rsc
-:do { /file remove "ns-action.rsc" } on-error={}
-```
-
-#### 2) Alterar tipos de retorno da API
-
-Os endpoints `*-source` passam a retornar scripts RSC completos com wrapper:
-
-**sync-source** → retorna:
-```routeros
-# NAVSPOT Sync v7.1.6
+#### 1) `generateSyncRSC()` - Aplicar escape
+```typescript
+function generateSyncRSC(syncUrl: string, syncToken: string): string {
+  const source = generateSyncSource(syncUrl, syncToken)
+  const escapedSource = escapeForSourceBlock(source)  // ADICIONAR
+  return `# NAVSPOT Sync v${VERSION} - RSC for /import
 :do { /system script remove [find name="navspot-sync"] } on-error={}
 /system script add name="navspot-sync" policy=read,write,test source={
-  <código do sync aqui>
+${escapedSource}
 }
-:log info "NAVSPOT: Sync v7.1.6 instalado"
+:log info "NAVSPOT: Sync v${VERSION} instalado"
+`
+}
 ```
 
-**action-source** → retorna:
-```routeros
-# NAVSPOT Action Processor v7.1.6
+#### 2) `generateActionProcessorRSC()` - Aplicar escape
+```typescript
+function generateActionProcessorRSC(): string {
+  const source = generateActionProcessorSource()
+  const escapedSource = escapeForSourceBlock(source)  // ADICIONAR
+  return `# NAVSPOT Action Processor v${VERSION} - RSC for /import
 :do { /system script remove [find name="navspot-action-processor"] } on-error={}
 /system script add name="navspot-action-processor" policy=read,write,test source={
-  <código do action-processor aqui>
+${escapedSource}
 }
-:log info "NAVSPOT: Action-processor v7.1.6 instalado"
+:log info "NAVSPOT: Action-processor v${VERSION} instalado"
+`
+}
 ```
 
-**guardian-source** → retorna:
-```routeros
-# NAVSPOT Guardian v7.1.6
+#### 3) `generateGuardianRSC()` - Aplicar escape
+```typescript
+function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
+  const source = generateGuardianSource(recoveryUrl, syncToken)
+  const escapedSource = escapeForSourceBlock(source)  // ADICIONAR
+  return `# NAVSPOT Guardian v${VERSION} - RSC for /import
 :do { /system script remove [find name="navspot-guardian"] } on-error={}
 /system script add name="navspot-guardian" policy=read,write,test source={
-  <código do guardian aqui>
+${escapedSource}
 }
-:log info "NAVSPOT: Guardian v7.1.6 instalado"
+:log info "NAVSPOT: Guardian v${VERSION} instalado"
+`
+}
 ```
 
-### B) Validação de sintaxe para `source={...}`
+#### 4) Bump de versão para v7.1.7
+- `VERSION = "7.1.7"`
+- Atualizar docblock
 
-O código que gera os scripts com `source={...}` precisa **escapar** caracteres especiais dentro do bloco:
-- `"` → `\"`
-- `$` → `\$` (para variáveis locais, runtime `$(...)` é tratado separadamente)
-
-**IMPORTANTE**: Não podemos simplesmente retornar o código "puro" com wrappers, pois o `source={...}` tem regras rígidas do parser RouterOS 6.x.
-
-A solução mais segura é usar uma abordagem **híbrida**:
-1. Retornar arquivo RSC que cria o script vazio
-2. Depois carregar o source via `/file set` em chunks
-
-### C) Solução Final: Chunked Loading (Compatível com 6.x)
-
-Para scripts grandes (>4KB), dividir em múltiplos arquivos de ~3KB cada:
-
-```routeros
-# Installer baixa em chunks
-/tool fetch url=(.../action-source?chunk=1) dst-path="ns-a1.txt"
-/tool fetch url=(.../action-source?chunk=2) dst-path="ns-a2.txt"
-...
-# Concatena em runtime
-:local s1 [/file get "ns-a1.txt" contents]
-:local s2 [/file get "ns-a2.txt" contents]
-:local fullSrc ($s1 . $s2)
-/system script set ... source=$fullSrc
-```
-
-**Problema**: Isso adiciona complexidade e múltiplas requisições.
-
-### D) Solução Simplificada Escolhida: **Minificar o Action Processor**
-
-Reduzir o `navspot-action-processor` para menos de **4KB** removendo:
-1. Handlers de comandos raramente usados (firewall, blacklist avançado)
-2. Comentários e espaços extras
-3. Logs verbosos intermediários
-
-O action-processor ESSENCIAL precisa apenas:
-- `configure_hotspot_profile`
-- `create_profile`
-- `create_user`
-- `remove_user`
-- `disable_user` / `enable_user`
-- `kick_session`
-- `update_password`
-
-Comandos avançados (`add_firewall_block`, `create_whitelist_domain`, `update_profile_quota`) podem ser movidos para um script separado (`navspot-action-extended`) carregado apenas se necessário.
-
-## Arquivos a Modificar
+### Outros Arquivos
 
 | Arquivo | Alteração |
 |---------|-----------|
-| `supabase/functions/mikrotik-scripts/index.ts` | Minificar `generateActionProcessorSource()` para <4KB; alterar installer para usar `/import` |
-| `supabase/functions/mikrotik-script-generator/index.ts` | Bump para v7.1.6 |
-| `src/components/modals/ScriptModal.tsx` | Default v7.1.6 |
-| `src/pages/Embarcacoes.tsx` | Fallback v7.1.6 |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Bump VERSION para "7.1.7" |
+| `src/components/modals/ScriptModal.tsx` | Default scriptVersion="7.1.7" |
+| `src/pages/Embarcacoes.tsx` | Fallback currentScriptVersion="7.1.7" |
 
-## Estimativa de Tamanho Após Minificação
+## Verificação Extra: escapeForSourceBlock()
 
-O action-processor essencial terá:
-- Lock check: ~200 bytes
-- File read: ~300 bytes
-- Parsing loop: ~400 bytes
-- `configure_hotspot_profile`: ~500 bytes
-- `create_profile`: ~600 bytes
-- `create_user`: ~600 bytes
-- `remove_user`: ~200 bytes
-- `disable_user`/`enable_user`: ~200 bytes
-- `kick_session`: ~200 bytes
-- `update_password`: ~200 bytes
-- Cleanup/logs: ~200 bytes
-- **Total estimado: ~3.6KB** ✓
+A função atual parece correta, mas vou validar a ordem das substituições:
+
+```typescript
+function escapeForSourceBlock(script: string): string {
+  return script
+    .replace(/\\/g, '\\\\')  // 1. Escape backslashes first
+    .replace(/"/g, '\\"')     // 2. Escape double quotes  
+    .replace(/\$/g, '\\$')    // 3. Escape dollar signs
+    .replace(/\\\$\(/g, '$(') // 4. Restore runtime $(...) 
+}
+```
+
+**PROBLEMA**: O passo 4 tenta restaurar `$(` mas após o passo 3, `$` já virou `\$`, então o padrão real seria `\\\$\(` (com os backslashes). A regex está correta, mas precisa considerar que já escapamos `\` também.
+
+Após passo 1: `\` → `\\`
+Após passo 2: `"` → `\"`
+Após passo 3: `$` → `\$`
+Agora `$(mac)` virou `\$(mac)` ✓
+
+Mas um `\$` original já virou `\\$` no passo 1, depois `\\\$` no passo 3... A lógica está complexa.
+
+**SOLUÇÃO MAIS SEGURA**: Usar placeholder antes de escapar:
+
+```typescript
+function escapeForSourceBlock(script: string): string {
+  // Preservar runtime vars ANTES de escapar
+  const preserved = script.replace(/\$\(/g, '@@RUNTIME_VAR@@')
+  
+  const escaped = preserved
+    .replace(/\\/g, '\\\\')   // Escape backslashes
+    .replace(/"/g, '\\"')      // Escape quotes
+    .replace(/\$/g, '\\$')     // Escape dollar signs (local vars)
+  
+  // Restaurar runtime vars
+  return escaped.replace(/@@RUNTIME_VAR@@/g, '$(')
+}
+```
 
 ## Validação Pós-Deploy
 
-1. Gerar bootstrap v7.1.6
+1. Gerar bootstrap v7.1.7
 2. Importar no MikroTik
-3. Verificar `/system script print` → navspot-action-processor deve ter Source **com conteúdo**
-4. Executar `/system script run navspot-sync`
-5. Verificar logs `NAVSPOT-ACTION v7.1.6: Start`
-6. Verificar `/ip hotspot user print where name="alexandre.silva"` → usuário criado
+3. Verificar que não há mais "expected end of command"
+4. Verificar `/system script print` → navspot-sync, navspot-action-processor com Source preenchido
+5. Executar `/system script run navspot-sync`
+6. Verificar logs `NAVSPOT-ACTION v7.1.7: Start`
+7. Verificar `/ip hotspot user print where name="alexandre.silva"` → usuário criado
