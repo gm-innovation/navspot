@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.11
+ * mikrotik-scripts v7.1.12
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -17,8 +17,12 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" (default: "all")
  *   - token: sync_token for authentication
  * 
+ * v7.1.12: CRITICAL FIX for RouterOS 6.x variable expansion
+ *   - login-url and dns-name use CONCATENATION: login-url=("" . $loginUrl)
+ *   - In RouterOS, "$var" does NOT expand - it passes literal "$var"
+ *   - Using ("" . $var) forces expression context, properly expanding the variable
+ * 
  * v7.1.11: CRITICAL FIXES for RouterOS 6.x syntax
- *   - login-url and dns-name use QUOTED strings: login-url="$loginUrl"
  *   - Empty parameter validation in create_user (skip empty password)
  *   - Added sync lock to prevent concurrent executions
  *   - Added walled-garden handlers: create_whitelist_domain, create_blacklist_domain
@@ -33,7 +37,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.11"
+const VERSION = "7.1.12"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -563,8 +567,8 @@ function generateActionProcessorSource(): string {
 :if (([:len $loginUrl] > 0) && ([:len $dnsName] > 0)) do={
 :local hsprof [/ip hotspot profile find name="hsprof-navspot"]
 :if ([:len $hsprof] > 0) do={
-:do { /ip hotspot profile set $hsprof login-url="$loginUrl" } on-error={ :log warning "NAVSPOT: falha set login-url" }
-:do { /ip hotspot profile set $hsprof dns-name="$dnsName" } on-error={ :log warning "NAVSPOT: falha set dns-name" }
+:do { /ip hotspot profile set $hsprof login-url=("" . $loginUrl) } on-error={ :log warning "NAVSPOT: falha set login-url" }
+:do { /ip hotspot profile set $hsprof dns-name=("" . $dnsName) } on-error={ :log warning "NAVSPOT: falha set dns-name" }
 :do { /ip hotspot profile set $hsprof login-by=http-pap,http-chap } on-error={}
 :log info ("NAVSPOT: Hotspot profile configurado - " . $dnsName)
 :set processedCount ($processedCount + 1)
