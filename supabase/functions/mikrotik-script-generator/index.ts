@@ -5,8 +5,51 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "6.9.36"
+const VERSION = "6.9.37"
 const DEPLOYED_AT = new Date().toISOString()
+
+// v6.9.37: Placeholders para runtime vars - evita erros de escaping
+const RUNTIME_PLACEHOLDERS = {
+  mac: '@@RUNTIME_MAC@@',
+  ip: '@@RUNTIME_IP@@',
+  linkLoginOnly: '@@RUNTIME_LINK_LOGIN_ONLY@@',
+} as const;
+
+// Substituir placeholders por escaping correto para .rsc final
+function replaceRuntimePlaceholders(script: string): string {
+  const map: Record<string, string> = {
+    '@@RUNTIME_MAC@@': '\\$(mac)',
+    '@@RUNTIME_IP@@': '\\$(ip)',
+    '@@RUNTIME_LINK_LOGIN_ONLY@@': '\\$(link-login-only)',
+  };
+  return Object.entries(map).reduce(
+    (s, [ph, val]) => s.replace(new RegExp(ph, 'g'), val),
+    script
+  );
+}
+
+// Normalizar newlines (UTF-8 LF sem BOM/CRLF)
+function normalizeNewlines(script: string): string {
+  return script.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+// Validação de balanceamento básico
+function validateBalance(script: string): void {
+  const openBraces = (script.match(/{/g) || []).length;
+  const closeBraces = (script.match(/}/g) || []).length;
+  if (openBraces !== closeBraces) {
+    throw new Error(`Unbalanced braces: ${openBraces} open, ${closeBraces} close`);
+  }
+  const quotes = (script.match(/"/g) || []).length;
+  if (quotes % 2 !== 0) {
+    throw new Error(`Unbalanced quotes: ${quotes} (odd number)`);
+  }
+  const openParens = (script.match(/\(/g) || []).length;
+  const closeParens = (script.match(/\)/g) || []).length;
+  if (openParens !== closeParens) {
+    throw new Error(`Unbalanced parentheses: ${openParens} open, ${closeParens} close`);
+  }
+}
 
 interface Hotspot {
   id: string
@@ -61,6 +104,12 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /profile add[^#\n]*login-url=\$/, desc: 'login-url=$var in add command (use separate set after add)' },
     // v6.9.36: Block ANY line >120 chars containing \$(...) - not just command lines
     { regex: /^.{121,}.*\\\$\(/m, desc: 'Line >120 chars containing \\$(...) (breaks /import RouterOS 6.x - split into urlVars1/2/3)' },
+    // v6.9.37: Block escaped local variables - só runtime vars devem ter escape
+    { regex: /\\\$(?:urlBase|fullUrl|_hsprof|urlVars[123])/, desc: 'Escaped local variable (use $urlBase not \\$urlBase - only runtime vars like \\$(mac) need escape)' },
+    // v6.9.37: Block leftover placeholders - ensure all were replaced
+    { regex: /@@RUNTIME_[A-Z_]+@@/, desc: 'Unreplaced runtime placeholder (call replaceRuntimePlaceholders before validation)' },
+    // v6.9.37: Block double-escaped runtime vars
+    { regex: /\\\\\$\(/, desc: 'Double-escaped runtime var (\\\\$(mac) should be \\$(mac))' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
@@ -138,8 +187,8 @@ Deno.serve(async (req) => {
 
     const embarcacao = hotspot.embarcacoes as unknown as Embarcacao
 
-    // Generate v6.9.27 single bootstrap script (no finalize needed)
-    const bootstrapScript = generateBootstrapScript(
+    // Generate v6.9.37 single bootstrap script with placeholder replacement
+    let bootstrapScript = generateBootstrapScript(
       hotspot as unknown as Hotspot,
       embarcacao,
       Deno.env.get('SUPABASE_URL')!
@@ -148,7 +197,10 @@ Deno.serve(async (req) => {
     // v6.9.2: Script único - sem necessidade de navspot-finalize
     const finalizeScript = ''
 
-    // Validate script before saving
+    // v6.9.37: Apply placeholder replacement, normalize and validate
+    bootstrapScript = replaceRuntimePlaceholders(bootstrapScript)
+    bootstrapScript = normalizeNewlines(bootstrapScript)
+    validateBalance(bootstrapScript)
     validateRouterOSScript(bootstrapScript, 'script-generator')
 
     // Save generated script to hotspot
@@ -746,20 +798,20 @@ ${wanConfig}
 
 :log info "NAVSPOT: Regras de firewall para Winbox/MNDP criadas"
 
-# 7. HOTSPOT v6.9.36 (URL incremental + set sem aspas)
-# Padrao definitivo: dividir runtime vars em linhas curtas (<120 chars)
-# e aplicar login-url SEM aspas (evita linter trigger)
+# 7. HOTSPOT v6.9.37 (placeholders + escaping robusto)
+# Variáveis locais: SEM escape ($urlBase, $fullUrl, $_hsprof)
+# Variáveis runtime: via placeholder -> substituídas no final
 :local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspot.id}"
-:local urlVars1 "&mac=\\$(mac)"
-:local urlVars2 "&ip=\\$(ip)"
-:local urlVars3 "&link-login-only=\\$(link-login-only)"
+:local urlVars1 "&mac=${RUNTIME_PLACEHOLDERS.mac}"
+:local urlVars2 "&ip=${RUNTIME_PLACEHOLDERS.ip}"
+:local urlVars3 "&link-login-only=${RUNTIME_PLACEHOLDERS.linkLoginOnly}"
 
-:local fullUrl \$urlBase
-:set fullUrl (\$fullUrl . \$urlVars1)
-:set fullUrl (\$fullUrl . \$urlVars2)
-:set fullUrl (\$fullUrl . \$urlVars3)
+:local fullUrl $urlBase
+:set fullUrl ($fullUrl . $urlVars1)
+:set fullUrl ($fullUrl . $urlVars2)
+:set fullUrl ($fullUrl . $urlVars3)
 
-:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len \$fullUrl] . " sample=" . [:pick \$fullUrl 0 120])
+:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl] . " sample=" . [:pick $fullUrl 0 120])
 
 # Passo A: Criar profile SEM login-url (comando curto e seguro)
 :do {
@@ -768,19 +820,19 @@ ${wanConfig}
 
 # Passo B: Garantir handle do profile (create-if-missing)
 :local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len \$_hsprof] = 0) do={
+:if ([:len $_hsprof] = 0) do={
 :log warning "NAVSPOT: profile nao encontrado apos add, criando novamente..."
 /ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} dns-name="${dnsName}" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m
 :set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
 }
 
-# Passo C: Aplicar login-url via set SEM aspas (v6.9.36)
+# Passo C: Aplicar login-url via set SEM aspas (v6.9.37)
 :do {
-/ip hotspot profile set \$_hsprof login-url=\$fullUrl
+/ip hotspot profile set $_hsprof login-url=$fullUrl
 } on-error={:log warning "NAVSPOT: nao conseguiu setar login-url no profile"}
 
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
-:log info "NAVSPOT: Hotspot v${VERSION} com portal externo ativo (URL incremental)"
+:log info "NAVSPOT: Hotspot v\${VERSION} com portal externo ativo (escaping robusto)"
 
 # 8. WALLED GARDEN v6.9.27 (Portal + APIs + Captive Portal Detection)
 # Portal NAVSPOT
@@ -899,9 +951,9 @@ ${migrationCommands}
 
 :log info "=========================================="
 :log info "NAVSPOT v${VERSION}: INSTALACAO CONCLUIDA!"
+:log info "FIX v6.9.37: Placeholders + escaping robusto (elimina erros de escape)"
 :log info "FIX v6.9.31: Replaced *.supabase.* wildcards with explicit host"
 :log info "FIX v6.9.31: Token file uses explicit .txt extension"
-:log info "FIX v6.9.30: Local vars unescaped, runtime vars escaped"
 :log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"
 :log info "FIX: Whitelist/blacklist use direct commands only"
 :log info "FIX: Firewall rules use remove+add with place-before=0"

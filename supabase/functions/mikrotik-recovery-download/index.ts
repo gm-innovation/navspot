@@ -31,8 +31,51 @@ const corsHeaders = {
  * Also called by authenticated users from the admin panel to download recovery scripts.
  */
 
-const VERSION = "6.9.36"
+const VERSION = "6.9.37"
 const DEPLOYED_AT = new Date().toISOString()
+
+// v6.9.37: Placeholders para runtime vars - evita erros de escaping
+const RUNTIME_PLACEHOLDERS = {
+  mac: '@@RUNTIME_MAC@@',
+  ip: '@@RUNTIME_IP@@',
+  linkLoginOnly: '@@RUNTIME_LINK_LOGIN_ONLY@@',
+} as const;
+
+// Substituir placeholders por escaping correto para .rsc final
+function replaceRuntimePlaceholders(script: string): string {
+  const map: Record<string, string> = {
+    '@@RUNTIME_MAC@@': '\\$(mac)',
+    '@@RUNTIME_IP@@': '\\$(ip)',
+    '@@RUNTIME_LINK_LOGIN_ONLY@@': '\\$(link-login-only)',
+  };
+  return Object.entries(map).reduce(
+    (s, [ph, val]) => s.replace(new RegExp(ph, 'g'), val),
+    script
+  );
+}
+
+// Normalizar newlines (UTF-8 LF sem BOM/CRLF)
+function normalizeNewlines(script: string): string {
+  return script.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+// Validação de balanceamento básico
+function validateBalance(script: string): void {
+  const openBraces = (script.match(/{/g) || []).length;
+  const closeBraces = (script.match(/}/g) || []).length;
+  if (openBraces !== closeBraces) {
+    throw new Error(`Unbalanced braces: ${openBraces} open, ${closeBraces} close`);
+  }
+  const quotes = (script.match(/"/g) || []).length;
+  if (quotes % 2 !== 0) {
+    throw new Error(`Unbalanced quotes: ${quotes} (odd number)`);
+  }
+  const openParens = (script.match(/\(/g) || []).length;
+  const closeParens = (script.match(/\)/g) || []).length;
+  if (openParens !== closeParens) {
+    throw new Error(`Unbalanced parentheses: ${openParens} open, ${closeParens} close`);
+  }
+}
 
 function maskToken(token: string): string {
   if (!token || token.length < 10) return '***'
@@ -65,6 +108,12 @@ function validateRouterOSScript(script: string, context: string): void {
     { regex: /profile add[^#\n]*login-url=\$/, desc: 'login-url=$var in add command (use separate set after add)' },
     // v6.9.36: Block ANY line >120 chars containing \$(...) - not just command lines
     { regex: /^.{121,}.*\\\$\(/m, desc: 'Line >120 chars containing \\$(...) (breaks /import RouterOS 6.x - split into urlVars1/2/3)' },
+    // v6.9.37: Block escaped local variables - só runtime vars devem ter escape
+    { regex: /\\\$(?:urlBase|fullUrl|_hsprof|urlVars[123])/, desc: 'Escaped local variable (use $urlBase not \\$urlBase - only runtime vars like \\$(mac) need escape)' },
+    // v6.9.37: Block leftover placeholders - ensure all were replaced
+    { regex: /@@RUNTIME_[A-Z_]+@@/, desc: 'Unreplaced runtime placeholder (call replaceRuntimePlaceholders before validation)' },
+    // v6.9.37: Block double-escaped runtime vars
+    { regex: /\\\\\$\(/, desc: 'Double-escaped runtime var (\\\\$(mac) should be \\$(mac))' },
   ]
   
   for (const { regex, desc } of forbiddenPatterns) {
@@ -285,10 +334,13 @@ Deno.serve(async (req) => {
 
     console.log(`[mikrotik-recovery-download ${VERSION}] Generating recovery for: ${hotspot!.nome}`)
 
-    // v6.9.31: Recovery script with explicit backend host - no *.supabase.* wildcards
-    const recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes, syncToken, hotspot!.id, backendHost)
+    // v6.9.37: Recovery script with explicit backend host + placeholder replacement
+    let recoveryScript = generateRecoveryScript(syncUrl, syncIntervalMinutes, syncToken, hotspot!.id, backendHost)
 
-    // Validate script before returning
+    // v6.9.37: Apply placeholder replacement, normalize and validate
+    recoveryScript = replaceRuntimePlaceholders(recoveryScript)
+    recoveryScript = normalizeNewlines(recoveryScript)
+    validateBalance(recoveryScript)
     validateRouterOSScript(recoveryScript, 'mikrotik-recovery-download')
 
     console.log(`[mikrotik-recovery-download ${VERSION}] Recovery script generated for ${hotspot!.nome} (${recoveryScript.length} bytes)`)
@@ -695,32 +747,33 @@ ${syncScriptSource}
 
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial configurado"
 
-# 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.36
-# URL incremental: dividir runtime vars em linhas curtas (<120 chars)
+# 6. HOTSPOT PROFILE v6.9.37 (placeholders + escaping robusto)
+# Variáveis locais: SEM escape ($urlBase, $fullUrl, $_hsprof)
+# Variáveis runtime: via placeholder -> substituídas no final
 :log info "NAVSPOT-RECOVERY: Configurando hotspot profile login-url..."
 :local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspotId}"
-:local urlVars1 "&mac=\\$(mac)"
-:local urlVars2 "&ip=\\$(ip)"
-:local urlVars3 "&link-login-only=\\$(link-login-only)"
+:local urlVars1 "&mac=${RUNTIME_PLACEHOLDERS.mac}"
+:local urlVars2 "&ip=${RUNTIME_PLACEHOLDERS.ip}"
+:local urlVars3 "&link-login-only=${RUNTIME_PLACEHOLDERS.linkLoginOnly}"
 
-:local fullUrl \$urlBase
-:set fullUrl (\$fullUrl . \$urlVars1)
-:set fullUrl (\$fullUrl . \$urlVars2)
-:set fullUrl (\$fullUrl . \$urlVars3)
+:local fullUrl $urlBase
+:set fullUrl ($fullUrl . $urlVars1)
+:set fullUrl ($fullUrl . $urlVars2)
+:set fullUrl ($fullUrl . $urlVars3)
 
-:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len \$fullUrl] . " sample=" . [:pick \$fullUrl 0 120])
+:log info ("NAVSPOT-DEBUG: fullUrl-len=" . [:len $fullUrl] . " sample=" . [:pick $fullUrl 0 120])
 
 # Garantir que profile existe (create-if-missing)
 :local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len \$_hsprof] = 0) do={
+:if ([:len $_hsprof] = 0) do={
 :log warning "NAVSPOT-RECOVERY: profile nao existe, criando..."
 /ip hotspot profile add name="hsprof-navspot" hotspot-address=192.168.88.1 dns-name="navspot.local" html-directory=hotspot login-by=http-pap,http-chap keepalive-timeout=2m idle-timeout=5m
 :set _hsprof [/ip hotspot profile find name="hsprof-navspot"]
 }
 
-# Aplicar login-url via set SEM aspas (v6.9.36)
+# Aplicar login-url via set SEM aspas (v6.9.37)
 :do {
-/ip hotspot profile set \$_hsprof login-url=\$fullUrl
+/ip hotspot profile set $_hsprof login-url=$fullUrl
 :log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
 } on-error={
 :log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
@@ -729,7 +782,7 @@ ${syncScriptSource}
 
 :log info "=========================================="
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
-:log info "FIX v6.9.36: URL incremental + set sem aspas (padrao definitivo)"
+:log info "FIX v6.9.37: Placeholders + escaping robusto (elimina erros de escape)"
 :log info "FIX v6.9.31: Replaced *.supabase.* wildcards with explicit host"
 :log info "FIX v6.9.31: Token file uses explicit .txt extension"
 :log info "FIX v6.9.28: Removed *.apple.com (explicit hosts instead)"
