@@ -23,7 +23,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.3"
+const VERSION = "7.1.4"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -416,9 +416,13 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :while (($j >= $i) && ([:pick $raw $j ($j + 1)] = " ")) do={:set j ($j - 1)}
 :local actions ""
 :if ($j >= $i) do={:set actions [:pick $raw $i ($j + 1)]}
-:global navspotActions $actions
 :log info ("NAVSPOT-SYNC: pending_actions_pipe extraido (" . [:len $actions] . " chars)")
-:log info ("NAVSPOT-SYNC: Variavel global setada, acionando action-processor...")
+# v7.1.4: Usar arquivo ao inves de variavel global (evita race condition RouterOS 6.x)
+:do { /file remove "navspot-actions.txt" } on-error={}
+/file print file=navspot-actions.txt where name="__never__"
+:delay 500ms
+/file set [find name="navspot-actions.txt"] contents=$actions
+:log info ("NAVSPOT-SYNC: Acoes salvas em arquivo, acionando action-processor...")
 :delay 500ms
 /system script run navspot-action-processor
 }
@@ -427,18 +431,25 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 
 function generateActionProcessorSource(): string {
-  return `:global navspotActions
-:global navspotLock
+  return `:global navspotLock
 :if ($navspotLock = "1") do={
 :log info "NAVSPOT-ACTION: processamento em andamento, abortando"
 :return
 }
 :set navspotLock "1"
-:local rawData $navspotActions
-:log info ("NAVSPOT-ACTION: Variavel recebida, len=" . [:len $rawData])
+# v7.1.4: Ler acoes de arquivo ao inves de variavel global (evita race condition)
+:local actionsFile [/file find name="navspot-actions.txt"]
+:if ([:len $actionsFile] = 0) do={
+:set navspotLock "0"
+:log warning "NAVSPOT-ACTION: Arquivo navspot-actions.txt NAO encontrado"
+:return
+}
+:local rawData [/file get "navspot-actions.txt" contents]
+:log info ("NAVSPOT-ACTION: Acoes lidas do arquivo, len=" . [:len $rawData])
+:do { /file remove "navspot-actions.txt" } on-error={}
 :if ([:len $rawData] = 0) do={
 :set navspotLock "0"
-:log warning "NAVSPOT-ACTION: Variavel navspotActions VAZIA - nada a processar"
+:log warning "NAVSPOT-ACTION: Arquivo vazio - nada a processar"
 :return
 }
 :log info ("NAVSPOT-ACTION v${VERSION}: Iniciando - " . $rawData)
