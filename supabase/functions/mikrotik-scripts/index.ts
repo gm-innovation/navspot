@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.6
+ * mikrotik-scripts v7.1.7
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -17,6 +17,10 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" (default: "all")
  *   - token: sync_token for authentication
  * 
+ * v7.1.7: CRITICAL FIX for source={} escaping
+ *   - escapeForSourceBlock() now called on all RSC generators
+ *   - Uses placeholder pattern for runtime vars $()
+ * 
  * v7.1.6: CRITICAL FIX for RouterOS 6.x 4KB variable limit
  *   - *-source endpoints now return full RSC with source={...} wrapper
  *   - Installer uses /import directly instead of [/file get ... contents]
@@ -25,7 +29,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.6"
+const VERSION = "7.1.7"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -36,13 +40,19 @@ function maskToken(token: string): string {
 /**
  * Escape script source for embedding in source={...} block
  * RouterOS 6.x requires escaping " and $ inside source={} blocks
+ * v7.1.7: Uses placeholder pattern to preserve runtime vars $(...)
  */
 function escapeForSourceBlock(script: string): string {
-  return script
-    .replace(/\\/g, '\\\\')  // Escape backslashes first
-    .replace(/"/g, '\\"')     // Escape double quotes
-    .replace(/\$/g, '\\$')    // Escape dollar signs (local vars)
-    .replace(/\\\$\(/g, '$(') // But preserve runtime $(...) - unnescape
+  // Preserve runtime vars BEFORE escaping
+  const preserved = script.replace(/\$\(/g, '@@RUNTIME_VAR@@')
+  
+  const escaped = preserved
+    .replace(/\\/g, '\\\\')   // Escape backslashes first
+    .replace(/"/g, '\\"')      // Escape double quotes
+    .replace(/\$/g, '\\$')     // Escape dollar signs (local vars)
+  
+  // Restore runtime vars (unescaped)
+  return escaped.replace(/@@RUNTIME_VAR@@/g, '$(')
 }
 
 Deno.serve(async (req) => {
@@ -348,13 +358,15 @@ ${generateGuardianSource(recoveryUrl, syncToken)}
 
 /**
  * Generate sync RSC with source={} wrapper for direct /import
+ * v7.1.7: Now applies escapeForSourceBlock() to fix parser errors
  */
 function generateSyncRSC(syncUrl: string, syncToken: string): string {
   const source = generateSyncSource(syncUrl, syncToken)
+  const escapedSource = escapeForSourceBlock(source)
   return `# NAVSPOT Sync v${VERSION} - RSC for /import
 :do { /system script remove [find name="navspot-sync"] } on-error={}
 /system script add name="navspot-sync" policy=read,write,test source={
-${source}
+${escapedSource}
 }
 :log info "NAVSPOT: Sync v${VERSION} instalado"
 `
@@ -362,14 +374,16 @@ ${source}
 
 /**
  * Generate action-processor RSC with source={} wrapper for direct /import
+ * v7.1.7: Now applies escapeForSourceBlock() to fix parser errors
  * v7.1.6: MINIFIED to <4KB with essential handlers only
  */
 function generateActionProcessorRSC(): string {
   const source = generateActionProcessorSource()
+  const escapedSource = escapeForSourceBlock(source)
   return `# NAVSPOT Action Processor v${VERSION} - RSC for /import
 :do { /system script remove [find name="navspot-action-processor"] } on-error={}
 /system script add name="navspot-action-processor" policy=read,write,test source={
-${source}
+${escapedSource}
 }
 :log info "NAVSPOT: Action-processor v${VERSION} instalado"
 `
@@ -377,13 +391,15 @@ ${source}
 
 /**
  * Generate guardian RSC with source={} wrapper for direct /import
+ * v7.1.7: Now applies escapeForSourceBlock() to fix parser errors
  */
 function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
   const source = generateGuardianSource(recoveryUrl, syncToken)
+  const escapedSource = escapeForSourceBlock(source)
   return `# NAVSPOT Guardian v${VERSION} - RSC for /import
 :do { /system script remove [find name="navspot-guardian"] } on-error={}
 /system script add name="navspot-guardian" policy=read,write,test source={
-${source}
+${escapedSource}
 }
 :log info "NAVSPOT: Guardian v${VERSION} instalado"
 `
