@@ -116,6 +116,15 @@ function validateRouterOSScript(script: string, context: string): void {
   
   for (const { regex, desc } of forbiddenPatterns) {
     if (regex.test(script)) {
+      // v6.9.38: Log the actual long line for debugging
+      if (desc.includes('>160 chars')) {
+        const lines = script.split('\n')
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].length > 160 && !lines[i].trim().startsWith('#')) {
+            console.error(`[${context} ${VERSION}] Long line #${i + 1} (${lines[i].length} chars): ${lines[i].substring(0, 100)}...`)
+          }
+        }
+      }
       console.error(`[${context} ${VERSION}] VALIDATION FAILED: Script contains forbidden pattern: ${desc}`)
       throw new Error(`Script validation failed: contains ${desc}`)
     }
@@ -387,15 +396,21 @@ function generateBootstrapScript(
 :local pname [get $p name]
 :set profiles ($profiles . $pname . ",")
 }
-# v6.9.38: Construir JSON incrementalmente (evita linha >160 chars)
+# v6.9.38: Construir JSON incrementalmente (linhas <100 chars cada)
 :local body ("{" . $q . "sync_token" . $q . ":" . $q . $token . $q)
-:set body ($body . "," . $q . "active_users_csv" . $q . ":" . $q . $users . $q)
-:set body ($body . "," . $q . "registered_users_csv" . $q . ":" . $q . $registered . $q)
-:set body ($body . "," . $q . "registered_profiles_csv" . $q . ":" . $q . $profiles . $q . "}")
+:set body ($body . "," . $q . "active_users_csv" . $q)
+:set body ($body . ":" . $q . $users . $q)
+:set body ($body . "," . $q . "registered_users_csv" . $q)
+:set body ($body . ":" . $q . $registered . $q)
+:set body ($body . "," . $q . "registered_profiles_csv" . $q)
+:set body ($body . ":" . $q . $profiles . $q . "}")
+# v6.9.38: Fetch usando variavel local para header (evita linha >160)
+:local hdr "Content-Type: application/json"
 :do {
-:local result [/tool fetch url=$syncUrl mode=https http-method=post http-data=$body http-header-field="Content-Type: application/json" output=user as-value]
-:if (($result->"status") = "finished") do={
-:local resp ($result->"data")
+/tool fetch url=$syncUrl mode=https http-method=post http-data=$body http-header-field=$hdr dst-path="navspot-resp.txt"
+:delay 500ms
+:local resp [/file get "navspot-resp.txt" contents]
+:do { /file remove "navspot-resp.txt" } on-error={}
 :local start [:find $resp "[["]
 :local end [:find $resp "]]"]
 :if (($start >= 0) && ($end > $start)) do={
@@ -412,7 +427,6 @@ function generateBootstrapScript(
 :log info ("NAVSPOT-DEBUG: raw=[" . $actions . "]")
 :delay 250ms
 /system script run navspot-action-processor
-}
 }
 } on-error={:log warning "NAVSPOT-SYNC: Falha"}
 :log info "NAVSPOT-SYNC: OK"`
@@ -955,10 +969,13 @@ ${migrationCommands}
 
 :log info "NAVSPOT: Portas LAN migradas"
 
-# 15. SYNC INICIAL SUAVE v6.9.38 (on-event curto)
+# 15. SYNC INICIAL SUAVE v6.9.38 (scheduler com script helper para on-event curto)
 :log info "NAVSPOT: Agendando sync inicial em 45 segundos..."
 :delay 200ms
-/system scheduler add name="navspot-first-sync" on-event="/system script run navspot-sync; /system scheduler remove navspot-first-sync" start-time=startup interval=45s
+# Usar scheduler com on-event simples, removal sera feito manualmente ou no proximo boot
+/system scheduler add name="navspot-first-sync" start-time=startup interval=45s on-event="/system script run navspot-sync"
+:delay 45s
+:do { /system scheduler remove [find name="navspot-first-sync"] } on-error={}
 
 :log info "=========================================="
 :log info "NAVSPOT v${VERSION}: INSTALACAO CONCLUIDA!"
