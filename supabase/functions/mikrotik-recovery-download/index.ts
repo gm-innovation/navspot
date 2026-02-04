@@ -693,14 +693,15 @@ ${syncScriptSource}
 :log info "NAVSPOT-RECOVERY: Walled Garden essencial configurado"
 
 # 6. HOTSPOT PROFILE - Garantir login-url para portal externo v6.9.34
-# Safe URL construction: build URL in local vars, then set profile with quotes
+# Safe URL construction: build URL in local vars, then set profile
+# Nota: $fullUrl sem aspas pois e variavel local (aspas causam erro no linter)
 :log info "NAVSPOT-RECOVERY: Configurando hotspot profile login-url..."
 :local urlBase "https://navspot.lovable.app/hotspot-login?h=${hotspotId}"
 :local urlVars "&mac=\\$(mac)&ip=\\$(ip)&link-login-only=\\$(link-login-only)"
 :local fullUrl (\$urlBase . \$urlVars)
 :local _hsprof [/ip hotspot profile find name="hsprof-navspot"]
 :do {
-/ip hotspot profile set \$_hsprof login-url="\$fullUrl"
+/ip hotspot profile set \$_hsprof login-url=\$fullUrl
 :log info "NAVSPOT-RECOVERY: login-url configurada no hotspot profile"
 } on-error={
 :log warning "NAVSPOT-RECOVERY: Hotspot profile hsprof-navspot nao encontrado - execute bootstrap completo"
