@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.0"
+const VERSION = "7.1.1"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -260,8 +260,7 @@ function generateBootstrapScript(
 :log info "NAVSPOT: DHCP client em ${wanInterface}"`
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
 
-  // v7.1: Bootstrap ULTRA-MINIMO - SEM scripts embutidos!
-  // Scripts são baixados via /tool fetch após a infra estar pronta
+  // v7.1.1: Bootstrap with retry, route/DNS checks
   return `# =========================================
 # NAVSPOT Bootstrap Script v${VERSION} - ULTRA-THIN
 # Scripts baixados via API (sem source={} embutido)
@@ -352,7 +351,7 @@ ${migrationCommands}
 # 10. HOTSPOT MINIMO v7.1 (SEM login-url - sera configurada via sync)
 :do { /ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} } on-error={}
 /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no
-:log info "NAVSPOT v7.1: Hotspot criado (aguardando config via sync)"
+:log info "NAVSPOT v${VERSION}: Hotspot criado (aguardando config via sync)"
 
 # 11. TOKEN
 :do { /file remove "navspot-token.txt" } on-error={}
@@ -362,17 +361,62 @@ ${migrationCommands}
 /file set [find where name="navspot-token.txt"] contents="${hotspot.sync_token}"
 :log info "NAVSPOT: Token salvo"
 
-# 12. AGUARDAR ESTABILIZACAO DA REDE
-:log info "NAVSPOT v${VERSION}: Aguardando 10s para rede estabilizar..."
-:delay 10s
+# 12. AGUARDAR ESTABILIZACAO DA REDE (15s v7.1.1)
+:log info "NAVSPOT v${VERSION}: Aguardando 15s para rede estabilizar..."
+:delay 15s
 
-# 13. BAIXAR E INSTALAR SCRIPTS VIA API (CORE DO v7.1!)
-:log info "NAVSPOT v${VERSION}: Baixando scripts da API..."
+# 12.1. VERIFICAR ROTA DEFAULT
+:local hasRoute false
+:do {
+:local gw [/ip route get [find dst-address="0.0.0.0/0" active=yes] gateway]
+:if ([:len $gw] > 0) do={ :set hasRoute true }
+} on-error={}
+:if ($hasRoute = false) do={
+:log warning "NAVSPOT v${VERSION}: Rota default NAO encontrada - fetch pode falhar"
+} else={
+:log info "NAVSPOT v${VERSION}: Rota default OK"
+}
+
+# 12.2. VERIFICAR DNS
+:local dnsOk false
+:do {
+:local resolved [:resolve "focqrhkozhdefohroqyi.supabase.co"]
+:if ([:len $resolved] > 0) do={ :set dnsOk true }
+} on-error={}
+:if ($dnsOk = false) do={
+:log warning "NAVSPOT v${VERSION}: DNS NAO resolvido - tentando fetch mesmo assim"
+} else={
+:log info "NAVSPOT v${VERSION}: DNS OK"
+}
+
+# 13. BAIXAR E INSTALAR SCRIPTS VIA API COM RETRY (3 tentativas)
 :local apiBase "${scriptsUrl}"
 :local tk "${hotspot.sync_token}"
 :local scriptsUrl ($apiBase . "?type=all&token=" . $tk)
+:local maxRetries 3
+:local retryCount 0
+:local fetchSuccess false
+
+:log info "NAVSPOT v${VERSION}: Iniciando download dos scripts..."
+
+:while (($retryCount < $maxRetries) && ($fetchSuccess = false)) do={
+:set retryCount ($retryCount + 1)
+:log info ("NAVSPOT v${VERSION}: Tentativa " . $retryCount . "/" . $maxRetries)
+:do {
 /tool fetch url=$scriptsUrl check-certificate=no dst-path="ns-install.rsc"
-:delay 3s
+:set fetchSuccess true
+} on-error={
+:log warning ("NAVSPOT v${VERSION}: Fetch falhou na tentativa " . $retryCount)
+:if ($retryCount < $maxRetries) do={
+:log info "NAVSPOT v${VERSION}: Aguardando 5s antes de retry..."
+:delay 5s
+}
+}
+}
+
+:if ($fetchSuccess = true) do={
+:log info "NAVSPOT v${VERSION}: Fetch OK! Aguardando 4s para flash..."
+:delay 4s
 :log info "NAVSPOT v${VERSION}: Importando scripts..."
 /import ns-install.rsc
 :delay 1s
@@ -393,5 +437,11 @@ ${migrationCommands}
 :log info "Hotspot: hs-navspot (aguardando login-url via sync)"
 :log info "Gerencia: ether2 (Winbox/MNDP)"
 :log info "=========================================="
+} else={
+:log error "NAVSPOT v${VERSION}: FALHA CRITICA - Fetch falhou apos 3 tentativas"
+:log error "NAVSPOT v${VERSION}: Verifique conectividade e execute manualmente:"
+:log error "NAVSPOT v${VERSION}: /tool fetch url=<API_URL> check-certificate=no dst-path=ns-install.rsc"
+:log error "NAVSPOT v${VERSION}: /import ns-install.rsc"
+}
 `
 }
