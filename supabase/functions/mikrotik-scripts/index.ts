@@ -17,11 +17,14 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" (default: "all")
  *   - token: sync_token for authentication
  * 
+ * v7.1.15: JSON optimization for RouterOS truncation resilience
+ *   - pending_actions_pipe moved to FIRST position in JSON response
+ *   - Added file size logging after fetch for debugging
+ *   - Ensures RouterOS finds [[ ]] markers even on truncated responses
+ * 
  * v7.1.14: CRITICAL FIX for RouterOS 6.x /import line length limit
  *   - Long source="..." strings now use line continuation with \
- *   - Improved sync logging (shows response prefix on invalid responses)
  *   - Standardized find where name="..." syntax
- *   - Validates RSC line lengths after generation
  * 
  * v7.1.13: CRITICAL FIX for RouterOS 6.x strict syntax
  *   - All / commands inside do={} wrapped with :do { } on-error={}
@@ -32,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.14"
+const VERSION = "7.1.15"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -564,6 +567,9 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 } on-error={ :log warning "NAVSPOT-SYNC: FETCH falhou (rede/TLS/DNS)"; :set navspotSyncLock "0" }
 :if ($fetchOk = true) do={
 :delay 500ms
+:local fsize 0
+:do { :set fsize [/file get "navspot-resp.txt" size] } on-error={}
+:log info ("NAVSPOT-SYNC: Resp recebida (" . $fsize . " bytes)")
 :local resp ""
 :do { :set resp [/file get "navspot-resp.txt" contents] } on-error={}
 :do { /file remove "navspot-resp.txt" } on-error={}

@@ -5,8 +5,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.1.11: Version identifier - escape RouterOS placeholders, return [[]] when empty
-const VERSION = "7.1.11"
+// v7.1.15: Version identifier - pipe-first JSON for RouterOS truncation resilience
+const VERSION = "7.1.15"
 
 // v7.0: Sanitize pipe delimiter in URLs
 function sanitizeForPipe(value: string): string {
@@ -1492,15 +1492,18 @@ Deno.serve(async (req) => {
 
     console.log(`[mikrotik-sync] v7.0: Returning ${expandedActions.length} pending actions, ${firewallRules.length} firewall rules, ${blockedDevices.length} blocked devices`)
 
+    // v7.1.15: pending_actions_pipe FIRST in JSON for RouterOS truncation resilience
+    // RouterOS may truncate large responses; putting pipe first ensures markers are found
     return new Response(
       JSON.stringify({
+        pending_actions_pipe: formattedPipe,  // FIRST - RouterOS scans for [[
         success: true,
+        server_time: new Date().toISOString(),
+        // Keep other fields for debugging but move to end
         pending_actions: expandedActions,
-        pending_actions_pipe: formattedPipe,  // v6.5: [[ cmd|p1;cmd2|p1; ]]
         firewall_rules: firewallRules,
         device_violations: deviceViolations,
-        blocked_devices: blockedDevices,
-        server_time: new Date().toISOString()
+        blocked_devices: blockedDevices
       }),
       { 
         status: 200, 
