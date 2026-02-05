@@ -1,143 +1,153 @@
 
 
-# Correção v7.1.16: File-Based Script Creation (Solução Definitiva)
+# Correção v7.1.17: Fix Escape de Sequências RouterOS
 
-## Diagnóstico Confirmado
+## Problema Identificado
 
-O erro **"expected end of command (line 61 column 9)"** ocorre porque a função `wrapSourceWithContinuation()` introduzida em v7.1.14/15 está cortando sequências de escape no meio:
+### Localização Exata
+**Linha 430** de `mikrotik-scripts/index.ts`:
+```typescript
+:local q "\\22"
+```
 
-1. A string escapada contém sequências como `\\r\\n` (4 chars)
-2. O chunking de 120 chars corta no meio dessas sequências
-3. Exemplo: `\\r\\n` vira `\\r` no final + `\\n` no início do próximo chunk
-4. O RouterOS 6.x interpreta isso como sintaxe inválida
+### Fluxo do Problema
+1. No TypeScript, `"\\22"` representa a string literal `\22`
+2. `escapeForFileContents()` atual faz: `\22` → `\\22`
+3. O RSC gerado contém: `contents="...:local q \"\\\\22\"..."`
+4. RouterOS interpreta `\\22` como backslash literal + "22" (errado!)
+5. Deveria ser `\22` (código ASCII para aspas duplas)
 
-## Solução Definitiva: Script via Arquivo Temporário
+## Solução em Duas Partes
 
-**Estratégia aprovada**: Escrever o conteúdo do script em um arquivo temporário, depois criar o script lendo o conteúdo via `[/file get ... contents]`.
+### Parte 1: Corrigir uso de `\\22` em generateSyncSource
 
-**Por que funciona**:
-1. O `/import` apenas executa comandos simples (escrever arquivo, criar script)
-2. O conteúdo do script não é parseado pelo `/import`
-3. RouterOS atribui o conteúdo do arquivo diretamente ao `source`
-4. Newlines literais são aceitos em `/file set contents="..."`
-5. Não há limite de linha para o conteúdo do arquivo
+**Antes (linha 430)**:
+```typescript
+:local q "\\22"
+```
 
-## Implementação Técnica
+**Depois**:
+```typescript
+:local q "\""
+```
 
-### 1) Remover `wrapSourceWithContinuation()` completamente
+O `escapeForFileContents()` vai converter `"` para `\"`, e o RouterOS interpreta corretamente como a variável `q` contendo uma aspas duplas.
 
-Esta função é a causa raiz do problema.
+### Parte 2: Implementar escapeForFileContents() Robusto
 
-### 2) Criar helper `escapeForFileContents()`
+Substituir a função atual (linhas 53-58) por versão que preserva sequências RouterOS:
 
 ```typescript
 /**
- * v7.1.16: Escape script source for /file set contents="..."
- * CRÍTICO: Ordem das substituições é importante para evitar double-escaping
+ * v7.1.17: Escape script source for /file set contents="..."
+ * 
+ * CRITICAL: Preserve RouterOS escape sequences like \22 (quote), \5C (backslash), \n, \r, \t
+ * Pattern: preserve → escape → restore
  */
 function escapeForFileContents(script: string): string {
-  return script
-    .replace(/\\/g, '\\\\')   // 1. Escapa backslashes PRIMEIRO
-    .replace(/"/g, '\\"')      // 2. Escapa aspas DEPOIS
-    .replace(/\$/g, '\\$')     // 3. Escapa $ para evitar expansão de variável
-}
-```
-
-### 3) Criar helper `generateScriptViaFile()`
-
-```typescript
-function generateScriptViaFile(
-  scriptName: string,
-  sourceText: string,
-  policy: string = "read,write,test"
-): string {
-  const tempFile = `${scriptName}.txt`
-  const escapedContents = escapeForFileContents(sourceText)
+  // Map placeholder -> original
+  const preserved = new Map<string, string>()
+  let counter = 0
   
-  return `# Create ${scriptName} via file (v${VERSION})
-:do { /file remove "${tempFile}" } on-error={}
-/file print file=${tempFile} where name="__never__"
-:delay 500ms
-/file set [find where name="${tempFile}"] contents="${escapedContents}"
-:delay 500ms
-:do { /system script remove [find where name="${scriptName}"] } on-error={}
-:delay 200ms
-/system script add name="${scriptName}" policy=${policy} source=[/file get [find where name="${tempFile}"] contents]
-:delay 200ms
-:do { /file remove "${tempFile}" } on-error={}
-:log info "NAVSPOT: ${scriptName} v${VERSION} instalado"
-`
+  // Helper to create unique placeholder
+  const makePlaceholder = () => `__PRESERVED_${Date.now().toString(36)}_${counter++}__`
+  
+  // 1) Preserve hex escapes like \22, \5C and common escapes \n \r \t
+  let result = script.replace(/\\([0-9A-Fa-f]{2}|[nrt])/g, (m) => {
+    const ph = makePlaceholder()
+    preserved.set(ph, m)
+    return ph
+  })
+  
+  // 2) Now escape remaining backslashes, quotes and $ safely
+  result = result.replace(/\\/g, '\\\\')   // Escape backslashes first
+  result = result.replace(/"/g, '\\"')      // Then quotes
+  result = result.replace(/\$/g, '\\$')     // Then $ for variable expansion
+  
+  // 3) Restore preserved sequences (they contain backslash+char that should remain as-is)
+  preserved.forEach((orig, ph) => {
+    result = result.replace(ph, orig)
+  })
+  
+  return result
 }
 ```
 
-### 4) Atualizar todas as funções RSC
+## Mudanças Técnicas
 
-- `generateSyncRSC()` → usa `generateScriptViaFile("navspot-sync", source)`
-- `generateActionProcessorRSC()` → usa `generateScriptViaFile("navspot-action-processor", source)`
-- `generateGuardianRSC()` → usa `generateScriptViaFile("navspot-guardian", source)`
-- `generateSyncScript()` → usa `generateScriptViaFile()` (legacy)
-- `generateActionProcessorScript()` → usa `generateScriptViaFile()` (legacy)
-- `generateGuardianScript()` → usa `generateScriptViaFile()` (legacy)
+### Arquivo: `supabase/functions/mikrotik-scripts/index.ts`
 
-### 5) Version bump para 7.1.16
+| Linhas | Mudança |
+|--------|---------|
+| 34 | Bump VERSION para "7.1.17" |
+| 43-58 | Atualizar docstring e implementar `escapeForFileContents()` robusto com pattern preserve→escape→restore |
+| 430 | Trocar `:local q "\\22"` para `:local q "\""` (literal quote) |
 
-## Arquivos Alterados
+### Arquivo: `supabase/functions/mikrotik-script-generator/index.ts`
 
-| Arquivo | Mudança |
-|---------|---------|
-| `supabase/functions/mikrotik-scripts/index.ts` | Remover `wrapSourceWithContinuation`, adicionar `escapeForFileContents` e `generateScriptViaFile`, atualizar todas as funções RSC, bump v7.1.16 |
-| `supabase/functions/mikrotik-script-generator/index.ts` | Bump VERSION 7.1.16 |
-| `src/components/modals/ScriptModal.tsx` | Bump scriptVersion 7.1.16 |
-| `src/pages/Embarcacoes.tsx` | Bump currentScriptVersion 7.1.16 |
+| Mudança |
+|---------|
+| Bump VERSION para "7.1.17" |
 
-## Exemplo de RSC Gerado (v7.1.16)
+### Arquivo: `src/components/modals/ScriptModal.tsx`
 
-```routeros
-# Create navspot-action-processor via file (v7.1.16)
-:do { /file remove "navspot-action-processor.txt" } on-error={}
-/file print file=navspot-action-processor.txt where name="__never__"
-:delay 500ms
-/file set [find where name="navspot-action-processor.txt"] contents=":log info \"NAVSPOT-ACTION v7.1.16: Start\"
-:global navspotLock
-:if (\$navspotLock = \"1\") do={ :log info \"NAVSPOT-ACTION: lock ativo\"; :return }
-... (MÚLTIPLAS LINHAS LITERAIS SÃO ACEITAS)"
-:delay 500ms
-:do { /system script remove [find where name="navspot-action-processor"] } on-error={}
-:delay 200ms
-/system script add name="navspot-action-processor" policy=read,write,test source=[/file get [find where name="navspot-action-processor.txt"] contents]
-:delay 200ms
-:do { /file remove "navspot-action-processor.txt" } on-error={}
-:log info "NAVSPOT: navspot-action-processor v7.1.16 instalado"
+| Mudança |
+|---------|
+| Bump scriptVersion para "7.1.17" |
+
+### Arquivo: `src/pages/Embarcacoes.tsx`
+
+| Mudança |
+|---------|
+| Bump currentScriptVersion para "7.1.17" |
+
+## Exemplo de Transformação
+
+### Antes (v7.1.16)
+```
+Input TypeScript: :local q "\\22"
+Após escapeForFileContents: :local q \"\\\\22\"
+RouterOS interpreta: q = backslash + "22" (ERRADO!)
+```
+
+### Depois (v7.1.17)
+```
+Input TypeScript: :local q "\""
+Após escapeForFileContents: :local q \"\\\"\"
+RouterOS interpreta: q = " (CORRETO!)
 ```
 
 ## Validação no MikroTik
 
 ```routeros
-# 1. Importar bootstrap v7.1.16
-/import navspot-bootstrap-v7.1.16.rsc
+# 1. Importar bootstrap v7.1.17
+/import navspot-bootstrap-v7.1.17.rsc
 
 # 2. Verificar scripts válidos (SEM flag I)
 /system script print where name~"navspot"
 
-# 3. Rodar action-processor manualmente
-/system script run navspot-action-processor
+# 3. Inspecionar primeiros 200 chars do source (debug)
+:local src [/system script get navspot-sync source]
+:put [:pick $src 0 200]
 
-# 4. Verificar logs (deve mostrar "NAVSPOT-ACTION v7.1.16: Start")
-/log print where message~"NAVSPOT-ACTION"
-
-# 5. Rodar sync completo
+# 4. Rodar sync manualmente
 /system script run navspot-sync
-/log print where message~"NAVSPOT"
+
+# 5. Verificar logs
+/log print where message~"NAVSPOT-SYNC"
+# Esperado: "NAVSPOT-SYNC v7.1.17: OK" sem erros de sintaxe
+
+# 6. Aguardar scheduler (2-5 min) e verificar status Online no frontend
 ```
 
 ## Checklist de Testes
 
-- [ ] Remover `wrapSourceWithContinuation()` completamente
-- [ ] Implementar `escapeForFileContents()` com ordem correta de escapes
-- [ ] Implementar `generateScriptViaFile()` com pattern file-based
-- [ ] Atualizar todas as funções RSC e legacy
-- [ ] Testar em RouterOS 6.49.x
+- [ ] Bump VERSION para 7.1.17 em todos os arquivos
+- [ ] Substituir `\\22` por `"` em generateSyncSource (linha 430)
+- [ ] Implementar `escapeForFileContents()` robusto com preservação de sequências
+- [ ] Deploy edge functions
+- [ ] Testar /import no RouterOS 6.49.x
 - [ ] Confirmar scripts sem flag **I**
 - [ ] Rodar sync e verificar logs sem erros de sintaxe
-- [ ] Testar em dispositivo com flash lento (hAP lite)
+- [ ] Verificar hotspot aparece Online no frontend
 
