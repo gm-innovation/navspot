@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.23
+ * mikrotik-scripts v7.1.24
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -18,10 +18,13 @@ const corsHeaders = {
  *           "sync-raw" | "action-raw" | "action-aux-raw" | "guardian-raw" (default: "all")
  *   - token: sync_token for authentication
  * 
+ * v7.1.24: RouterOS 6.x COMPATIBILITY FIX
+ *   - Removed :rndnum (only exists in RouterOS 7.x)
+ *   - Using timestamp only for unique temp file names
+ * 
  * v7.1.23: AGGRESSIVE COMPACTION + ENHANCED SAFEGUARDS
  *   - sync-raw reduced to ~2.8KB (minified variables/logs)
  *   - action-raw reduced to ~3.1KB (move remove_user to AUX)
- *   - Unique temp file names with [:rndnum] for race-condition prevention
  *   - Header detection (# NAME) in content validation
  *   - Smoke test with $error capture and cleanup
  *   - Multi-line fallback with minimal escaping (~1.2KB)
@@ -29,7 +32,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.23"
+const VERSION = "7.1.24"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -301,10 +304,10 @@ function generateAllScripts(
 :local ep "/mikrotik-scripts"
 :local tk "${syncToken}"
 
-# v7.1.23: Unique temp file names with timestamp + rndnum
+# v7.1.24: Unique temp file names with timestamp (RouterOS 6.x compatible)
+# Note: :rndnum removed - only exists in RouterOS 7.x
 :local ts [/system clock get time]
 :local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local rnd [:rndnum from=0 to=9999]
 
 # Pre-flight checks
 :local hasRoute false
@@ -333,7 +336,7 @@ function generateAllScripts(
 # ===== 1. SYNC SCRIPT (fetch raw source ~2.8KB) =====
 :log info "NAVSPOT-INSTALL: Baixando sync-raw..."
 :local syncRawUrl ($apiBase . $ep . "?type=sync-raw&token=" . $tk)
-:local syncTempFile ("ns-sync-" . $tsStr . "-" . $rnd . ".src")
+:local syncTempFile ("ns-sync-" . $tsStr . ".src")
 :local syncOk false
 :local syncRetry 0
 :while (($syncRetry < 3) && ($syncOk = false)) do={
@@ -375,7 +378,7 @@ function generateAllScripts(
 # ===== 2. ACTION PROCESSOR CORE (fetch raw source ~3.1KB) =====
 :log info "NAVSPOT-INSTALL: Baixando action-raw (core)..."
 :local actionRawUrl ($apiBase . $ep . "?type=action-raw&token=" . $tk)
-:local actionTempFile ("ns-action-" . $tsStr . "-" . $rnd . ".src")
+:local actionTempFile ("ns-action-" . $tsStr . ".src")
 :local actionOk false
 :local actionRetry 0
 :while (($actionRetry < 3) && ($actionOk = false)) do={
@@ -462,7 +465,7 @@ function generateAllScripts(
 # ===== 3. GUARDIAN (fetch raw source ~2.5KB) =====
 :log info "NAVSPOT-INSTALL: Baixando guardian-raw..."
 :local guardRawUrl ($apiBase . $ep . "?type=guardian-raw&token=" . $tk)
-:local guardTempFile ("ns-guard-" . $tsStr . "-" . $rnd . ".src")
+:local guardTempFile ("ns-guard-" . $tsStr . ".src")
 :local guardOk false
 :local guardRetry 0
 :while (($guardRetry < 3) && ($guardOk = false)) do={

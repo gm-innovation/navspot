@@ -5,8 +5,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.1.23: Version identifier - aggressive compaction + enhanced safeguards
-const VERSION = "7.1.23"
+// v7.1.24: Version identifier - RouterOS 6.x compatibility fix
+const VERSION = "7.1.24"
 
 // v7.1.23: Sanitize pipe string for safe /file set contents in RouterOS
 // Removes characters that cause truncation or parsing errors
