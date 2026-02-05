@@ -31,7 +31,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.16"
+const VERSION = "7.1.17"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -40,21 +40,39 @@ function maskToken(token: string): string {
 }
 
 /**
- * v7.1.16: Escape script source for /file set contents="..."
+ * v7.1.17: Escape script source for /file set contents="..."
  * 
- * RouterOS accepts literal newlines in contents, so we DON'T escape \n
- * This is the key difference from escapeForSourceQuotes()
+ * CRITICAL: Preserve RouterOS escape sequences like \22 (quote), \5C (backslash), \n, \r, \t
+ * Pattern: preserve → escape → restore
  * 
- * CRITICAL: Order of substitutions matters to avoid double-escaping!
- * 1. Escape backslashes FIRST (\ -> \\)
- * 2. Escape quotes AFTER (" -> \")
- * 3. Escape dollar signs ($ -> \$) to prevent variable expansion
+ * This prevents double-escaping of intentional RouterOS hex/escape sequences
  */
 function escapeForFileContents(script: string): string {
-  return script
-    .replace(/\\/g, '\\\\')   // 1. Escape backslashes FIRST
-    .replace(/"/g, '\\"')      // 2. Escape quotes AFTER
-    .replace(/\$/g, '\\$')     // 3. Escape $ to prevent variable expansion
+  // Map placeholder -> original
+  const preserved = new Map<string, string>()
+  let counter = 0
+  
+  // Helper to create unique placeholder
+  const makePlaceholder = () => `__PRESERVED_${Date.now().toString(36)}_${counter++}__`
+  
+  // 1) Preserve hex escapes like \22, \5C and common escapes \n \r \t
+  let result = script.replace(/\\([0-9A-Fa-f]{2}|[nrt])/g, (m) => {
+    const ph = makePlaceholder()
+    preserved.set(ph, m)
+    return ph
+  })
+  
+  // 2) Now escape remaining backslashes, quotes and $ safely
+  result = result.replace(/\\/g, '\\\\')   // Escape backslashes first
+  result = result.replace(/"/g, '\\"')      // Then quotes
+  result = result.replace(/\$/g, '\\$')     // Then $ for variable expansion
+  
+  // 3) Restore preserved sequences (they contain backslash+char that should remain as-is)
+  preserved.forEach((orig, ph) => {
+    result = result.replace(ph, orig)
+  })
+  
+  return result
 }
 
 /**
@@ -427,7 +445,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local users ""
 :local registered ""
 :local profiles ""
-:local q "\\22"
+:local q "\\""
 /ip hotspot active
 :foreach a in=[find] do={
 :local u [get $a user]
