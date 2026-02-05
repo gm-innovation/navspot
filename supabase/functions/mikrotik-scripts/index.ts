@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.14
+ * mikrotik-scripts v7.1.16
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -17,25 +17,21 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" (default: "all")
  *   - token: sync_token for authentication
  * 
+ * v7.1.16: FILE-BASED SCRIPT CREATION (Critical Fix)
+ *   - Scripts are now created via temporary files using [/file get ... contents]
+ *   - This bypasses RouterOS 6.x /import line length limits completely
+ *   - Removed wrapSourceWithContinuation() which caused "expected end of command" errors
+ *   - New escapeForFileContents() escapes only: backslashes, quotes, and dollar signs
+ *   - Pattern: write file -> create script reading file contents -> remove temp file
+ * 
  * v7.1.15: JSON optimization for RouterOS truncation resilience
- *   - pending_actions_pipe moved to FIRST position in JSON response
- *   - Added file size logging after fetch for debugging
- *   - Ensures RouterOS finds [[ ]] markers even on truncated responses
- * 
- * v7.1.14: CRITICAL FIX for RouterOS 6.x /import line length limit
- *   - Long source="..." strings now use line continuation with \
- *   - Standardized find where name="..." syntax
- * 
+ * v7.1.14: Line continuation attempt (caused issues - reverted)
  * v7.1.13: CRITICAL FIX for RouterOS 6.x strict syntax
- *   - All / commands inside do={} wrapped with :do { } on-error={}
- *   - Removed problematic ~ (regex) operator in walled-garden find
- *   - Variables used directly without ("" . $var) wrapper
- *   - navspotLock released in all error paths
  * 
  * Returns: text/plain RSC script that can be imported directly
  */
 
-const VERSION = "7.1.15"
+const VERSION = "7.1.16"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -44,108 +40,60 @@ function maskToken(token: string): string {
 }
 
 /**
- * Escape script source for embedding in source="..." block
- * RouterOS requires:
- * - Escaping " and $ inside source="" quoted strings
- * - Converting newlines to \r\n for multiline content in .rsc files
+ * v7.1.16: Escape script source for /file set contents="..."
  * 
- * v7.1.9: CRITICAL - Convert newlines to \r\n for RouterOS 6.x /import compatibility
- *   RouterOS 6.x does NOT accept literal newlines inside source="..." in .rsc files
- *   The parser interprets each line as a separate command, breaking syntax
+ * RouterOS accepts literal newlines in contents, so we DON'T escape \n
+ * This is the key difference from escapeForSourceQuotes()
  * 
- * Escaping rules for source="...":
- * - Backslashes: \ -> \\
- * - Double quotes: " -> \"
- * - Dollar signs (local vars): $ -> \$
- * - CRLF: \r\n -> \\r\\n
- * - LF: \n -> \\r\\n
- * - Runtime vars $(...): preserved unescaped
+ * CRITICAL: Order of substitutions matters to avoid double-escaping!
+ * 1. Escape backslashes FIRST (\ -> \\)
+ * 2. Escape quotes AFTER (" -> \")
+ * 3. Escape dollar signs ($ -> \$) to prevent variable expansion
  */
-function escapeForSourceQuotes(script: string): string {
-  // Preserve runtime vars $(...) BEFORE escaping
-  const preserved = script.replace(/\$\(/g, '@@RUNTIME_VAR@@')
-  
-  const escaped = preserved
-    .replace(/\\/g, '\\\\')     // Escape backslashes first
-    .replace(/"/g, '\\"')        // Escape double quotes
-    .replace(/\$/g, '\\$')       // Escape dollar signs (local vars)
-    .replace(/\r\n/g, '\\r\\n')  // Convert CRLF to escaped \r\n
-    .replace(/\n/g, '\\r\\n')    // Convert LF to escaped \r\n
-  
-  // Restore runtime vars (unescaped)
-  return escaped.replace(/@@RUNTIME_VAR@@/g, '$(')
+function escapeForFileContents(script: string): string {
+  return script
+    .replace(/\\/g, '\\\\')   // 1. Escape backslashes FIRST
+    .replace(/"/g, '\\"')      // 2. Escape quotes AFTER
+    .replace(/\$/g, '\\$')     // 3. Escape $ to prevent variable expansion
 }
 
 /**
- * v7.1.14: Wrap a RouterOS source string with line continuation for long content
+ * v7.1.16: Generate RSC that creates script via temporary file
  * 
- * RouterOS supports \ at end of line (inside quotes) for multi-line strings,
- * exactly like /export generates. This bypasses the ~4KB per-line/command limit
- * in RouterOS 6.x /import parser that was causing scripts to be truncated.
+ * This bypasses RouterOS 6.x /import line length limits completely!
  * 
- * Max chunk ~120 chars to stay safely under 160 char line limit after prefixes.
+ * Pattern:
+ *   1. Remove any existing temp file
+ *   2. Create empty placeholder file
+ *   3. Set file contents to script source
+ *   4. Create system script reading from file via [/file get ... contents]
+ *   5. Remove temporary file
  * 
- * @param escapedSource - Already escaped source string (from escapeForSourceQuotes)
- * @param maxChunk - Maximum characters per chunk (default 120)
- * @returns Quoted string with line continuation: "chunk1\
- *          chunk2\
- *          chunk3"
+ * @param scriptName - Name of the script to create (e.g., "navspot-sync")
+ * @param sourceText - Raw RouterOS script source (not escaped)
+ * @param policy - Script policy (default: "read,write,test")
  */
-function wrapSourceWithContinuation(escapedSource: string, maxChunk = 120): string {
-  // Short strings don't need continuation
-  if (escapedSource.length <= maxChunk) {
-    return `"${escapedSource}"`
-  }
+function generateScriptViaFile(
+  scriptName: string,
+  sourceText: string,
+  policy: string = "read,write,test"
+): string {
+  const tempFile = `${scriptName}.txt`
+  const escapedContents = escapeForFileContents(sourceText)
   
-  const chunks: string[] = []
-  let remaining = escapedSource
-  
-  while (remaining.length > 0) {
-    let chunkSize = Math.min(maxChunk, remaining.length)
-    
-    // Don't break on a backslash (would create \\\ at line end, confusing the parser)
-    while (chunkSize > 1 && remaining[chunkSize - 1] === '\\') {
-      chunkSize--
-    }
-    
-    const chunk = remaining.substring(0, chunkSize)
-    remaining = remaining.substring(chunkSize)
-    chunks.push(chunk)
-  }
-  
-  // Single chunk after processing (edge case)
-  if (chunks.length === 1) {
-    return `"${chunks[0]}"`
-  }
-  
-  // Join with \ continuation: "chunk1\
-  // chunk2\
-  // chunk3"
-  // The \ at end of each line (except last) tells RouterOS to continue
-  return '"' + chunks.slice(0, -1).map(c => c + '\\').join('\n') + '\n' + chunks[chunks.length - 1] + '"'
-}
-
-/**
- * v7.1.14: Validate generated RSC doesn't have lines exceeding RouterOS limits
- * Logs warnings for any problematic lines (useful for debugging)
- */
-function validateRSCLineLength(rsc: string, context: string, maxLength = 160): void {
-  const lines = rsc.split('\n')
-  let hasWarning = false
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    // Skip comment lines and continuation lines (they're part of quoted string)
-    if (line.length > maxLength && !line.trim().startsWith('#')) {
-      // Check if it's a continuation line (ends with \ or is inside quoted string)
-      if (!line.endsWith('\\') && !line.endsWith('"')) {
-        console.warn(`[mikrotik-scripts ${VERSION}] ${context} line ${i+1} exceeds ${maxLength} chars: ${line.length} chars`)
-        hasWarning = true
-      }
-    }
-  }
-  if (!hasWarning) {
-    console.log(`[mikrotik-scripts ${VERSION}] ${context} RSC validation passed`)
-  }
+  return `# Create ${scriptName} via file (v${VERSION})
+:do { /file remove "${tempFile}" } on-error={}
+/file print file=${tempFile} where name="__never__"
+:delay 500ms
+/file set [find where name="${tempFile}"] contents="${escapedContents}"
+:delay 500ms
+:do { /system script remove [find where name="${scriptName}"] } on-error={}
+:delay 200ms
+/system script add name="${scriptName}" policy=${policy} source=[/file get [find where name="${tempFile}"] contents]
+:delay 200ms
+:do { /file remove "${tempFile}" } on-error={}
+:log info "NAVSPOT: ${scriptName} v${VERSION} instalado"
+`
 }
 
 Deno.serve(async (req) => {
@@ -211,7 +159,7 @@ Deno.serve(async (req) => {
       case 'guardian':
         script = generateGuardianScript(recoveryUrl, syncToken)
         break
-      // v7.1.8: RSC with source="..." wrapper for /import
+      // v7.1.16: RSC with file-based script creation
       case 'sync-source':
         script = generateSyncRSC(syncUrl, syncToken)
         break
@@ -249,8 +197,8 @@ Deno.serve(async (req) => {
 })
 
 /**
- * v7.1.10: Generate installer with idempotent schedulers (remove-then-add)
- * v7.1.6: Uses /import directly - bypasses RouterOS 6.x 4KB variable limit
+ * v7.1.16: Generate installer with file-based script creation
+ * v7.1.10: Uses /import directly - bypasses RouterOS 6.x 4KB variable limit
  */
 function generateAllScripts(
   supabaseUrl: string,
@@ -261,7 +209,7 @@ function generateAllScripts(
   
   return `# =========================================
 # NAVSPOT Scripts Installer v${VERSION}
-# Direct Import - bypasses 4KB var limit
+# File-based script creation (bypasses /import line limits)
 # =========================================
 # _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
 :log info "NAVSPOT-SCRIPTS v${VERSION}: Iniciando instalacao..."
@@ -395,115 +343,62 @@ function generateAllScripts(
 }
 
 /**
- * Generate individual sync script RSC (legacy - with wrapper)
- * v7.1.14: Updated to use find where
- * v7.1.8: Uses source="..." instead of source={...}
+ * v7.1.16: Generate sync script using file-based approach
+ * This bypasses RouterOS 6.x line length limits
  */
 function generateSyncScript(syncUrl: string, syncToken: string): string {
   const source = generateSyncSource(syncUrl, syncToken)
-  const escapedSource = escapeForSourceQuotes(source)
-  const wrappedSource = wrapSourceWithContinuation(escapedSource)
-  return `# NAVSPOT Sync Script v${VERSION}
-:do { /system script remove [find where name="navspot-sync"] } on-error={}
-/system script add name="navspot-sync" policy=read,write,test source=${wrappedSource}
-:log info "NAVSPOT: Script sync v${VERSION} instalado"
-`
+  return generateScriptViaFile("navspot-sync", source)
 }
 
 /**
- * Generate individual action-processor script RSC (legacy - with wrapper)
- * v7.1.14: Updated to use find where and line continuation
- * v7.1.8: Uses source="..." instead of source={...}
+ * v7.1.16: Generate action-processor script using file-based approach
+ * This bypasses RouterOS 6.x line length limits
  */
 function generateActionProcessorScript(): string {
   const source = generateActionProcessorSource()
-  const escapedSource = escapeForSourceQuotes(source)
-  const wrappedSource = wrapSourceWithContinuation(escapedSource)
-  return `# NAVSPOT Action Processor v${VERSION}
-:do { /system script remove [find where name="navspot-action-processor"] } on-error={}
-/system script add name="navspot-action-processor" policy=read,write,test source=${wrappedSource}
-:log info "NAVSPOT: Script action-processor v${VERSION} instalado"
-`
+  return generateScriptViaFile("navspot-action-processor", source)
 }
 
 /**
- * Generate individual guardian script RSC (legacy - with wrapper)
- * v7.1.14: Updated to use find where and line continuation
- * v7.1.8: Uses source="..." instead of source={...}
+ * v7.1.16: Generate guardian script using file-based approach
+ * This bypasses RouterOS 6.x line length limits
  */
 function generateGuardianScript(recoveryUrl: string, syncToken: string): string {
   const source = generateGuardianSource(recoveryUrl, syncToken)
-  const escapedSource = escapeForSourceQuotes(source)
-  const wrappedSource = wrapSourceWithContinuation(escapedSource)
-  return `# NAVSPOT Guardian Script v${VERSION}
-:do { /system script remove [find where name="navspot-guardian"] } on-error={}
-/system script add name="navspot-guardian" policy=read,write,test source=${wrappedSource}
-:log info "NAVSPOT: Script guardian v${VERSION} instalado"
-`
+  return generateScriptViaFile("navspot-guardian", source)
 }
 
 // ==========================================
-// v7.1.8: RSC files with source="..." wrapper for /import
-// RouterOS 6.x requires quoted strings, not curly braces
+// v7.1.16: RSC files with file-based script creation
+// RouterOS reads file contents directly without re-parsing
 // ==========================================
 
 /**
- * Generate sync RSC with source="..." wrapper for direct /import
- * v7.1.14: Uses line continuation for long source strings
- * v7.1.8: Uses source="..." syntax compatible with RouterOS 6.x /import
+ * v7.1.16: Generate sync RSC using file-based script creation
+ * Bypasses all RouterOS 6.x /import line length limitations
  */
 function generateSyncRSC(syncUrl: string, syncToken: string): string {
   const source = generateSyncSource(syncUrl, syncToken)
-  const escapedSource = escapeForSourceQuotes(source)
-  const wrappedSource = wrapSourceWithContinuation(escapedSource)
-  
-  const rsc = `# NAVSPOT Sync v${VERSION} - RSC for /import
-:do { /system script remove [find where name="navspot-sync"] } on-error={}
-/system script add name="navspot-sync" policy=read,write,test source=${wrappedSource}
-:log info "NAVSPOT: Sync v${VERSION} instalado"
-`
-  validateRSCLineLength(rsc, 'sync-source')
-  return rsc
+  return generateScriptViaFile("navspot-sync", source)
 }
 
 /**
- * Generate action-processor RSC with source="..." wrapper for direct /import
- * v7.1.14: Uses line continuation for long source strings (CRITICAL FIX)
- * v7.1.13: Fixed RouterOS 6.x syntax with proper command separation
- * v7.1.8: Uses source="..." syntax compatible with RouterOS 6.x /import
- * v7.1.6: MINIFIED to <4KB with essential handlers only
+ * v7.1.16: Generate action-processor RSC using file-based script creation
+ * Bypasses all RouterOS 6.x /import line length limitations
  */
 function generateActionProcessorRSC(): string {
   const source = generateActionProcessorSource()
-  const escapedSource = escapeForSourceQuotes(source)
-  const wrappedSource = wrapSourceWithContinuation(escapedSource)
-  
-  const rsc = `# NAVSPOT Action Processor v${VERSION} - RSC for /import
-:do { /system script remove [find where name="navspot-action-processor"] } on-error={}
-/system script add name="navspot-action-processor" policy=read,write,test source=${wrappedSource}
-:log info "NAVSPOT: Action-processor v${VERSION} instalado"
-`
-  validateRSCLineLength(rsc, 'action-source')
-  return rsc
+  return generateScriptViaFile("navspot-action-processor", source)
 }
 
 /**
- * Generate guardian RSC with source="..." wrapper for direct /import
- * v7.1.14: Uses line continuation for long source strings
- * v7.1.8: Uses source="..." syntax compatible with RouterOS 6.x /import
+ * v7.1.16: Generate guardian RSC using file-based script creation
+ * Bypasses all RouterOS 6.x /import line length limitations
  */
 function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
   const source = generateGuardianSource(recoveryUrl, syncToken)
-  const escapedSource = escapeForSourceQuotes(source)
-  const wrappedSource = wrapSourceWithContinuation(escapedSource)
-  
-  const rsc = `# NAVSPOT Guardian v${VERSION} - RSC for /import
-:do { /system script remove [find where name="navspot-guardian"] } on-error={}
-/system script add name="navspot-guardian" policy=read,write,test source=${wrappedSource}
-:log info "NAVSPOT: Guardian v${VERSION} instalado"
-`
-  validateRSCLineLength(rsc, 'guardian-source')
-  return rsc
+  return generateScriptViaFile("navspot-guardian", source)
 }
 
 // ==========================================
