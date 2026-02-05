@@ -1,153 +1,156 @@
 
 
-# Correção v7.1.17: Fix Escape de Sequências RouterOS
+# Correção v7.1.18: Fetch Raw Source Strategy
 
-## Problema Identificado
+## Diagnóstico do Problema
 
-### Localização Exata
-**Linha 430** de `mikrotik-scripts/index.ts`:
-```typescript
-:local q "\\22"
+Os logs mostram que após `/import navspot-bootstrap-v7.1.17.rsc`:
+```routeros
+/system script print where name~"navspot"
+# source=
+#   # feb/ 5/2026  9:11:44 by RouterOS 6.49.11
+#   # software id = TDDJ-5DEI
+#   #
+#    # NAME                   TYPE                        SIZE CREATION-TIME
 ```
 
-### Fluxo do Problema
-1. No TypeScript, `"\\22"` representa a string literal `\22`
-2. `escapeForFileContents()` atual faz: `\22` → `\\22`
-3. O RSC gerado contém: `contents="...:local q \"\\\\22\"..."`
-4. RouterOS interpreta `\\22` como backslash literal + "22" (errado!)
-5. Deveria ser `\22` (código ASCII para aspas duplas)
+O source contém apenas o **header genérico** gerado pelo comando `/file print file=... where name="__never__"`. Isso significa que o comando `/file set contents="<SCRIPT_ESCAPADO>"` está falhando silenciosamente no RouterOS 6.x quando executado via `/import`.
 
-## Solução em Duas Partes
+### Causa Raiz Confirmada
+O padrão atual `generateScriptViaFile()` tenta injetar o script inteiro dentro de um comando `contents="..."` durante o `/import`. O RouterOS 6.x não consegue processar strings multi-linha/grandes nesse contexto.
 
-### Parte 1: Corrigir uso de `\\22` em generateSyncSource
+## Solução v7.1.18: Fetch Raw Source
 
-**Antes (linha 430)**:
-```typescript
-:local q "\\22"
-```
+### Estratégia
+Em vez de embutir o source no RSC, vamos:
+1. Criar endpoints que retornam **source puro** (texto RouterOS sem wrapper)
+2. O instalador usa `/tool fetch` para baixar o source em arquivo `.src`
+3. Cria o script via `/system script add source=[/file get ... contents]`
 
-**Depois**:
-```typescript
-:local q "\""
-```
-
-O `escapeForFileContents()` vai converter `"` para `\"`, e o RouterOS interpreta corretamente como a variável `q` contendo uma aspas duplas.
-
-### Parte 2: Implementar escapeForFileContents() Robusto
-
-Substituir a função atual (linhas 53-58) por versão que preserva sequências RouterOS:
-
-```typescript
-/**
- * v7.1.17: Escape script source for /file set contents="..."
- * 
- * CRITICAL: Preserve RouterOS escape sequences like \22 (quote), \5C (backslash), \n, \r, \t
- * Pattern: preserve → escape → restore
- */
-function escapeForFileContents(script: string): string {
-  // Map placeholder -> original
-  const preserved = new Map<string, string>()
-  let counter = 0
-  
-  // Helper to create unique placeholder
-  const makePlaceholder = () => `__PRESERVED_${Date.now().toString(36)}_${counter++}__`
-  
-  // 1) Preserve hex escapes like \22, \5C and common escapes \n \r \t
-  let result = script.replace(/\\([0-9A-Fa-f]{2}|[nrt])/g, (m) => {
-    const ph = makePlaceholder()
-    preserved.set(ph, m)
-    return ph
-  })
-  
-  // 2) Now escape remaining backslashes, quotes and $ safely
-  result = result.replace(/\\/g, '\\\\')   // Escape backslashes first
-  result = result.replace(/"/g, '\\"')      // Then quotes
-  result = result.replace(/\$/g, '\\$')     // Then $ for variable expansion
-  
-  // 3) Restore preserved sequences (they contain backslash+char that should remain as-is)
-  preserved.forEach((orig, ph) => {
-    result = result.replace(ph, orig)
-  })
-  
-  return result
-}
-```
+### Por que funciona
+- O `/tool fetch` salva o conteúdo diretamente no sistema de arquivos
+- O RouterOS não precisa parsear o script durante o `/import`
+- O `[/file get ... contents]` lê bytes crus do arquivo
 
 ## Mudanças Técnicas
 
 ### Arquivo: `supabase/functions/mikrotik-scripts/index.ts`
 
-| Linhas | Mudança |
-|--------|---------|
-| 34 | Bump VERSION para "7.1.17" |
-| 43-58 | Atualizar docstring e implementar `escapeForFileContents()` robusto com pattern preserve→escape→restore |
-| 430 | Trocar `:local q "\\22"` para `:local q "\""` (literal quote) |
+#### 1) Adicionar endpoints `*-raw` (linhas ~170-195)
+
+Novos tipos que retornam **source puro** (texto RouterOS apenas):
+- `type=sync-raw` → retorna `generateSyncSource()` direto (sem wrapper RSC)
+- `type=action-raw` → retorna `generateActionProcessorSource()` direto
+- `type=guardian-raw` → retorna `generateGuardianSource()` direto
+
+#### 2) Reescrever `generateAllScripts()` (linhas 221-361)
+
+O instalador principal passa a:
+- Baixar cada script via `/tool fetch url=...?type=*-raw` para arquivo `.src`
+- Logar tamanho do arquivo baixado (diagnóstico)
+- Criar script via `source=[/file get "ns-*.src" contents]`
+- Remover arquivo temporário
+- Manter schedulers/netwatch como está
+
+#### 3) Atualizar `*-source` endpoints (linhas 399-419)
+
+Simplificar para também usarem estratégia de fetch + file:
+- Em vez de `/file set contents="..."`, fazem fetch do `*-raw` correspondente
+
+#### 4) Remover dependência de `escapeForFileContents()` no fluxo principal
+
+A função pode ficar como fallback, mas o caminho principal não usa mais.
+
+#### 5) Adicionar diagnóstico de conteúdo baixado
+
+Após cada fetch, logar:
+- Tamanho do arquivo: `[/file get "ns-*.src" size]`
+- Primeiros 80 chars do conteúdo (para detectar HTML de erro)
+
+#### 6) Version bump para 7.1.18
 
 ### Arquivo: `supabase/functions/mikrotik-script-generator/index.ts`
-
-| Mudança |
-|---------|
-| Bump VERSION para "7.1.17" |
+- Bump VERSION para "7.1.18"
 
 ### Arquivo: `src/components/modals/ScriptModal.tsx`
-
-| Mudança |
-|---------|
-| Bump scriptVersion para "7.1.17" |
+- Bump scriptVersion para "7.1.18"
 
 ### Arquivo: `src/pages/Embarcacoes.tsx`
+- Bump currentScriptVersion para "7.1.18"
 
-| Mudança |
-|---------|
-| Bump currentScriptVersion para "7.1.17" |
+## Código do Instalador v7.1.18 (generateAllScripts)
 
-## Exemplo de Transformação
+```text
+Para cada script (sync, action, guardian):
+  1. /tool fetch url=<API>?type=<script>-raw&token=<tk> dst-path="ns-<script>.src"
+  2. :delay 2s (flash write)
+  3. :local fsize [/file get "ns-<script>.src" size]
+  4. :log info ("Downloaded " . $fsize . " bytes")
+  5. :local prefix [:pick [/file get "ns-<script>.src" contents] 0 80]
+  6. :if ([:find $prefix ":log info"] >= 0) do={
+       /system script add name=navspot-<script> source=[/file get ... contents]
+       :log info "Script installed OK"
+     } else={
+       :log error "Invalid content - not RouterOS script"
+     }
+  7. /file remove "ns-<script>.src"
+```
 
-### Antes (v7.1.16)
-```
-Input TypeScript: :local q "\\22"
-Após escapeForFileContents: :local q \"\\\\22\"
-RouterOS interpreta: q = backslash + "22" (ERRADO!)
+## Exemplo de Fluxo v7.1.18
+
+```text
+Bootstrap -> /import ns-install.rsc
+                |
+                v
+ns-install.rsc executes:
+  1. /tool fetch ...?type=sync-raw -> ns-sync.src (7KB texto puro)
+  2. /system script add source=[/file get "ns-sync.src" contents]
+  3. /file remove "ns-sync.src"
+  4. (repete para action, guardian)
+  5. Cria schedulers/netwatch
+  6. Executa primeiro sync
 ```
 
-### Depois (v7.1.17)
-```
-Input TypeScript: :local q "\""
-Após escapeForFileContents: :local q \"\\\"\"
-RouterOS interpreta: q = " (CORRETO!)
-```
+## Comparação de Abordagens
+
+| Aspecto | v7.1.17 (Atual) | v7.1.18 (Proposta) |
+|---------|-----------------|-------------------|
+| Método | `/file set contents="..."` no RSC | `/tool fetch` + file get |
+| Problema | Falha silenciosa em strings grandes | Funciona independente do tamanho |
+| Parsing | RouterOS parseia contents durante import | Conteúdo lido como bytes crus |
+| Diagnóstico | Difícil de debugar | Logs de tamanho e prefixo |
 
 ## Validação no MikroTik
 
 ```routeros
-# 1. Importar bootstrap v7.1.17
-/import navspot-bootstrap-v7.1.17.rsc
+# 1. Importar bootstrap v7.1.18
+/import navspot-bootstrap-v7.1.18.rsc
 
-# 2. Verificar scripts válidos (SEM flag I)
+# 2. Verificar scripts (source NÃO deve ser header genérico)
 /system script print where name~"navspot"
 
-# 3. Inspecionar primeiros 200 chars do source (debug)
+# 3. Verificar prefixo do source (CRÍTICO)
 :local src [/system script get navspot-sync source]
-:put [:pick $src 0 200]
+:put [:pick $src 0 120]
+# Esperado: ":log info \"NAVSPOT-SYNC v7.1.18..."
 
-# 4. Rodar sync manualmente
+# 4. Rodar sync e verificar logs
 /system script run navspot-sync
+/log print where message~"NAVSPOT-SYNC" last=30
+# Esperado: "NAVSPOT-SYNC v7.1.18: OK"
 
-# 5. Verificar logs
-/log print where message~"NAVSPOT-SYNC"
-# Esperado: "NAVSPOT-SYNC v7.1.17: OK" sem erros de sintaxe
-
-# 6. Aguardar scheduler (2-5 min) e verificar status Online no frontend
+# 5. Aguardar frontend mostrar Online
 ```
 
-## Checklist de Testes
+## Checklist de Implementação
 
-- [ ] Bump VERSION para 7.1.17 em todos os arquivos
-- [ ] Substituir `\\22` por `"` em generateSyncSource (linha 430)
-- [ ] Implementar `escapeForFileContents()` robusto com preservação de sequências
+- [ ] Adicionar endpoints `sync-raw`, `action-raw`, `guardian-raw` (source puro)
+- [ ] Reescrever `generateAllScripts()` com fetch + file pattern
+- [ ] Adicionar logs de diagnóstico (tamanho e prefixo do arquivo)
+- [ ] Validar conteúdo antes de criar script (detectar HTML de erro)
+- [ ] Bump VERSION para 7.1.18 em todos os arquivos
 - [ ] Deploy edge functions
-- [ ] Testar /import no RouterOS 6.49.x
-- [ ] Confirmar scripts sem flag **I**
-- [ ] Rodar sync e verificar logs sem erros de sintaxe
-- [ ] Verificar hotspot aparece Online no frontend
+- [ ] Testar em RouterOS 6.49.x
+- [ ] Confirmar scripts sem flag **I** e source correto
+- [ ] Verificar hotspot Online no frontend
 
