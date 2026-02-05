@@ -5,8 +5,17 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.1.15: Version identifier - pipe-first JSON for RouterOS truncation resilience
-const VERSION = "7.1.15"
+// v7.1.20: Version identifier - pipe-first JSON + sanitization for file contents
+const VERSION = "7.1.20"
+
+// v7.1.20: Sanitize pipe string for safe /file set contents in RouterOS
+// Removes characters that cause truncation or parsing errors
+function sanitizePipeForFileContents(pipe: string): string {
+  return pipe
+    .replace(/[\x00-\x1F]/g, '')    // Remove control characters
+    .replace(/"/g, "'")             // Double quotes -> single (safer in MikroTik)
+    .replace(/\\/g, "/")            // Backslash -> forward slash
+}
 
 // v7.0: Sanitize pipe delimiter in URLs
 function sanitizeForPipe(value: string): string {
@@ -1486,9 +1495,10 @@ Deno.serve(async (req) => {
       }
     }).join(';')
 
-    // v7.1.11: ALWAYS wrap in [[ ]] markers - even when empty
-    // This prevents "Resposta invalida" warnings when no actions are pending
-    const formattedPipe = pipeDelimitedActions ? `[[${pipeDelimitedActions};]]` : '[[]]'
+    // v7.1.20: Sanitize pipe for safe /file set contents, then wrap in [[ ]] markers
+    // This prevents truncation when RouterOS parses special characters
+    const sanitizedPipe = pipeDelimitedActions ? sanitizePipeForFileContents(pipeDelimitedActions) : ''
+    const formattedPipe = sanitizedPipe ? `[[${sanitizedPipe};]]` : '[[]]'
 
     console.log(`[mikrotik-sync] v7.0: Returning ${expandedActions.length} pending actions, ${firewallRules.length} firewall rules, ${blockedDevices.length} blocked devices`)
 
