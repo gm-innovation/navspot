@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 // v7.1.25: Version identifier - File read timing fix
-const VERSION = "7.1.26"
+const VERSION = "7.1.27"
 
 // v7.1.23: Sanitize pipe string for safe /file set contents in RouterOS
 // Removes characters that cause truncation or parsing errors

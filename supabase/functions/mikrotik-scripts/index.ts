@@ -38,7 +38,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.26"
+const VERSION = "7.1.27"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -685,77 +685,32 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
 :local tmpName ("navspot-actions-".$tsStr.".txt")
 /file print file=$tmpName where name="__x__"
-:delay 300ms
+:delay 250ms
+:local wrote false
 :local tries 0
-:local wok false
-:while (($tries<3)&&($wok=false)) do={
+:while (($tries<2)&&($wrote=false)) do={
 :set tries ($tries+1)
 :do {/file set [find name=$tmpName] contents=$a} on-error={}
-:delay 500ms
+:delay 300ms
 :local saved ""
 :do {:set saved [/file get [find name=$tmpName] contents]} on-error={}
-:if ([:len $saved]=[:len $a]) do={:set wok true} else={
-:log warning ("NAVSPOT-SYNC: write mismatch attempt ".$tries." savedLen=".[:len $saved])
-:delay (300*$tries)
+:local pf [:pick $saved 0 50]
+:if (([:len $saved]=[:len $a])&&([:find $pf "# NAME"]<0)) do={:set wrote true} else={
+:log warning ("NAVSPOT-SYNC: write err try=".$tries." len=".[:len $saved])
 }}
-:if ($wok) do={
+:if ($wrote) do={
 :do {/file remove "navspot-actions.txt"} on-error={}
 :do {/file rename $tmpName navspot-actions.txt} on-error={}
 :local hasAP [:len [/system script find name="navspot-action-processor"]]
 :if ($hasAP=0) do={
 :log error "NAVSPOT-SYNC: action-processor NAO ENCONTRADO!"
-:local maxFB 5
-:local fbCnt 0
-:local fbPos 0
-:while (([:find $a ";" $fbPos]>=0)&&($fbCnt<$maxFB)) do={
-:local fbEp [:find $a ";" $fbPos]
-:local fbLn [:pick $a $fbPos $fbEp]
-:set fbPos ($fbEp+1)
-:if ([:len $fbLn]>0) do={
-:local fbP1 [:find $fbLn "|"]
-:if ($fbP1>=0) do={
-:local fbCmd [:pick $fbLn 0 $fbP1]
-:local fbRest [:pick $fbLn ($fbP1+1) [:len $fbLn]]
-:if ($fbCmd="configure_hotspot_profile") do={
-:local fbP2 [:find $fbRest "|"]
-:if ($fbP2>=0) do={
-:local fbLu [:pick $fbRest 0 $fbP2]
-:local fbDn [:pick $fbRest ($fbP2+1) [:len $fbRest]]
-:local fbHp [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len $fbHp]>0) do={
-:do {/ip hotspot profile set $fbHp login-url=$fbLu} on-error={}
-:do {/ip hotspot profile set $fbHp dns-name=$fbDn} on-error={}
-:log info "NAVSPOT-SYNC: FALLBACK configure_hotspot_profile OK"
-:set fbCnt ($fbCnt+1)
-}}}
-:if ($fbCmd="create_user") do={
-:local fbP2 [:find $fbRest "|"]
-:if ($fbP2>=0) do={
-:local fbUn [:pick $fbRest 0 $fbP2]
-:local fbRem [:pick $fbRest ($fbP2+1) [:len $fbRest]]
-:local fbP3 [:find $fbRem "|"]
-:local fbPw ""
-:local fbPf "default"
-:if ($fbP3>=0) do={
-:set fbPw [:pick $fbRem 0 $fbP3]
-:set fbPf [:pick $fbRem ($fbP3+1) [:len $fbRem]]
-} else={:set fbPw $fbRem}
-:if ([:len $fbUn]>0) do={
-:do {/ip hotspot user add name=$fbUn password=$fbPw profile=$fbPf comment="navspot-fb"} on-error={}
-:set fbCnt ($fbCnt+1)
-}}}
-}}}
-:if ($fbCnt>0) do={:log info ("NAVSPOT-SYNC: FALLBACK processou ".$fbCnt." acoes")}
 } else={
 :local aerr ""
 :do {/system script run navspot-action-processor} on-error={:set aerr [:tostr $error]}
-:if ([:len $aerr]>0) do={
-:log error ("NAVSPOT-SYNC: action-processor ERRO=".$aerr)
+:if ([:len $aerr]>0) do={:log error ("NAVSPOT-SYNC: AP ERRO=".$aerr)} else={:log info "NAVSPOT-SYNC: AP OK"}
+}
 } else={
-:log info "NAVSPOT-SYNC: action-processor executed OK"
-}}
-} else={
-:log error "NAVSPOT-SYNC: unable to write navspot-actions.txt reliably"
+:log error "NAVSPOT-SYNC: write failed - abortando"
 :do {/file remove $tmpName} on-error={}
 }
 }
