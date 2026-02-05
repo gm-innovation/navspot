@@ -31,7 +31,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.18"
+const VERSION = "7.1.19"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -459,8 +459,9 @@ function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
 // ==========================================
 
 /**
- * v7.1.18: Sync source with concurrency lock
- * - Fixed: use literal quote character in :local q definition
+ * v7.1.19: Sync source with concurrency lock
+ * - Fixed: use hex escape \\22 for quote character (RouterOS 6.x compatible)
+ * - \\22 = ASCII 34 = double-quote character
  */
 function generateSyncSource(syncUrl: string, syncToken: string): string {
   return `:log info "NAVSPOT-SYNC v${VERSION}: Iniciando..."
@@ -477,7 +478,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local users ""
 :local registered ""
 :local profiles ""
-:local q "\""
+:local q "\\22"
 /ip hotspot active
 :foreach a in=[find] do={
 :local u [get $a user]
