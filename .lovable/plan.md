@@ -1,146 +1,125 @@
 
-# Correção v7.1.24: Compatibilidade RouterOS 6.x
+# Correção v7.1.25: Timing de Leitura de Arquivos no RouterOS 6.x
 
-## Problema Identificado
+## Diagnóstico
 
-O erro na linha 16:
-```
-bad command name rndnum (line 16 column 14)
-```
+Análise dos logs mostra um problema de timing:
 
-O comando `:rndnum` foi introduzido no **RouterOS 7.x** e não existe no RouterOS 6.x. Precisamos substituir por uma alternativa compatível.
+| Script | Servidor | MikroTik (lido) | Status |
+|--------|----------|-----------------|--------|
+| sync-raw | 1996 bytes | **0 bytes** | FALHA |
+| action-raw | 2709 bytes | 2709 bytes | OK |
+| guardian-raw | 1993 bytes | **0 bytes** | FALHA |
 
----
+O servidor está gerando todos os scripts corretamente. O problema está na leitura do arquivo no RouterOS após o fetch.
 
-## Estratégia de Correção
+**Causa provável:** O RouterOS 6.x pode não ter sincronizado o arquivo completamente no disco antes da leitura. Arquivos menores (sync e guardian ~2KB) falham mais frequentemente que arquivos maiores (action ~2.7KB).
 
-### Substituir `:rndnum` por timestamp mais granular
+## Estratégia de Correção v7.1.25
 
-Em vez de usar números aleatórios, usaremos um timestamp mais detalhado para criar nomes de arquivo únicos. Isso é suficiente para evitar colisões durante a instalação.
+### 1. Aumentar delay pós-fetch de 700ms para 1500ms
 
-**Código atual (v7.1.23) - FALHA:**
-```routeros
-:local ts [/system clock get time]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local rnd [:rndnum from=0 to=9999]  # <-- NÃO EXISTE NO 6.x!
-:local tempFile ("ns-action-" . $tsStr . "-" . $rnd . ".src")
-```
+O delay atual de 700ms pode não ser suficiente para o flash do RouterOS sincronizar arquivos pequenos.
 
-**Código corrigido (v7.1.24):**
-```routeros
-:local ts [/system clock get time]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local uptime [/system resource get uptime]
-:local upSec [:pick $uptime ([:len $uptime] - 2) [:len $uptime]]
-:local tempSuffix ($tsStr . "-" . $upSec)
-:local tempFile ("ns-action-" . $tempSuffix . ".src")
-```
+### 2. Adicionar retry na leitura do arquivo
 
-### Alternativa mais simples
-
-Como o timestamp de hora:minuto:segundo já é razoavelmente único para uma instalação única, podemos simplificar ainda mais:
+Se o tamanho for 0 na primeira tentativa, esperar mais e tentar novamente:
 
 ```routeros
-:local ts [/system clock get time]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local syncTempFile ("ns-sync-" . $tsStr . ".src")
-:local actionTempFile ("ns-action-" . $tsStr . ".src")
-:local guardianTempFile ("ns-guardian-" . $tsStr . ".src")
+:delay 1500ms
+:local fsize 0
+:local readRetry 0
+:while (($fsize = 0) && ($readRetry < 3)) do={
+  :set readRetry ($readRetry + 1)
+  :do { :set fsize [/file get $syncTempFile size] } on-error={}
+  :if ($fsize = 0) do={
+    :log info ("NAVSPOT-INSTALL: sync read retry " . $readRetry . "/3")
+    :delay 1000ms
+  }
+}
 ```
 
-Isso é suficiente porque:
-1. A instalação leva alguns minutos
-2. Os arquivos temporários são removidos após uso
-3. Não há cenário real de race-condition em instalações únicas
+### 3. Validar tamanho mínimo antes de validar conteúdo
 
----
+Se o arquivo tem 0 bytes, não tentar ler o conteúdo (evita erro):
+
+```routeros
+:if ($fsize < 50) do={
+  :log error ("NAVSPOT-INSTALL: sync arquivo muito pequeno - " . $fsize . " bytes")
+  # tentar novamente ou falhar
+} else={
+  # continuar com validação de conteúdo
+}
+```
 
 ## Arquivos a Modificar
 
-### `supabase/functions/mikrotik-scripts/index.ts`
+### 1. `supabase/functions/mikrotik-scripts/index.ts`
 
-**Mudanças na função `generateAllScripts()`:**
+**Mudanças em `generateAllScripts()`:**
 
-1. **Linha 32:** Bump VERSION para "7.1.24"
-2. **Linhas 304-308:** Remover `:rndnum` e usar apenas timestamp
+1. Bump VERSION para "7.1.25"
+2. Aumentar delay pós-fetch de 700ms para 1500ms (linhas 354, 396, 475)
+3. Adicionar retry loop na leitura de tamanho do arquivo
+4. Adicionar validação de tamanho mínimo (50 bytes)
 
-**Código antes (v7.1.23):**
-```typescript
-# v7.1.23: Unique temp file names with timestamp + rndnum
-:local ts [/system clock get time]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local rnd [:rndnum from=0 to=9999]
-```
+### 2. Outros arquivos (version bump)
 
-**Código depois (v7.1.24):**
-```typescript
-# v7.1.24: Unique temp file names with timestamp (6.x compatible)
-:local ts [/system clock get time]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-# RouterOS 6.x: usar apenas timestamp (sem :rndnum que e 7.x only)
-```
+- `supabase/functions/mikrotik-sync/index.ts` - VERSION para 7.1.25
+- `supabase/functions/mikrotik-script-generator/index.ts` - VERSION para 7.1.25
+- `src/components/modals/ScriptModal.tsx` - scriptVersion para "7.1.25"
+- `src/pages/Embarcacoes.tsx` - currentScriptVersion para "7.1.25"
 
-3. **Linhas 336, 378, 477:** Atualizar referências para usar apenas `$tsStr` em vez de `$tsStr . "-" . $rnd`
-
-### Outros arquivos (version bump)
-
-- `supabase/functions/mikrotik-sync/index.ts` - Bump VERSION para 7.1.24
-- `supabase/functions/mikrotik-script-generator/index.ts` - Bump VERSION para 7.1.24
-- `src/components/modals/ScriptModal.tsx` - Bump scriptVersion para "7.1.24"
-- `src/pages/Embarcacoes.tsx` - Bump currentScriptVersion para "7.1.24"
-
----
-
-## Código Corrigido - generateAllScripts (trecho relevante)
-
-```typescript
-return `# =========================================
-# NAVSPOT Scripts Installer v${VERSION}
-# AGGRESSIVE COMPACTION + ENHANCED SAFEGUARDS
-# =========================================
-# _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
-:log info "NAVSPOT-INSTALL v${VERSION}: Iniciando instalacao..."
-
-# URLs construidas incrementalmente (limite 160 chars)
-:local apiBase "${apiBase}"
-:local ep "/mikrotik-scripts"
-:local tk "${syncToken}"
-
-# v7.1.24: Unique temp file names with timestamp (RouterOS 6.x compatible)
-:local ts [/system clock get time]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-# Note: :rndnum removed - only exists in RouterOS 7.x
-
-... (resto do código usando $tsStr em vez de $tsStr . "-" . $rnd)
-`
-```
-
----
-
-## Verificação
-
-Após deploy, executar no MikroTik:
+## Código Atualizado - Lógica de Leitura com Retry
 
 ```routeros
-/import navspot-bootstrap-v7.1.24.rsc
-
-# Verificar se não há mais erro de "bad command name"
-# Os logs devem mostrar:
-/log print where message~"NAVSPOT-INSTALL" last=30
-# Esperado: sync baixado, action baixado, guardian baixado - todos "content valido"
+:if ($syncOk = true) do={
+:delay 1500ms
+:local fsize 0
+:local readRetry 0
+:while (($fsize = 0) && ($readRetry < 3)) do={
+:set readRetry ($readRetry + 1)
+:do { :set fsize [/file get $syncTempFile size] } on-error={}
+:if ($fsize = 0) do={
+:log info ("NAVSPOT-INSTALL: sync read retry " . $readRetry . "/3")
+:delay 1000ms
+}
+}
+:log info ("NAVSPOT-INSTALL: sync baixado (" . $fsize . " bytes)")
+:if ($fsize < 50) do={
+:log error ("NAVSPOT-INSTALL: sync arquivo muito pequeno ou vazio")
+:do { /file remove $syncTempFile } on-error={}
+} else={
+:local prefix ""
+:do { :set prefix [:pick [/file get $syncTempFile contents] 0 100] } on-error={}
+# ... resto da validação
+}
+}
 ```
 
----
+## Verificação no MikroTik
+
+```routeros
+/import navspot-bootstrap-v7.1.25.rsc
+
+# Verificar logs
+/log print where message~"NAVSPOT-INSTALL" last=40
+
+# Esperado:
+# sync baixado (1996 bytes) - NÃO mais 0 bytes
+# sync content valido
+# action baixado (2709 bytes)
+# action content valido
+# guardian baixado (1993 bytes)
+# guardian content valido
+```
 
 ## Checklist de Implementação
 
-- [ ] Remover `:rndnum` de `generateAllScripts()` (linhas 304-308)
-- [ ] Atualizar referências de arquivos temporários para usar apenas `$tsStr`
-- [ ] Bump VERSION para 7.1.24 em `mikrotik-scripts/index.ts`
-- [ ] Bump VERSION para 7.1.24 em `mikrotik-sync/index.ts`
-- [ ] Bump VERSION para 7.1.24 em `mikrotik-script-generator/index.ts`
-- [ ] Bump scriptVersion para "7.1.24" em `ScriptModal.tsx`
-- [ ] Bump currentScriptVersion para "7.1.24" em `Embarcacoes.tsx`
+- [ ] Aumentar delay pós-fetch de 700ms para 1500ms
+- [ ] Adicionar retry loop na leitura de tamanho (3 tentativas)
+- [ ] Adicionar validação de tamanho mínimo (50 bytes)
+- [ ] Aplicar mesma lógica para sync, action e guardian
+- [ ] Bump VERSION para 7.1.25 em todos os arquivos
 - [ ] Deploy edge functions
 - [ ] Testar no RouterOS 6.49.x
-- [ ] Verificar que não há erro "bad command name"
