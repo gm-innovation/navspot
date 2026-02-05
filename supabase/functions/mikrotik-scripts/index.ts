@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.18
+ * mikrotik-scripts v7.1.22
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -15,23 +15,24 @@ const corsHeaders = {
  * Parameters:
  *   - type: "sync" | "action-processor" | "guardian" | "all" | 
  *           "sync-source" | "action-source" | "guardian-source" |
- *           "sync-raw" | "action-raw" | "guardian-raw" (default: "all")
+ *           "sync-raw" | "action-raw" | "action-aux-raw" | "guardian-raw" (default: "all")
  *   - token: sync_token for authentication
  * 
- * v7.1.18: FETCH RAW SOURCE STRATEGY (Critical Fix)
- *   - New *-raw endpoints return pure RouterOS source (no RSC wrapper)
- *   - Installer uses /tool fetch to download .src files
- *   - Scripts created via source=[/file get ... contents]
- *   - Completely bypasses /file set contents="..." parsing issues
- *   - Diagnostics: logs file size and content prefix after each fetch
+ * v7.1.22: MODULARIZATION + ROBUST VALIDATION + SECURE FALLBACK
+ *   - Action processor reduced to ~2.5KB (core handlers only)
+ *   - New action-aux script for secondary handlers (~2KB)
+ *   - Multi-line fallback (~1.2KB) with minimal escaping
+ *   - Smoke test validation before accepting action-processor
+ *   - Unique temp file names with timestamp
+ *   - Configurable delays for slow flash
  * 
- * v7.1.17: Preserve RouterOS escape sequences (partial fix)
- * v7.1.16: FILE-BASED SCRIPT CREATION (still had issues)
+ * v7.1.21: Fixed sanitization (preserve backslash for placeholders)
+ * v7.1.18: FETCH RAW SOURCE STRATEGY (Critical Fix)
  * 
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.21"
+const VERSION = "7.1.22"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -144,15 +145,19 @@ Deno.serve(async (req) => {
     const syncIntervalMinutes = hotspot.sync_interval_minutes || 5
 
     let script = ''
-    let contentType = 'text/plain; charset=utf-8'
+    const contentType = 'text/plain; charset=utf-8'
 
     switch (scriptType) {
-      // v7.1.18: NEW - Raw source endpoints (pure RouterOS code, no wrapper)
+      // v7.1.22: Raw source endpoints (pure RouterOS code, no wrapper)
       case 'sync-raw':
         script = generateSyncSource(syncUrl, syncToken)
         break
       case 'action-raw':
-        script = generateActionProcessorSource()
+        script = generateActionProcessorCoreSource()
+        break
+      // v7.1.22: NEW - Auxiliary action handlers
+      case 'action-aux-raw':
+        script = generateActionAuxSource()
         break
       case 'guardian-raw':
         script = generateGuardianSource(recoveryUrl, syncToken)
@@ -178,7 +183,7 @@ Deno.serve(async (req) => {
         script = generateGuardianRSC(recoveryUrl, syncToken)
         break
       
-      // v7.1.18: Updated installer with fetch raw source strategy
+      // v7.1.22: Updated installer with modularization + smoke test
       case 'all':
       default:
         script = generateAllScripts(supabaseUrl, syncToken, syncIntervalMinutes)
@@ -207,21 +212,14 @@ Deno.serve(async (req) => {
 })
 
 /**
- * v7.1.18: REWRITTEN - Generate installer using FETCH RAW SOURCE strategy
+ * v7.1.22: REWRITTEN - Generate installer with MODULARIZATION + SMOKE TEST
  * 
- * Critical fix: Instead of embedding script source in RSC files,
- * we now fetch the raw source into .src files and create scripts
- * by reading the file contents directly.
- * 
- * This completely bypasses RouterOS 6.x /file set contents="..." parsing issues.
- * 
- * Pattern for each script:
- *   1. /tool fetch url=...?type=*-raw -> ns-*.src
- *   2. :delay 2s (flash write)
- *   3. Log file size for diagnostics
- *   4. Validate content starts with ":log info" (not HTML error)
- *   5. /system script add source=[/file get "ns-*.src" contents]
- *   6. /file remove "ns-*.src"
+ * Key changes:
+ *   - Action processor reduced to ~2.5KB (core handlers)
+ *   - Unique temp file names with timestamp
+ *   - Configurable delays for slow flash (700ms after fetch)
+ *   - Smoke test validation after script creation
+ *   - Multi-line fallback with minimal escaping (~1.2KB)
  */
 function generateAllScripts(
   supabaseUrl: string,
@@ -230,9 +228,71 @@ function generateAllScripts(
 ): string {
   const apiBase = `${supabaseUrl}/functions/v1`
   
+  // v7.1.22: Multi-line fallback source (~1.2KB) - NO complex escaping
+  // This fallback handles only create_profile and create_user
+  const fallbackSource = `:log info "NAVSPOT-ACTION v${VERSION}F: Start"
+:global navspotLock
+:if ($navspotLock = "1") do={ :return }
+:set navspotLock "1"
+:local fid [/file find name="navspot-actions.txt"]
+:if ([:len $fid] = 0) do={ :set navspotLock "0"; :return }
+:local raw [/file get $fid contents]
+:do { /file remove $fid } on-error={}
+:local pos 0
+:local cnt 0
+:while ([:find $raw ";" $pos] >= 0) do={
+:local ep [:find $raw ";" $pos]
+:local ln [:pick $raw $pos $ep]
+:set pos ($ep + 1)
+:if ([:len $ln] > 0) do={
+:local p1 [:find $ln "|"]
+:if ($p1 >= 0) do={
+:local c [:pick $ln 0 $p1]
+:local r [:pick $ln ($p1 + 1) [:len $ln]]
+:if ($c = "create_profile") do={
+:local p2 [:find $r "|"]
+:if ($p2 >= 0) do={
+:local pn [:pick $r 0 $p2]
+:local sub [:pick $r ($p2 + 1) [:len $r]]
+:local p3 [:find $sub "|"]
+:local ps "1"
+:if ($p3 >= 0) do={
+:local sub2 [:pick $sub ($p3 + 1) [:len $sub]]
+:local p4 [:find $sub2 "|"]
+:if ($p4 >= 0) do={ :set ps [:pick $sub2 0 $p4] } else={ :set ps $sub2 }
+}
+:do { /ip hotspot user profile add name=$pn shared-users=$ps } on-error={}
+:set cnt ($cnt + 1)
+}}
+:if ($c = "create_user") do={
+:local p2 [:find $r "|"]
+:if ($p2 >= 0) do={
+:local u [:pick $r 0 $p2]
+:local sub [:pick $r ($p2 + 1) [:len $r]]
+:local p3 [:find $sub "|"]
+:local pw ""
+:local pf "default"
+:if ($p3 >= 0) do={
+:set pw [:pick $sub 0 $p3]
+:set pf [:pick $sub ($p3 + 1) [:len $sub]]
+}
+:do { /ip hotspot user profile add name=$pf } on-error={}
+:do { /ip hotspot user add name=$u password=$pw profile=$pf } on-error={}
+:set cnt ($cnt + 1)
+}}
+}}}
+:set navspotLock "0"
+:log info ("NAVSPOT-ACTION v${VERSION}F: OK - " . $cnt)`
+
+  // Escape the fallback for embedding in RSC (minimal escaping for multi-line)
+  const escapedFallback = fallbackSource
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, '\\$')
+
   return `# =========================================
 # NAVSPOT Scripts Installer v${VERSION}
-# FETCH RAW SOURCE Strategy
+# MODULARIZATION + SMOKE TEST Strategy
 # =========================================
 # _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
 :log info "NAVSPOT-INSTALL v${VERSION}: Iniciando instalacao..."
@@ -241,6 +301,12 @@ function generateAllScripts(
 :local apiBase "${apiBase}"
 :local ep "/mikrotik-scripts"
 :local tk "${syncToken}"
+
+# v7.1.22: Unique temp file names with timestamp
+:local ts [/system clock get time]
+:local tsStr [:pick $ts 0 2]
+:set tsStr ($tsStr . [:pick $ts 3 5])
+:set tsStr ($tsStr . [:pick $ts 6 8])
 
 # Pre-flight checks
 :local hasRoute false
@@ -269,13 +335,14 @@ function generateAllScripts(
 # ===== 1. SYNC SCRIPT (fetch raw source) =====
 :log info "NAVSPOT-INSTALL: Baixando sync-raw..."
 :local syncRawUrl ($apiBase . $ep . "?type=sync-raw&token=" . $tk)
+:local syncTempFile ("ns-sync-" . $tsStr . ".src")
 :local syncOk false
 :local syncRetry 0
 :while (($syncRetry < 3) && ($syncOk = false)) do={
 :set syncRetry ($syncRetry + 1)
 :log info ("NAVSPOT-INSTALL: sync tentativa " . $syncRetry . "/3")
 :do {
-/tool fetch url=$syncRawUrl check-certificate=no dst-path="ns-sync.src"
+/tool fetch url=$syncRawUrl check-certificate=no dst-path=$syncTempFile
 :set syncOk true
 } on-error={
 :log warning ("NAVSPOT-INSTALL: sync fetch tentativa " . $syncRetry . " falhou")
@@ -283,37 +350,39 @@ function generateAllScripts(
 }
 }
 :if ($syncOk = true) do={
-:delay 2s
+:delay 700ms
 :local fsize 0
-:do { :set fsize [/file get "ns-sync.src" size] } on-error={}
+:do { :set fsize [/file get $syncTempFile size] } on-error={}
 :log info ("NAVSPOT-INSTALL: sync baixado (" . $fsize . " bytes)")
 :local prefix ""
-:do { :set prefix [:pick [/file get "ns-sync.src" contents] 0 40] } on-error={}
+:do { :set prefix [:pick [/file get $syncTempFile contents] 0 40] } on-error={}
 :if ([:find $prefix ":log info"] >= 0) do={
 :log info "NAVSPOT-INSTALL: sync content valido"
 :do { /system script remove [find where name="navspot-sync"] } on-error={}
-:delay 200ms
-:do { /system script add name="navspot-sync" policy=read,write,test source=[/file get "ns-sync.src" contents] } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar sync" }
-:do { /file remove "ns-sync.src" } on-error={}
+:delay 300ms
+:do { /system script add name="navspot-sync" policy=read,write,test source=[/file get $syncTempFile contents] } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar sync" }
+:delay 300ms
+:do { /file remove $syncTempFile } on-error={}
 :log info "NAVSPOT-INSTALL: navspot-sync v${VERSION} instalado"
 } else={
 :log error ("NAVSPOT-INSTALL: sync content INVALIDO (prefix=" . $prefix . ")")
-:do { /file remove "ns-sync.src" } on-error={}
+:do { /file remove $syncTempFile } on-error={}
 }
 } else={
 :log error "NAVSPOT-INSTALL: sync fetch falhou apos 3 tentativas"
 }
 
-# ===== 2. ACTION PROCESSOR (fetch raw source) =====
-:log info "NAVSPOT-INSTALL: Baixando action-raw..."
+# ===== 2. ACTION PROCESSOR CORE (fetch raw source ~2.5KB) =====
+:log info "NAVSPOT-INSTALL: Baixando action-raw (core)..."
 :local actionRawUrl ($apiBase . $ep . "?type=action-raw&token=" . $tk)
+:local actionTempFile ("ns-action-" . $tsStr . ".src")
 :local actionOk false
 :local actionRetry 0
 :while (($actionRetry < 3) && ($actionOk = false)) do={
 :set actionRetry ($actionRetry + 1)
 :log info ("NAVSPOT-INSTALL: action tentativa " . $actionRetry . "/3")
 :do {
-/tool fetch url=$actionRawUrl check-certificate=no dst-path="ns-action.src"
+/tool fetch url=$actionRawUrl check-certificate=no dst-path=$actionTempFile
 :set actionOk true
 } on-error={
 :log warning ("NAVSPOT-INSTALL: action fetch tentativa " . $actionRetry . " falhou")
@@ -321,54 +390,85 @@ function generateAllScripts(
 }
 }
 :if ($actionOk = true) do={
-:delay 2s
+:delay 700ms
 :local fsize 0
-:do { :set fsize [/file get "ns-action.src" size] } on-error={}
+:do { :set fsize [/file get $actionTempFile size] } on-error={}
 :log info ("NAVSPOT-INSTALL: action baixado (" . $fsize . " bytes)")
 :local prefix ""
-:do { :set prefix [:pick [/file get "ns-action.src" contents] 0 40] } on-error={}
+:do { :set prefix [:pick [/file get $actionTempFile contents] 0 40] } on-error={}
 :if ([:find $prefix ":log info"] >= 0) do={
 :log info "NAVSPOT-INSTALL: action content valido"
 :do { /system script remove [find where name="navspot-action-processor"] } on-error={}
-:delay 200ms
-:do { /system script add name="navspot-action-processor" policy=read,write,test source=[/file get "ns-action.src" contents] } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar action" }
-:do { /file remove "ns-action.src" } on-error={}
+:delay 300ms
+:do { /system script add name="navspot-action-processor" policy=read,write,test source=[/file get $actionTempFile contents] } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar action" }
+:delay 300ms
+:do { /file remove $actionTempFile } on-error={}
 :log info "NAVSPOT-INSTALL: navspot-action-processor v${VERSION} instalado"
 } else={
 :log error ("NAVSPOT-INSTALL: action content INVALIDO (prefix=" . $prefix . ")")
-:do { /file remove "ns-action.src" } on-error={}
+:local fullPrefix ""
+:do { :set fullPrefix [:pick [/file get $actionTempFile contents] 0 200] } on-error={}
+:log error ("NAVSPOT-INSTALL: Primeiros 200 chars: " . $fullPrefix)
+:do { /file remove $actionTempFile } on-error={}
 }
 } else={
 :log error "NAVSPOT-INSTALL: action fetch falhou apos 3 tentativas"
 }
 
-# ===== 2.1 POST-INSTALL VALIDATION: ACTION PROCESSOR (v7.1.20) =====
+# ===== 2.1 SMOKE TEST + FALLBACK (v7.1.22) =====
 :delay 1s
 :local apTestSrc ""
 :do { :set apTestSrc [/system script get navspot-action-processor source] } on-error={}
 :local apSrcLen [:len $apTestSrc]
 :local apValid false
 :if (($apSrcLen >= 100) && ([:find $apTestSrc ":log info"] >= 0)) do={ :set apValid true }
+
 :if ($apValid = true) do={
-:log info ("NAVSPOT-INSTALL: action-processor validado (" . $apSrcLen . " bytes)")
+:log info ("NAVSPOT-INSTALL: action-processor source validado (" . $apSrcLen . " bytes)")
+# v7.1.22: SMOKE TEST - execute with safe test payload
+:log info "NAVSPOT-INSTALL: Executando smoke test..."
+:do { /file remove "navspot-actions.txt" } on-error={}
+/file print file=navspot-actions.txt where name="__never__"
+:delay 500ms
+/file set [find name="navspot-actions.txt"] contents="create_profile|test_min|1M|1;"
+:delay 500ms
+:local smokeOk false
+:do {
+/system script run navspot-action-processor
+:set smokeOk true
+} on-error={
+:log error "NAVSPOT-INSTALL: smoke test FALHOU na execucao"
+}
+:if ($smokeOk = true) do={
+:log info "NAVSPOT-INSTALL: smoke test PASSOU - action-processor OK"
+} else={
+:log error "NAVSPOT-INSTALL: smoke test falhou - aplicando FALLBACK INLINE"
+:do { /system script remove [find where name="navspot-action-processor"] } on-error={}
+:delay 300ms
+/system script add name="navspot-action-processor" policy=read,write,test source="${escapedFallback}"
+:delay 300ms
+:log info "NAVSPOT-INSTALL: Fallback inline v${VERSION}F instalado"
+}
 } else={
 :log error ("NAVSPOT-INSTALL: action-processor INVALIDO (" . $apSrcLen . " bytes) - aplicando FALLBACK INLINE")
 :do { /system script remove [find where name="navspot-action-processor"] } on-error={}
-:delay 200ms
-/system script add name="navspot-action-processor" policy=read,write,test source=":log info \\"NAVSPOT-ACTION v7.1.21F: Start\\";:global navspotLock;:if (\$navspotLock = \\"1\\") do={ :return };:set navspotLock \\"1\\";:local fid [/file find name=\\"navspot-actions.txt\\"];:if ([:len \$fid] = 0) do={ :set navspotLock \\"0\\"; :return };:local raw [/file get \$fid contents];:do { /file remove \$fid } on-error={};:local pos 0;:local cnt 0;:while ([:find \$raw \\";\\\" \$pos] >= 0) do={:local ep [:find \$raw \\";\\\" \$pos];:local line [:pick \$raw \$pos \$ep];:set pos (\$ep + 1);:if ([:len \$line] > 0) do={:local p1 [:find \$line \\"|\\"];:if (\$p1 >= 0) do={:local c [:pick \$line 0 \$p1];:local r [:pick \$line (\$p1 + 1) [:len \$line]];:if (\$c = \\"create_user\\") do={:local p2 [:find \$r \\"|\\"];:if (\$p2 >= 0) do={:local u [:pick \$r 0 \$p2];:local sub [:pick \$r (\$p2 + 1) [:len \$r]];:local p3 [:find \$sub \\"|\\"];:local pw \\"\\";:local pf \\"default\\";:if (\$p3 >= 0) do={:set pw [:pick \$sub 0 \$p3];:set pf [:pick \$sub (\$p3 + 1) [:len \$sub]]};:if ([:len \$pf] = 0) do={ :set pf \\"default\\" };:do { /ip hotspot user profile add name=\$pf } on-error={};:local ex [/ip hotspot user find name=\$u];:if ([:len \$ex] = 0) do={:do { /ip hotspot user add name=\$u password=\$pw profile=\$pf comment=\\"navspot\\" } on-error={};:set cnt (\$cnt + 1)} else={:do { /ip hotspot user set \$ex password=\$pw profile=\$pf } on-error={}}}};:if (\$c = \\"create_profile\\") do={:local p2 [:find \$r \\"|\\"];:if (\$p2 >= 0) do={:local pn [:pick \$r 0 \$p2];:local sub [:pick \$r (\$p2 + 1) [:len \$r]];:local p3 [:find \$sub \\"|\\"];:if (\$p3 >= 0) do={:local sub2 [:pick \$sub (\$p3 + 1) [:len \$sub]];:local p4 [:find \$sub2 \\"|\\"];:local psh \\"1\\";:if (\$p4 >= 0) do={ :set psh [:pick \$sub2 0 \$p4] } else={ :set psh \$sub2 }};:local ex [/ip hotspot user profile find name=\$pn];:if ([:len \$ex] = 0) do={:do { /ip hotspot user profile add name=\$pn } on-error={};:set cnt (\$cnt + 1)}}}}}}};:set navspotLock \\"0\\";:log info (\\"NAVSPOT-ACTION v7.1.21F: OK - \\" . \$cnt . \\" acoes\\")"
-:log info "NAVSPOT-INSTALL: Fallback inline v7.1.21F instalado"
+:delay 300ms
+/system script add name="navspot-action-processor" policy=read,write,test source="${escapedFallback}"
+:delay 300ms
+:log info "NAVSPOT-INSTALL: Fallback inline v${VERSION}F instalado"
 }
 
 # ===== 3. GUARDIAN (fetch raw source) =====
 :log info "NAVSPOT-INSTALL: Baixando guardian-raw..."
 :local guardRawUrl ($apiBase . $ep . "?type=guardian-raw&token=" . $tk)
+:local guardTempFile ("ns-guard-" . $tsStr . ".src")
 :local guardOk false
 :local guardRetry 0
 :while (($guardRetry < 3) && ($guardOk = false)) do={
 :set guardRetry ($guardRetry + 1)
 :log info ("NAVSPOT-INSTALL: guardian tentativa " . $guardRetry . "/3")
 :do {
-/tool fetch url=$guardRawUrl check-certificate=no dst-path="ns-guard.src"
+/tool fetch url=$guardRawUrl check-certificate=no dst-path=$guardTempFile
 :set guardOk true
 } on-error={
 :log warning ("NAVSPOT-INSTALL: guardian fetch tentativa " . $guardRetry . " falhou")
@@ -376,22 +476,23 @@ function generateAllScripts(
 }
 }
 :if ($guardOk = true) do={
-:delay 2s
+:delay 700ms
 :local fsize 0
-:do { :set fsize [/file get "ns-guard.src" size] } on-error={}
+:do { :set fsize [/file get $guardTempFile size] } on-error={}
 :log info ("NAVSPOT-INSTALL: guardian baixado (" . $fsize . " bytes)")
 :local prefix ""
-:do { :set prefix [:pick [/file get "ns-guard.src" contents] 0 40] } on-error={}
+:do { :set prefix [:pick [/file get $guardTempFile contents] 0 40] } on-error={}
 :if ([:find $prefix ":log info"] >= 0) do={
 :log info "NAVSPOT-INSTALL: guardian content valido"
 :do { /system script remove [find where name="navspot-guardian"] } on-error={}
-:delay 200ms
-:do { /system script add name="navspot-guardian" policy=read,write,test source=[/file get "ns-guard.src" contents] } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar guardian" }
-:do { /file remove "ns-guard.src" } on-error={}
+:delay 300ms
+:do { /system script add name="navspot-guardian" policy=read,write,test source=[/file get $guardTempFile contents] } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar guardian" }
+:delay 300ms
+:do { /file remove $guardTempFile } on-error={}
 :log info "NAVSPOT-INSTALL: navspot-guardian v${VERSION} instalado"
 } else={
 :log error ("NAVSPOT-INSTALL: guardian content INVALIDO (prefix=" . $prefix . ")")
-:do { /file remove "ns-guard.src" } on-error={}
+:do { /file remove $guardTempFile } on-error={}
 }
 } else={
 :log error "NAVSPOT-INSTALL: guardian fetch falhou apos 3 tentativas"
@@ -438,7 +539,7 @@ function generateSyncScript(syncUrl: string, syncToken: string): string {
  * Kept for backwards compatibility
  */
 function generateActionProcessorScript(): string {
-  const source = generateActionProcessorSource()
+  const source = generateActionProcessorCoreSource()
   return generateScriptViaFile("navspot-action-processor", source)
 }
 
@@ -461,7 +562,7 @@ function generateSyncRSC(syncUrl: string, syncToken: string): string {
 }
 
 function generateActionProcessorRSC(): string {
-  const source = generateActionProcessorSource()
+  const source = generateActionProcessorCoreSource()
   return generateScriptViaFile("navspot-action-processor", source)
 }
 
@@ -472,13 +573,13 @@ function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
 
 // ==========================================
 // SCRIPT SOURCES (RouterOS code - pure, no wrapper)
-// v7.1.18: These are now served directly via *-raw endpoints
+// v7.1.22: Modularized - core and aux separated
 // ==========================================
 
 /**
- * v7.1.19: Sync source with concurrency lock
- * - Fixed: use hex escape \\22 for quote character (RouterOS 6.x compatible)
- * - \\22 = ASCII 34 = double-quote character
+ * v7.1.22: Sync source with retry logic for action file writing
+ * - Added retry with exponential delays for flash write
+ * - Validates saved file size matches expected
  */
 function generateSyncSource(syncUrl: string, syncToken: string): string {
   return `:log info "NAVSPOT-SYNC v${VERSION}: Iniciando..."
@@ -551,18 +652,38 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :log info "NAVSPOT-SYNC: Nenhuma acao pendente"
 :set syncOk true
 } else={
+# v7.1.22: Retry with exponential delays for flash write
+:local writeOk false
+:local retry 0
+:local expectedLen [:len $actions]
+:while (($retry < 3) && ($writeOk = false)) do={
+:set retry ($retry + 1)
+:local delayMs (500 * $retry)
 :do { /file remove "navspot-actions.txt" } on-error={}
 /file print file=navspot-actions.txt where name="__never__"
-:delay 1s
+:delay ($delayMs . "ms")
 :do { /file set [find where name="navspot-actions.txt"] contents=$actions } on-error={ :log error "NAVSPOT-SYNC: Falha ao salvar arquivo" }
-:delay 500ms
-:local fsize 0
-:do { :set fsize [/file get [find where name="navspot-actions.txt"] size] } on-error={}
-:log info ("NAVSPOT-SYNC: Arquivo salvo (size=" . $fsize . "), acionando action-processor...")
+:delay ($delayMs . "ms")
+:local savedLen 0
+:do { :set savedLen [:len [/file get [find where name="navspot-actions.txt"] contents]] } on-error={}
+:if ($savedLen = $expectedLen) do={
+:set writeOk true
+:log info ("NAVSPOT-SYNC: Arquivo salvo OK (tentativa " . $retry . ", size=" . $savedLen . ")")
+} else={
+:log warning ("NAVSPOT-SYNC: Mismatch tentativa " . $retry . " (expected=" . $expectedLen . ", saved=" . $savedLen . ")")
+}
+}
+:if ($writeOk = true) do={
+:log info "NAVSPOT-SYNC: Acionando action-processor..."
 :do {
 /system script run navspot-action-processor
 :set syncOk true
-} on-error={ :log error "NAVSPOT-SYNC: action-processor FALHOU na execucao" }
+} on-error={
+:log error "NAVSPOT-SYNC: action-processor FALHOU na execucao"
+}
+} else={
+:log error "NAVSPOT-SYNC: Falha ao salvar arquivo apos 3 tentativas"
+}
 }
 } else={
 :local respPrefix ""
@@ -583,9 +704,14 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 
 /**
- * v7.1.18: Action Processor with STRICT RouterOS 6.x syntax
+ * v7.1.22: Action Processor CORE (~2.5KB)
+ * Contains only essential handlers:
+ * - configure_hotspot_profile (critical for login-url)
+ * - create_profile (robust 4-param parsing)
+ * - create_user (core functionality)
+ * - remove_user (user removal)
  */
-function generateActionProcessorSource(): string {
+function generateActionProcessorCoreSource(): string {
   return `:log info "NAVSPOT-ACTION v${VERSION}: Start"
 :global navspotLock
 :if ($navspotLock = "1") do={ :log info "NAVSPOT-ACTION: lock ativo"; :return }
@@ -654,7 +780,6 @@ function generateActionProcessorSource(): string {
 :if ($p3 >= 0) do={
 :set pRate [:pick $sub 0 $p3]
 :local sub2 [:pick $sub ($p3 + 1) [:len $sub]]
-# v7.1.21: Handle 4th parameter (limitBytes) - extract only shared value before next pipe
 :local p4 [:find $sub2 "|"]
 :if ($p4 >= 0) do={
 :set pShared [:pick $sub2 0 $p4]
@@ -737,6 +862,51 @@ function generateActionProcessorSource(): string {
 }
 } on-error={ :log warning "NAVSPOT: Erro remove_user" }
 }
+}
+}
+}
+:set navspotLock "0"
+:log info ("NAVSPOT-ACTION v${VERSION}: OK - " . $processedCount . " acoes")`
+}
+
+/**
+ * v7.1.22: Action Processor AUX (~2KB)
+ * Contains secondary handlers for optional functionality:
+ * - create_whitelist_domain (walled garden allow)
+ * - create_blacklist_domain (walled garden deny)
+ * - disable_user / enable_user
+ * - kick_session
+ * - update_password
+ */
+function generateActionAuxSource(): string {
+  return `:log info "NAVSPOT-ACTION-AUX v${VERSION}: Start"
+:global navspotLock
+:if ($navspotLock = "1") do={ :log info "NAVSPOT-ACTION-AUX: lock ativo"; :return }
+:set navspotLock "1"
+:local fid [/file find where name="navspot-actions-aux.txt"]
+:if ([:len $fid] = 0) do={
+:set navspotLock "0"
+:log info "NAVSPOT-ACTION-AUX: Arquivo nao encontrado"
+:return
+}
+:local rawData ""
+:do { :set rawData [/file get $fid contents] } on-error={}
+:do { /file remove $fid } on-error={}
+:if ([:len $rawData] = 0) do={
+:set navspotLock "0"
+:return
+}
+:local pos 0
+:local cnt 0
+:while ([:find $rawData ";" $pos] >= 0) do={
+:local endPos [:find $rawData ";" $pos]
+:local line [:pick $rawData $pos $endPos]
+:set pos ($endPos + 1)
+:if ([:len $line] > 0) do={
+:local p1 [:find $line "|"]
+:if ($p1 >= 0) do={
+:local cmd [:pick $line 0 $p1]
+:local rest [:pick $line ($p1 + 1) [:len $line]]
 :if ($cmd = "create_whitelist_domain") do={
 :do {
 :local p2 [:find $rest "|"]
@@ -745,11 +915,11 @@ function generateActionProcessorSource(): string {
 :if ([:len $domain] > 0) do={
 :local dstHost ("*" . $domain . "*")
 :do { /ip hotspot walled-garden add dst-host=$dstHost action=allow comment="navspot-whitelist" } on-error={}
-:log info ("NAVSPOT: Whitelist adicionado - " . $domain)
-:set processedCount ($processedCount + 1)
+:log info ("NAVSPOT-AUX: Whitelist - " . $domain)
+:set cnt ($cnt + 1)
 }
 }
-} on-error={ :log warning "NAVSPOT: Erro create_whitelist_domain" }
+} on-error={}
 }
 :if ($cmd = "create_blacklist_domain") do={
 :do {
@@ -759,16 +929,17 @@ function generateActionProcessorSource(): string {
 :if ([:len $domain] > 0) do={
 :local dstHost ("*" . $domain . "*")
 :do { /ip hotspot walled-garden add dst-host=$dstHost action=deny comment="navspot-blacklist" } on-error={}
-:log info ("NAVSPOT: Blacklist adicionado - " . $domain)
-:set processedCount ($processedCount + 1)
+:log info ("NAVSPOT-AUX: Blacklist - " . $domain)
+:set cnt ($cnt + 1)
 }
 }
-} on-error={ :log warning "NAVSPOT: Erro create_blacklist_domain" }
+} on-error={}
 }
 :if ($cmd = "disable_user") do={
 :do {
 :if ([:len $rest] > 0) do={
 :do { /ip hotspot user set [find name=$rest] disabled=yes } on-error={}
+:set cnt ($cnt + 1)
 }
 } on-error={}
 }
@@ -776,6 +947,7 @@ function generateActionProcessorSource(): string {
 :do {
 :if ([:len $rest] > 0) do={
 :do { /ip hotspot user set [find name=$rest] disabled=no } on-error={}
+:set cnt ($cnt + 1)
 }
 } on-error={}
 }
@@ -786,6 +958,7 @@ function generateActionProcessorSource(): string {
 :local kMac [:pick $rest ($p2 + 1) [:len $rest]]
 :if ([:len $kMac] > 0) do={
 :do { /ip hotspot active remove [find mac-address=$kMac] } on-error={}
+:set cnt ($cnt + 1)
 }
 }
 } on-error={}
@@ -798,6 +971,7 @@ function generateActionProcessorSource(): string {
 :local uPass [:pick $rest ($p2 + 1) [:len $rest]]
 :if (([:len $uName] > 0) && ([:len $uPass] > 0)) do={
 :do { /ip hotspot user set [find name=$uName] password=$uPass } on-error={}
+:set cnt ($cnt + 1)
 }
 }
 } on-error={}
@@ -806,7 +980,7 @@ function generateActionProcessorSource(): string {
 }
 }
 :set navspotLock "0"
-:log info ("NAVSPOT-ACTION v${VERSION}: OK - " . $processedCount . " acoes")`
+:log info ("NAVSPOT-ACTION-AUX v${VERSION}: OK - " . $cnt)`
 }
 
 function generateGuardianSource(recoveryUrl: string, syncToken: string): string {
