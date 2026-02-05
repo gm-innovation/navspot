@@ -5,16 +5,17 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.1.20: Version identifier - pipe-first JSON + sanitization for file contents
-const VERSION = "7.1.20"
+// v7.1.21: Version identifier - fixed sanitization (preserve backslash for placeholders)
+const VERSION = "7.1.21"
 
-// v7.1.20: Sanitize pipe string for safe /file set contents in RouterOS
+// v7.1.21: Sanitize pipe string for safe /file set contents in RouterOS
 // Removes characters that cause truncation or parsing errors
+// CRITICAL: Do NOT replace backslash - it breaks \$(mac) placeholders
 function sanitizePipeForFileContents(pipe: string): string {
   return pipe
     .replace(/[\x00-\x1F]/g, '')    // Remove control characters
     .replace(/"/g, "'")             // Double quotes -> single (safer in MikroTik)
-    .replace(/\\/g, "/")            // Backslash -> forward slash
+    // REMOVED in v7.1.21: .replace(/\\/g, "/") - broke \$(mac) -> /$(mac)
 }
 
 // v7.0: Sanitize pipe delimiter in URLs
