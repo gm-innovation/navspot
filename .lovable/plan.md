@@ -1,125 +1,257 @@
 
-# Correção v7.1.25: Timing de Leitura de Arquivos no RouterOS 6.x
 
-## Diagnóstico
+# Plano de Implementação v7.1.26: Diagnóstico Aprimorado + Fallback Seguro
 
-Análise dos logs mostra um problema de timing:
+## Resumo das Mudanças
 
-| Script | Servidor | MikroTik (lido) | Status |
-|--------|----------|-----------------|--------|
-| sync-raw | 1996 bytes | **0 bytes** | FALHA |
-| action-raw | 2709 bytes | 2709 bytes | OK |
-| guardian-raw | 1993 bytes | **0 bytes** | FALHA |
+Baseado na análise detalhada fornecida, esta versão implementa melhorias críticas para garantir que o `action-processor` seja executado corretamente e que o hotspot receba sua configuração de `login-url`.
 
-O servidor está gerando todos os scripts corretamente. O problema está na leitura do arquivo no RouterOS após o fetch.
+---
 
-**Causa provável:** O RouterOS 6.x pode não ter sincronizado o arquivo completamente no disco antes da leitura. Arquivos menores (sync e guardian ~2KB) falham mais frequentemente que arquivos maiores (action ~2.7KB).
+## 1. Diagnóstico Aprimorado no Sync Script
 
-## Estratégia de Correção v7.1.25
-
-### 1. Aumentar delay pós-fetch de 700ms para 1500ms
-
-O delay atual de 700ms pode não ser suficiente para o flash do RouterOS sincronizar arquivos pequenos.
-
-### 2. Adicionar retry na leitura do arquivo
-
-Se o tamanho for 0 na primeira tentativa, esperar mais e tentar novamente:
-
+### Problema Atual
+O sync executa o action-processor silenciosamente:
 ```routeros
-:delay 1500ms
-:local fsize 0
-:local readRetry 0
-:while (($fsize = 0) && ($readRetry < 3)) do={
-  :set readRetry ($readRetry + 1)
-  :do { :set fsize [/file get $syncTempFile size] } on-error={}
-  :if ($fsize = 0) do={
-    :log info ("NAVSPOT-INSTALL: sync read retry " . $readRetry . "/3")
-    :delay 1000ms
+:do {/system script run navspot-action-processor} on-error={}
+```
+
+### Correção v7.1.26
+```routeros
+:local hasAP [:len [/system script find name="navspot-action-processor"]]
+:if ($hasAP = 0) do={
+  :log error "NAVSPOT-SYNC: action-processor NAO ENCONTRADO!"
+} else={
+  :local aerr ""
+  :do {
+    /system script run navspot-action-processor
+  } on-error={
+    :set aerr [:tostr $error]
+  }
+  :if ([:len $aerr] > 0) do={
+    :log error ("NAVSPOT-SYNC: action-processor ERRO=" . $aerr)
+  } else={
+    :log info "NAVSPOT-SYNC: action-processor executed OK"
   }
 }
 ```
 
-### 3. Validar tamanho mínimo antes de validar conteúdo
+---
 
-Se o arquivo tem 0 bytes, não tentar ler o conteúdo (evita erro):
+## 2. Escrita de Arquivo com Write/Read-Back Verificável
+
+### Problema Atual
+O arquivo de ações é criado sem verificação de integridade.
+
+### Correção v7.1.26
+Implementar escrita com retries e log de prefixo para diagnóstico:
 
 ```routeros
-:if ($fsize < 50) do={
-  :log error ("NAVSPOT-INSTALL: sync arquivo muito pequeno - " . $fsize . " bytes")
-  # tentar novamente ou falhar
+:local tmpName ("navspot-actions-" . $tsStr . ".txt")
+/file print file=$tmpName where name="__never__"
+:delay 300ms
+:local tries 0
+:local wok false
+:while (($tries < 3) && ($wok = false)) do={
+  :set tries ($tries + 1)
+  :do { /file set [find name=$tmpName] contents=$a } on-error={}
+  :delay 500ms
+  :local saved ""
+  :do { :set saved [/file get [find name=$tmpName] contents] } on-error={}
+  :if ([:len $saved] = [:len $a]) do={ :set wok true } else={
+    :log warning ("NAVSPOT-SYNC: write mismatch attempt " . $tries . " savedLen=" . [:len $saved])
+    :delay (300 * $tries)
+  }
+}
+:if ($wok) do={
+  # Atomic rename to canonical name
+  :do { /file remove "navspot-actions.txt" } on-error={}
+  :do { /file rename $tmpName navspot-actions.txt } on-error={}
 } else={
-  # continuar com validação de conteúdo
+  :log error "NAVSPOT-SYNC: unable to write navspot-actions.txt reliably"
+  :do { /file remove $tmpName } on-error={}
 }
 ```
+
+---
+
+## 3. Fallback Inline Seguro e Limitado
+
+### Regras do Fallback
+- Só executa se action-processor não existir OU falhar
+- Processa apenas as primeiras **5 ações** (evita loops longos)
+- Handlers apenas para `configure_hotspot_profile` e `create_user`
+- Reset de lock em todos os caminhos de erro
+
+### Código do Fallback Limitado
+```routeros
+# Fallback inline - apenas emergencia
+:local maxFB 5
+:local fbCnt 0
+:local fbPos 0
+:while (([:find $a ";" $fbPos] >= 0) && ($fbCnt < $maxFB)) do={
+  :local fbEp [:find $a ";" $fbPos]
+  :local fbLn [:pick $a $fbPos $fbEp]
+  :set fbPos ($fbEp + 1)
+  :if ([:len $fbLn] = 0) do={ :continue }
+  :local fbP1 [:find $fbLn "|"]
+  :if ($fbP1 < 0) do={ :continue }
+  :local fbCmd [:pick $fbLn 0 $fbP1]
+  :local fbRest [:pick $fbLn ($fbP1+1) [:len $fbLn]]
+  :if ($fbCmd = "configure_hotspot_profile") do={
+    :local fbP2 [:find $fbRest "|"]
+    :if ($fbP2 >= 0) do={
+      :local fbLu [:pick $fbRest 0 $fbP2]
+      :local fbDn [:pick $fbRest ($fbP2+1) [:len $fbRest]]
+      :local fbHp [/ip hotspot profile find name="hsprof-navspot"]
+      :if ([:len $fbHp] > 0) do={
+        :do { /ip hotspot profile set $fbHp login-url=$fbLu } on-error={}
+        :do { /ip hotspot profile set $fbHp dns-name=$fbDn } on-error={}
+        :log info "NAVSPOT-SYNC: FALLBACK configure_hotspot_profile OK"
+        :set fbCnt ($fbCnt + 1)
+      }
+    }
+  }
+  :if ($fbCmd = "create_user") do={
+    :local fbP2 [:find $fbRest "|"]
+    :if ($fbP2 >= 0) do={
+      :local fbUn [:pick $fbRest 0 $fbP2]
+      :local fbRem [:pick $fbRest ($fbP2+1) [:len $fbRest]]
+      :local fbP3 [:find $fbRem "|"]
+      :local fbPw ""
+      :local fbPf "default"
+      :if ($fbP3 >= 0) do={
+        :set fbPw [:pick $fbRem 0 $fbP3]
+        :set fbPf [:pick $fbRem ($fbP3+1) [:len $fbRem]]
+      } else={ :set fbPw $fbRem }
+      :if ([:len $fbUn] > 0) do={
+        :do { /ip hotspot user add name=$fbUn password=$fbPw profile=$fbPf comment="navspot-fb" } on-error={}
+        :set fbCnt ($fbCnt + 1)
+      }
+    }
+  }
+}
+:if ($fbCnt > 0) do={ :log info ("NAVSPOT-SYNC: FALLBACK processou " . $fbCnt . " acoes") }
+```
+
+---
+
+## 4. Lock Cleanup em Todos os Caminhos de Erro
+
+### Problema Atual
+Se ocorrer erro em alguns pontos, o lock pode não ser liberado, causando deadlock.
+
+### Correção v7.1.26
+Inicializar lock no início e garantir reset em todos os caminhos:
+
+```routeros
+# No topo do sync:
+:global navspotSyncLock
+:if ([:len $navspotSyncLock] = 0) do={ :set navspotSyncLock "0" }
+:if ($navspotSyncLock = "1") do={ :log info "NAVSPOT-SYNC: locked"; :return }
+:set navspotSyncLock "1"
+
+# Em TODOS os on-error que fazem :return, adicionar:
+:set navspotSyncLock "0"
+
+# No final (já existe):
+:set navspotSyncLock "0"
+```
+
+---
 
 ## Arquivos a Modificar
 
 ### 1. `supabase/functions/mikrotik-scripts/index.ts`
 
-**Mudanças em `generateAllScripts()`:**
+**Mudanças em `generateSyncSource()` (linhas 641-694):**
+- Bump VERSION para "7.1.26"
+- Adicionar verificação de existência do action-processor
+- Adicionar captura de erro com `[:tostr $error]`
+- Adicionar escrita com write/read-back verificável
+- Adicionar fallback inline limitado (max 5 ações)
+- Adicionar inicialização robusta do lock
 
-1. Bump VERSION para "7.1.25"
-2. Aumentar delay pós-fetch de 700ms para 1500ms (linhas 354, 396, 475)
-3. Adicionar retry loop na leitura de tamanho do arquivo
-4. Adicionar validação de tamanho mínimo (50 bytes)
+**Mudanças em `generateAllScripts()` (linha 302-581):**
+- Bump VERSION para "7.1.26"
 
-### 2. Outros arquivos (version bump)
+### 2. `supabase/functions/mikrotik-sync/index.ts`
+- Linha 9: Bump VERSION para "7.1.26"
 
-- `supabase/functions/mikrotik-sync/index.ts` - VERSION para 7.1.25
-- `supabase/functions/mikrotik-script-generator/index.ts` - VERSION para 7.1.25
-- `src/components/modals/ScriptModal.tsx` - scriptVersion para "7.1.25"
-- `src/pages/Embarcacoes.tsx` - currentScriptVersion para "7.1.25"
+### 3. `supabase/functions/mikrotik-script-generator/index.ts`
+- Bump VERSION para "7.1.26"
 
-## Código Atualizado - Lógica de Leitura com Retry
+### 4. `src/components/modals/ScriptModal.tsx`
+- Bump scriptVersion para "7.1.26"
 
-```routeros
-:if ($syncOk = true) do={
-:delay 1500ms
-:local fsize 0
-:local readRetry 0
-:while (($fsize = 0) && ($readRetry < 3)) do={
-:set readRetry ($readRetry + 1)
-:do { :set fsize [/file get $syncTempFile size] } on-error={}
-:if ($fsize = 0) do={
-:log info ("NAVSPOT-INSTALL: sync read retry " . $readRetry . "/3")
-:delay 1000ms
-}
-}
-:log info ("NAVSPOT-INSTALL: sync baixado (" . $fsize . " bytes)")
-:if ($fsize < 50) do={
-:log error ("NAVSPOT-INSTALL: sync arquivo muito pequeno ou vazio")
-:do { /file remove $syncTempFile } on-error={}
-} else={
-:local prefix ""
-:do { :set prefix [:pick [/file get $syncTempFile contents] 0 100] } on-error={}
-# ... resto da validação
-}
-}
-```
+### 5. `src/pages/Embarcacoes.tsx`
+- Bump currentScriptVersion para "7.1.26"
 
-## Verificação no MikroTik
+---
+
+## Verificação Pós-Deploy
 
 ```routeros
-/import navspot-bootstrap-v7.1.25.rsc
+/import navspot-bootstrap-v7.1.26.rsc
 
-# Verificar logs
-/log print where message~"NAVSPOT-INSTALL" last=40
+# 1. Verificar logs detalhados
+/log print where message~"NAVSPOT" last=100
 
 # Esperado:
-# sync baixado (1996 bytes) - NÃO mais 0 bytes
-# sync content valido
-# action baixado (2709 bytes)
-# action content valido
-# guardian baixado (1993 bytes)
-# guardian content valido
+# - "action-processor executed OK" OU "action-processor ERRO=..."
+# - Se fallback: "FALLBACK configure_hotspot_profile OK"
+# - "NAVSPOT-SYNC v7.1.26: OK"
+
+# 2. Verificar login-url configurado
+/ip hotspot profile print where name="hsprof-navspot"
+# login-url DEVE mostrar https://navspot.lovable.app/hotspot-login?h=...&mac=$(mac)
+
+# 3. Verificar usuários criados
+/ip hotspot user print where comment~"navspot"
+
+# 4. Verificar scripts
+/system script print
+:put ("sync: " . [:len [/system script get navspot-sync source]] . " bytes")
+:put ("action: " . [:len [/system script get navspot-action-processor source]] . " bytes")
 ```
+
+---
+
+## Riscos Mitigados
+
+| Risco | Mitigação |
+|-------|-----------|
+| Race conditions em arquivos | Nomes temporários únicos + atomic rename |
+| Arquivo vazio/header inválido | Write/read-back com verificação de length |
+| Deadlocks de lock | Reset em todos os caminhos on-error |
+| Fallback executa demais | Limite de 5 ações + handlers mínimos |
+| Backslash corrompido | Sanitização preserva `\` |
+
+---
+
+## Limites de Tamanho Esperados
+
+| Script | v7.1.25 | v7.1.26 Estimado | Limite |
+|--------|---------|------------------|--------|
+| sync-raw | ~2.0 KB | ~2.8 KB | < 3.2 KB |
+| action-raw | ~2.7 KB | ~2.7 KB (sem mudança) | < 3.2 KB |
+| guardian-raw | ~2.0 KB | ~2.0 KB (sem mudança) | < 3.2 KB |
+
+---
 
 ## Checklist de Implementação
 
-- [ ] Aumentar delay pós-fetch de 700ms para 1500ms
-- [ ] Adicionar retry loop na leitura de tamanho (3 tentativas)
-- [ ] Adicionar validação de tamanho mínimo (50 bytes)
-- [ ] Aplicar mesma lógica para sync, action e guardian
-- [ ] Bump VERSION para 7.1.25 em todos os arquivos
+- [ ] Adicionar verificação de existência do action-processor com `[:len [/system script find ...]]`
+- [ ] Adicionar captura de erro real com `[:tostr $error]`
+- [ ] Implementar escrita com write/read-back verificável (3 retries)
+- [ ] Implementar atomic rename para `navspot-actions.txt`
+- [ ] Adicionar fallback inline limitado (max 5 ações)
+- [ ] Garantir reset de lock em todos os caminhos de erro
+- [ ] Manter sync source < 3.2KB
+- [ ] Bump VERSION para 7.1.26 em todos os arquivos
 - [ ] Deploy edge functions
 - [ ] Testar no RouterOS 6.49.x
+- [ ] Verificar logs de diagnóstico (ERRO= ou executed OK)
+- [ ] Verificar se login-url foi configurado
+- [ ] Verificar se usuários foram criados
+
