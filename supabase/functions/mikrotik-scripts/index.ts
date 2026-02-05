@@ -31,7 +31,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.20"
+const VERSION = "7.1.21"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -355,8 +355,8 @@ function generateAllScripts(
 :log error ("NAVSPOT-INSTALL: action-processor INVALIDO (" . $apSrcLen . " bytes) - aplicando FALLBACK INLINE")
 :do { /system script remove [find where name="navspot-action-processor"] } on-error={}
 :delay 200ms
-/system script add name="navspot-action-processor" policy=read,write,test source=":log info \\"NAVSPOT-ACTION v7.1.20F: Start\\";:global navspotLock;:if (\$navspotLock = \\"1\\") do={ :return };:set navspotLock \\"1\\";:local fid [/file find name=\\"navspot-actions.txt\\"];:if ([:len \$fid] = 0) do={ :set navspotLock \\"0\\"; :return };:local raw [/file get \$fid contents];:do { /file remove \$fid } on-error={};:local pos 0;:local cnt 0;:while ([:find \$raw \\";\\\" \$pos] >= 0) do={:local ep [:find \$raw \\";\\\" \$pos];:local line [:pick \$raw \$pos \$ep];:set pos (\$ep + 1);:if ([:len \$line] > 0) do={:local p1 [:find \$line \\"|\\"];:if (\$p1 >= 0) do={:local c [:pick \$line 0 \$p1];:local r [:pick \$line (\$p1 + 1) [:len \$line]];:if (\$c = \\"create_user\\") do={:local p2 [:find \$r \\"|\\"];:if (\$p2 >= 0) do={:local u [:pick \$r 0 \$p2];:local sub [:pick \$r (\$p2 + 1) [:len \$r]];:local p3 [:find \$sub \\"|\\"];:local pw \\"\\";:local pf \\"default\\";:if (\$p3 >= 0) do={:set pw [:pick \$sub 0 \$p3];:set pf [:pick \$sub (\$p3 + 1) [:len \$sub]]};:if ([:len \$pf] = 0) do={ :set pf \\"default\\" };:do { /ip hotspot user profile add name=\$pf } on-error={};:local ex [/ip hotspot user find name=\$u];:if ([:len \$ex] = 0) do={:do { /ip hotspot user add name=\$u password=\$pw profile=\$pf comment=\\"navspot\\" } on-error={};:set cnt (\$cnt + 1)} else={:do { /ip hotspot user set \$ex password=\$pw profile=\$pf } on-error={}}}};:if (\$c = \\"create_profile\\") do={:local p2 [:find \$r \\"|\\"];:if (\$p2 >= 0) do={:local pn [:pick \$r 0 \$p2];:local ex [/ip hotspot user profile find name=\$pn];:if ([:len \$ex] = 0) do={:do { /ip hotspot user profile add name=\$pn } on-error={};:set cnt (\$cnt + 1)}}}}}}};:set navspotLock \\"0\\";:log info (\\"NAVSPOT-ACTION v7.1.20F: OK - \\" . \$cnt . \\" acoes\\")"
-:log info "NAVSPOT-INSTALL: Fallback inline v7.1.20F instalado"
+/system script add name="navspot-action-processor" policy=read,write,test source=":log info \\"NAVSPOT-ACTION v7.1.21F: Start\\";:global navspotLock;:if (\$navspotLock = \\"1\\") do={ :return };:set navspotLock \\"1\\";:local fid [/file find name=\\"navspot-actions.txt\\"];:if ([:len \$fid] = 0) do={ :set navspotLock \\"0\\"; :return };:local raw [/file get \$fid contents];:do { /file remove \$fid } on-error={};:local pos 0;:local cnt 0;:while ([:find \$raw \\";\\\" \$pos] >= 0) do={:local ep [:find \$raw \\";\\\" \$pos];:local line [:pick \$raw \$pos \$ep];:set pos (\$ep + 1);:if ([:len \$line] > 0) do={:local p1 [:find \$line \\"|\\"];:if (\$p1 >= 0) do={:local c [:pick \$line 0 \$p1];:local r [:pick \$line (\$p1 + 1) [:len \$line]];:if (\$c = \\"create_user\\") do={:local p2 [:find \$r \\"|\\"];:if (\$p2 >= 0) do={:local u [:pick \$r 0 \$p2];:local sub [:pick \$r (\$p2 + 1) [:len \$r]];:local p3 [:find \$sub \\"|\\"];:local pw \\"\\";:local pf \\"default\\";:if (\$p3 >= 0) do={:set pw [:pick \$sub 0 \$p3];:set pf [:pick \$sub (\$p3 + 1) [:len \$sub]]};:if ([:len \$pf] = 0) do={ :set pf \\"default\\" };:do { /ip hotspot user profile add name=\$pf } on-error={};:local ex [/ip hotspot user find name=\$u];:if ([:len \$ex] = 0) do={:do { /ip hotspot user add name=\$u password=\$pw profile=\$pf comment=\\"navspot\\" } on-error={};:set cnt (\$cnt + 1)} else={:do { /ip hotspot user set \$ex password=\$pw profile=\$pf } on-error={}}}};:if (\$c = \\"create_profile\\") do={:local p2 [:find \$r \\"|\\"];:if (\$p2 >= 0) do={:local pn [:pick \$r 0 \$p2];:local sub [:pick \$r (\$p2 + 1) [:len \$r]];:local p3 [:find \$sub \\"|\\"];:if (\$p3 >= 0) do={:local sub2 [:pick \$sub (\$p3 + 1) [:len \$sub]];:local p4 [:find \$sub2 \\"|\\"];:local psh \\"1\\";:if (\$p4 >= 0) do={ :set psh [:pick \$sub2 0 \$p4] } else={ :set psh \$sub2 }};:local ex [/ip hotspot user profile find name=\$pn];:if ([:len \$ex] = 0) do={:do { /ip hotspot user profile add name=\$pn } on-error={};:set cnt (\$cnt + 1)}}}}}}};:set navspotLock \\"0\\";:log info (\\"NAVSPOT-ACTION v7.1.21F: OK - \\" . \$cnt . \\" acoes\\")"
+:log info "NAVSPOT-INSTALL: Fallback inline v7.1.21F instalado"
 }
 
 # ===== 3. GUARDIAN (fetch raw source) =====
@@ -653,7 +653,14 @@ function generateActionProcessorSource(): string {
 :local pShared "1"
 :if ($p3 >= 0) do={
 :set pRate [:pick $sub 0 $p3]
-:set pShared [:pick $sub ($p3 + 1) [:len $sub]]
+:local sub2 [:pick $sub ($p3 + 1) [:len $sub]]
+# v7.1.21: Handle 4th parameter (limitBytes) - extract only shared value before next pipe
+:local p4 [:find $sub2 "|"]
+:if ($p4 >= 0) do={
+:set pShared [:pick $sub2 0 $p4]
+} else={
+:set pShared $sub2
+}
 } else={
 :set pRate $sub
 }
