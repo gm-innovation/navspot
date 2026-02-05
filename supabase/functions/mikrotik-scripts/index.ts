@@ -38,7 +38,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.28"
+const VERSION = "7.1.29"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -158,6 +158,9 @@ Deno.serve(async (req) => {
       case 'sync-raw':
         script = generateSyncSource(syncUrl, syncToken)
         console.log(`[mikrotik-scripts ${VERSION}] sync-raw size: ${script.length} bytes`)
+        if (script.length > 3200) {
+          console.error(`[mikrotik-scripts] CRITICAL: sync-raw exceeds 3200 bytes: ${script.length}`)
+        }
         break
       case 'action-raw':
         script = generateActionProcessorCoreSource()
@@ -692,9 +695,10 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :delay 500ms
 :local sv ""
 :do {:set sv [/file get "navspot-actions.txt" contents]} on-error={}
-:local pf [:pick $sv 0 200]
-:if (([:len $sv]>12)&&([:find $pf "# NAME"]<0)) do={:set wok true} else={
-:log warning ("NAVSPOT-SYNC: write try=".$wt." len=".[:len $sv]." pf=[".[:pick $pf 0 80]."]")
+:local fc ""
+:if ([:len $sv]>0) do={:set fc [:pick $sv 0 1]}
+:if (([:len $sv]>=12)&&($fc!="#")&&([:find $sv "|"]>=0)) do={:set wok true} else={
+:log warning ("NAVSPOT-SYNC: write try=".$wt." len=".[:len $sv]." fc=[".$fc."] pf=[".[:pick $sv 0 80]."]")
 }}
 :if ($wok) do={
 :local hasAP [:len [/system script find name="navspot-action-processor"]]
@@ -779,7 +783,11 @@ function generateActionProcessorCoreSource(): string {
 :if ($p4>=0) do={:set sh [:pick $s2 0 $p4]} else={:set sh $s2}
 } else={:set rt $sub}
 :local ex [/ip hotspot user profile find name=$n]
-:if ([:len $ex]=0) do={
+:if ([:len $ex]>0) do={
+:if ([:len $rt]>0) do={:do {/ip hotspot user profile set $ex rate-limit=$rt} on-error={}}
+:do {/ip hotspot user profile set $ex shared-users=$sh} on-error={}
+:set cnt ($cnt+1)
+} else={
 :if ([:len $rt]>0) do={
 :do {/ip hotspot user profile add name=$n rate-limit=$rt shared-users=$sh} on-error={}
 } else={
@@ -808,13 +816,30 @@ function generateActionProcessorCoreSource(): string {
 :local pe [/ip hotspot user profile find name=$pf]
 :if ([:len $pe]=0) do={:do {/ip hotspot user profile add name=$pf} on-error={}}
 :local ex [/ip hotspot user find name=$un]
-:if ([:len $ex]=0) do={
+:if ([:len $ex]>0) do={
+:if ([:len $pw]>0) do={:do {/ip hotspot user set $ex password=$pw} on-error={}}
+:if (([:len $pf]>0)&&($pf!="default")) do={:do {/ip hotspot user set $ex profile=$pf} on-error={}}
+:set cnt ($cnt+1)
+} else={
 :if ([:len $pw]>0) do={
 :do {/ip hotspot user add name=$un password=$pw profile=$pf comment="navspot"} on-error={}
 :set cnt ($cnt+1)
 }}
 }}
 } on-error={}
+}
+:if (($c="create_whitelist_domain")||($c="add_whitelist_domain")) do={
+:do {
+:local dom $r
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={:set dom [:pick $r ($p2+1) [:len $r]]}
+:if ([:len $dom]>0) do={
+:local dh ("*".$dom."*")
+:local wg [/ip hotspot walled-garden find dst-host~$dom]
+:if ([:len $wg]=0) do={
+:do {/ip hotspot walled-garden add dst-host=$dh action=allow comment="navspot"} on-error={}
+:set cnt ($cnt+1)
+}}} on-error={}
 }
 }}}
 :set navspotLock "0"
