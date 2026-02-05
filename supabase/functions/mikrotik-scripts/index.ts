@@ -38,7 +38,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.27"
+const VERSION = "7.1.28"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -681,26 +681,22 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local a ""
 :if ($j>=$i) do={:set a [:pick $raw $i ($j+1)]}
 :if ([:len $a]>0) do={
-:local ts [/system clock get time]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local tmpName ("navspot-actions-".$tsStr.".txt")
-/file print file=$tmpName where name="__x__"
-:delay 250ms
-:local wrote false
-:local tries 0
-:while (($tries<2)&&($wrote=false)) do={
-:set tries ($tries+1)
-:do {/file set [find name=$tmpName] contents=$a} on-error={}
-:delay 300ms
-:local saved ""
-:do {:set saved [/file get [find name=$tmpName] contents]} on-error={}
-:local pf [:pick $saved 0 50]
-:if (([:len $saved]=[:len $a])&&([:find $pf "# NAME"]<0)) do={:set wrote true} else={
-:log warning ("NAVSPOT-SYNC: write err try=".$tries." len=".[:len $saved])
-}}
-:if ($wrote) do={
 :do {/file remove "navspot-actions.txt"} on-error={}
-:do {/file rename $tmpName navspot-actions.txt} on-error={}
+/file print file=navspot-actions.txt where name="__never__"
+:delay 700ms
+:local wok false
+:local wt 0
+:while (($wt<3)&&($wok=false)) do={
+:set wt ($wt+1)
+:do {/file set [find name="navspot-actions.txt"] contents=$a} on-error={}
+:delay 500ms
+:local sv ""
+:do {:set sv [/file get "navspot-actions.txt" contents]} on-error={}
+:local pf [:pick $sv 0 200]
+:if (([:len $sv]>12)&&([:find $pf "# NAME"]<0)) do={:set wok true} else={
+:log warning ("NAVSPOT-SYNC: write try=".$wt." len=".[:len $sv]." pf=[".[:pick $pf 0 80]."]")
+}}
+:if ($wok) do={
 :local hasAP [:len [/system script find name="navspot-action-processor"]]
 :if ($hasAP=0) do={
 :log error "NAVSPOT-SYNC: action-processor NAO ENCONTRADO!"
@@ -710,8 +706,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ([:len $aerr]>0) do={:log error ("NAVSPOT-SYNC: AP ERRO=".$aerr)} else={:log info "NAVSPOT-SYNC: AP OK"}
 }
 } else={
-:log error "NAVSPOT-SYNC: write failed - abortando"
-:do {/file remove $tmpName} on-error={}
+:log error "NAVSPOT-SYNC: write failed after 3 tries"
 }
 }
 }
