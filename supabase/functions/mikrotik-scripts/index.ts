@@ -38,7 +38,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.29"
+const VERSION = "7.1.30"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -838,6 +838,33 @@ function generateActionProcessorCoreSource(): string {
 :local wg [/ip hotspot walled-garden find dst-host~$dom]
 :if ([:len $wg]=0) do={
 :do {/ip hotspot walled-garden add dst-host=$dh action=allow comment="navspot"} on-error={}
+:set cnt ($cnt+1)
+}}} on-error={}
+}
+:if ($c="add_firewall_block") do={
+:do {
+:local dom $r
+:if ([:len $dom]>0) do={
+:local cmt ("NAVSPOT-BLOCK-".$dom)
+:local ex [/ip firewall filter find comment~$cmt]
+:if ([:len $ex]=0) do={
+:local fb [/ip firewall filter find comment="defconf: fasttrack"]
+:if ([:len $fb]>0) do={
+/ip firewall filter add chain=forward action=drop protocol=tcp dst-port=80,443 content=$dom comment=$cmt place-before=$fb
+} else={
+/ip firewall filter add chain=forward action=drop protocol=tcp dst-port=80,443 content=$dom comment=$cmt
+}
+:set cnt ($cnt+1)
+}}} on-error={}
+}
+:if ($c="add_firewall_allow") do={
+:do {
+:local dom $r
+:if ([:len $dom]>0) do={
+:local cmt ("NAVSPOT-ALLOW-".$dom)
+:local ex [/ip firewall filter find comment~$cmt]
+:if ([:len $ex]=0) do={
+/ip firewall filter add chain=forward action=accept content=$dom comment=$cmt
 :set cnt ($cnt+1)
 }}} on-error={}
 }
