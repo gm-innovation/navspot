@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 // v7.1.25: Version identifier - File read timing fix
-const VERSION = "7.1.28"
+const VERSION = "7.1.29"
 
 // v7.1.23: Sanitize pipe string for safe /file set contents in RouterOS
 // Removes characters that cause truncation or parsing errors
@@ -329,12 +329,14 @@ async function reconcileUsers(
   registeredUsersCsv: string,
   formattedActions: PendingAction[]
 ): Promise<void> {
-  // v6.9.8: Validate if we have reliable data from MikroTik
-  if (!registeredUsersCsv || registeredUsersCsv.trim().length === 0) {
-    console.warn(`[mikrotik-sync] v6.9.8: WARNING - MikroTik not sending registered_users_csv. Script update required.`)
-    console.warn(`[mikrotik-sync] v6.9.8: Skipping user reconciliation to prevent false positives/loops`)
+  // v7.1.29: Diferenciar "campo ausente" (script antigo) vs "lista vazia" (roteador limpo)
+  if (registeredUsersCsv === undefined || registeredUsersCsv === null) {
+    // Script antigo que não envia o campo - pular reconciliação
+    console.warn(`[mikrotik-sync] v7.1.29: WARNING - MikroTik not sending registeredUsersCsv field (script update required)`)
     return
   }
+  // Se chegou aqui com string vazia, significa roteador limpo - CONTINUAR
+  console.log(`[mikrotik-sync] v7.1.29: MikroTik has ${registeredUsersCsv.trim().length === 0 ? '0' : 'some'} registered users`)
   
   // Parse registered users from MikroTik (lista COMPLETA de cadastrados)
   const registeredUsersSet = new Set(
@@ -1322,7 +1324,48 @@ Deno.serve(async (req) => {
       )
     }
 
-    // v6.9.18: Expand domain-based actions to individual commands
+    // v7.1.29: Auto-repair portal config
+    // Inject configure_hotspot_profile if not in first-sync AND no pending config action AND has user actions
+    const hasPendingPortalConfig = formattedActions.some(a => a.type === 'configure_hotspot_profile')
+    const hasUserActions = formattedActions.some(a => 
+      a.type === 'create_user' || a.type === 'add_user_profile' || a.type === 'add_user'
+    )
+    
+    if (!hasPendingPortalConfig && hotspot.initial_config_sent && hasUserActions) {
+      const supabaseUrlForRepair = Deno.env.get('SUPABASE_URL')!
+      const portalHost = 'navspot.lovable.app'
+      const hotspotSlug = hotspot.nome.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
+      
+      const loginUrl = escapeRouterOSPlaceholders(
+        `https://${portalHost}/hotspot-login?hotspot_id=${hotspot.id}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
+      )
+      const dnsName = `${hotspotSlug}.navspot.local`
+      
+      // Inject at the beginning (before profiles and users)
+      formattedActions.unshift({
+        id: 'repair-config-profile',
+        type: 'configure_hotspot_profile',
+        payload: { login_url: loginUrl, dns_name: dnsName }
+      })
+      
+      // Also ensure essential walled garden (portal + backend)
+      formattedActions.unshift({
+        id: 'repair-wg-portal',
+        type: 'add_whitelist_domain',
+        payload: { domain: portalHost }
+      })
+      
+      const backendHostForRepair = new URL(supabaseUrlForRepair).hostname
+      formattedActions.unshift({
+        id: 'repair-wg-backend',
+        type: 'add_whitelist_domain',
+        payload: { domain: backendHostForRepair }
+      })
+      
+      console.log(`[mikrotik-sync] v7.1.29: Injected portal repair config with user actions`)
+    }
     // PRIORITY ORDER: Firewall rules FIRST (most critical for bloquear_tudo mode)
     // to prevent buffer truncation from losing them
     const expandedActions: typeof formattedActions = []
