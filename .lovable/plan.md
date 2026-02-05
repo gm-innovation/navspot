@@ -1,207 +1,141 @@
 
-# Correção v7.1.14: Quebra de Linha para `source="..."` no RouterOS 6.x
+# Correção v7.1.15: Resposta JSON Otimizada para RouterOS
 
 ## Diagnóstico Confirmado
 
-O script `navspot-action-processor` está marcado como **Invalid (I)** porque o arquivo RSC gerado contém uma única linha gigantesca:
+O RouterOS está recebendo a resposta JSON, mas o log mostra `prefix=` **vazio**, indicando que:
 
-```routeros
-/system script add name="navspot-action-processor" policy=read,write,test source="<3000+ chars escapados em uma linha>"
+1. A resposta JSON é muito grande (~3KB+ com todos os campos)
+2. O campo `pending_actions_pipe` está no **final** da resposta 
+3. Se o RouterOS truncar ou falhar ao ler o arquivo, os marcadores `[[...]]` não são encontrados
+
+**Evidência**: A resposta contém muitos campos desnecessários para o RouterOS:
+- `firewall_rules` (7 regras complexas com arrays aninhados)
+- `pending_actions` (array completo de objetos)
+- `device_violations`, `blocked_devices`, `server_time`
+
+O RouterOS só precisa do `pending_actions_pipe`!
+
+## Solução: Resposta Minimal para RouterOS
+
+Reestruturar a resposta para colocar os marcadores `[[...]]` no **início** do JSON ou retornar uma resposta muito mais enxuta.
+
+### Opção Escolhida: Pipe First
+
+Colocar `pending_actions_pipe` como **primeiro campo** do JSON e simplificar a resposta:
+
+```json
+{
+  "pending_actions_pipe": "[[...]]",
+  "success": true,
+  "server_time": "..."
+}
 ```
 
-O RouterOS 6.x tem limitações no parser de `/import`:
-- Limite de ~4096 bytes por linha/comando
-- Truncamento silencioso de strings muito longas em source="..."
-- O script é salvo incompleto → braces/comandos cortados → **Invalid**
+Em vez de:
 
-## Solução: Quebra de Linha com Continuação `\`
-
-O RouterOS aceita continuação de linha com `\` no final (dentro das aspas), exatamente como faz o comando `/export`:
-
-```routeros
-/system script add name="test" source="linha1\
-linha2\
-linha3"
+```json
+{
+  "blocked_devices": [],
+  "device_violations": [],
+  "firewall_rules": [...],
+  "pending_actions": [...],
+  "pending_actions_pipe": "[[...]]",
+  "success": true
+}
 ```
 
-Isso mantém o valor final do `source` idêntico, mas evita limites do `/import`.
+## Mudanças Técnicas
 
-## Implementação Técnica
+### Arquivo: `supabase/functions/mikrotik-sync/index.ts`
 
-### 1) Criar helper `wrapSourceWithContinuation()`
+**1) Reordenar campos JSON na resposta (linha ~1495)**
 
-Adicionar função em `supabase/functions/mikrotik-scripts/index.ts`:
-
+Alterar de:
 ```typescript
-/**
- * Wrap a RouterOS source string with line continuation for long content
- * RouterOS supports \ at end of line (inside quotes) for multi-line strings
- * Max chunk ~120 chars to stay safely under 160 char line limit
- */
-function wrapSourceWithContinuation(escapedSource: string, maxChunk = 120): string {
-  if (escapedSource.length <= maxChunk) {
-    return `"${escapedSource}"`
-  }
-  
-  const chunks: string[] = []
-  let remaining = escapedSource
-  
-  while (remaining.length > 0) {
-    let chunkSize = Math.min(maxChunk, remaining.length)
-    
-    // Don't break on a backslash (would create \\\ at line end)
-    while (chunkSize > 1 && remaining[chunkSize - 1] === '\\') {
-      chunkSize--
-    }
-    
-    const chunk = remaining.substring(0, chunkSize)
-    remaining = remaining.substring(chunkSize)
-    chunks.push(chunk)
-  }
-  
-  // Join with \ continuation: "chunk1\
-  // chunk2\
-  // chunk3"
-  if (chunks.length === 1) {
-    return `"${chunks[0]}"`
-  }
-  
-  return '"' + chunks.join('\\\n') + '"'
-}
+return new Response(
+  JSON.stringify({
+    success: true,
+    pending_actions: expandedActions,
+    pending_actions_pipe: formattedPipe,
+    firewall_rules: firewallRules,
+    device_violations: deviceViolations,
+    blocked_devices: blockedDevices,
+    server_time: new Date().toISOString()
+  }),
 ```
 
-### 2) Atualizar funções RSC para usar o helper
-
-Modificar `generateSyncRSC()`, `generateActionProcessorRSC()`, e `generateGuardianRSC()`:
-
+Para:
 ```typescript
-function generateActionProcessorRSC(): string {
-  const source = generateActionProcessorSource()
-  const escapedSource = escapeForSourceQuotes(source)
-  const wrappedSource = wrapSourceWithContinuation(escapedSource)
-  
-  return `# NAVSPOT Action Processor v${VERSION} - RSC for /import
-:do { /system script remove [find where name="navspot-action-processor"] } on-error={}
-/system script add name="navspot-action-processor" policy=read,write,test source=${wrappedSource}
-:log info "NAVSPOT: Action-processor v${VERSION} instalado"
-`
-}
+return new Response(
+  JSON.stringify({
+    pending_actions_pipe: formattedPipe,  // FIRST - RouterOS scans for [[
+    success: true,
+    server_time: new Date().toISOString(),
+    // Keep other fields for debugging but move to end
+    pending_actions: expandedActions,
+    firewall_rules: firewallRules,
+    device_violations: deviceViolations,
+    blocked_devices: blockedDevices
+  }),
 ```
 
-### 3) Melhorar log de resposta inválida no `navspot-sync`
+**2) Bump VERSION para 7.1.15**
 
-Atualizar `generateSyncSource()` para incluir diagnóstico:
+### Arquivo: `supabase/functions/mikrotik-scripts/index.ts`
 
+**3) Adicionar log de tamanho da resposta no sync source (diagnóstico adicional)**
+
+No `generateSyncSource()`, adicionar log do tamanho do arquivo:
 ```routeros
-# Antes (linha ~506):
-:log warning "NAVSPOT-SYNC: Resposta invalida (sem marcadores [[]])"
-
-# Depois:
-:local respPrefix ""
-:if ([:len $resp] > 80) do={
-  :set respPrefix [:pick $resp 0 80]
-} else={
-  :set respPrefix $resp
-}
-:log warning ("NAVSPOT-SYNC: Resposta invalida (prefix=" . $respPrefix . ")")
+:local fsize 0
+:do { :set fsize [/file get "navspot-resp.txt" size] } on-error={}
+:log info ("NAVSPOT-SYNC: Resp recebida (" . $fsize . " bytes)")
 ```
 
-### 4) Padronizar `find where` (baixo risco)
+**4) Bump VERSION para 7.1.15**
 
-Atualizar comandos críticos para usar `find where name=` em vez de `find name=`:
+### Frontend (version sync)
 
-```routeros
-# Antes:
-:local fid [/file find name="navspot-actions.txt"]
+- `src/components/modals/ScriptModal.tsx`: Bump scriptVersion para 7.1.15
+- `src/pages/Embarcacoes.tsx`: Bump currentScriptVersion para 7.1.15
 
-# Depois:
-:local fid [/file find where name="navspot-actions.txt"]
+## Resultado Esperado
+
+Antes (v7.1.14):
+```
+fetch: file "navspot-resp.txt" downloaded
+NAVSPOT-SYNC: Resposta invalida (prefix=)
 ```
 
-### 5) Validação automática no backend
-
-Adicionar verificação após gerar o RSC:
-
-```typescript
-function validateRSCLineLength(rsc: string, maxLength = 160): void {
-  const lines = rsc.split('\n')
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].length > maxLength && !lines[i].trim().startsWith('#')) {
-      console.warn(`[mikrotik-scripts] Line ${i+1} exceeds ${maxLength} chars: ${lines[i].length}`)
-    }
-  }
-}
+Depois (v7.1.15):
 ```
-
-### 6) Version bump para 7.1.14
-
-Atualizar em todos os arquivos:
-- `supabase/functions/mikrotik-scripts/index.ts`: `VERSION = "7.1.14"`
-- `supabase/functions/mikrotik-script-generator/index.ts`: `VERSION = "7.1.14"`
-- `src/components/modals/ScriptModal.tsx`: `scriptVersion="7.1.14"`
-- `src/pages/Embarcacoes.tsx`: `currentScriptVersion="7.1.14"`
-
-## Exemplo de RSC Gerado (v7.1.14)
-
-```routeros
-# NAVSPOT Action Processor v7.1.14 - RSC for /import
-:do { /system script remove [find where name="navspot-action-processor"] } on-error={}
-/system script add name="navspot-action-processor" policy=read,write,test source=":log info \"NAVSPOT-ACTION v7.1.14: Start\"\
-\\r\\n:global navspotLock\
-\\r\\n:if (\$navspotLock = \"1\") do={ :log info \"NAVSPOT-ACTION: lock ativo\"; :return }\
-\\r\\n:set navspotLock \"1\"\
-... (continua em múltiplas linhas de ~120 chars cada)"
-:log info "NAVSPOT: Action-processor v7.1.14 instalado"
+fetch: file "navspot-resp.txt" downloaded
+NAVSPOT-SYNC: Resp recebida (512 bytes)
+NAVSPOT-SYNC: pending_actions_pipe (95 chars)
+NAVSPOT-SYNC: Arquivo salvo (size=95)...
 ```
 
 ## Arquivos Alterados
 
 | Arquivo | Mudança |
 |---------|---------|
-| `supabase/functions/mikrotik-scripts/index.ts` | + helper `wrapSourceWithContinuation()`, atualizar RSC generators, melhorar log sync, padronizar `find where`, bump 7.1.14 |
-| `supabase/functions/mikrotik-script-generator/index.ts` | Bump VERSION 7.1.14 |
-| `src/components/modals/ScriptModal.tsx` | Bump scriptVersion 7.1.14 |
-| `src/pages/Embarcacoes.tsx` | Bump currentScriptVersion 7.1.14 |
-
-## Checklist de Testes
-
-1. **Testar helper com strings variadas**:
-   - String curta (<120 chars) → sem quebra
-   - String longa (3000+ chars) → múltiplas linhas de ~120
-   - String com `\` no meio → não quebrar em cima de `\`
-
-2. **Validar RSC antes do deploy**:
-   - Nenhuma linha não-comentário >160 chars
-   - Estrutura de continuação `\` correta
-
-3. **Testar /import no RouterOS 6.49.x**:
-   - `/import navspot-bootstrap-v7.1.14.rsc`
-   - `/system script print where name="navspot-action-processor"` → sem flag **I**
-
-4. **Monitorar logs**:
-   - `/log print where message~"NAVSPOT-ACTION"`
-   - Esperado: `NAVSPOT-ACTION v7.1.14: Start` e `OK`
-
-5. **Testar resposta inválida (diagnóstico)**:
-   - Simular erro de rede e verificar se log mostra prefixo da resposta
+| `supabase/functions/mikrotik-sync/index.ts` | Reordenar JSON com `pending_actions_pipe` primeiro, bump v7.1.15 |
+| `supabase/functions/mikrotik-scripts/index.ts` | Adicionar log de tamanho da resposta, bump v7.1.15 |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Bump v7.1.15 |
+| `src/components/modals/ScriptModal.tsx` | Bump scriptVersion v7.1.15 |
+| `src/pages/Embarcacoes.tsx` | Bump currentScriptVersion v7.1.15 |
 
 ## Validação no MikroTik
 
 ```routeros
-# 1. Importar bootstrap
-/import navspot-bootstrap-v7.1.14.rsc
+# 1. Importar bootstrap v7.1.15
+/import navspot-bootstrap-v7.1.15.rsc
 
-# 2. Verificar script válido (sem flag I)
-/system script print where name="navspot-action-processor"
-
-# 3. Rodar manualmente
-/system script run navspot-action-processor
-
-# 4. Verificar logs
-/log print where message~"NAVSPOT-ACTION"
-# Esperado: "NAVSPOT-ACTION v7.1.14: Start" + "OK" ou "Nenhuma acao pendente"
-
-# 5. Testar sync completo
+# 2. Rodar sync
 /system script run navspot-sync
-/log print where message~"NAVSPOT"
+
+# 3. Verificar logs (deve mostrar tamanho e processar)
+/log print where message~"NAVSPOT-SYNC"
+# Esperado: "Resp recebida (XXX bytes)" e "pending_actions_pipe (N chars)"
 ```
