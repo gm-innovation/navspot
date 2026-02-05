@@ -5,19 +5,21 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.1.22: Version identifier - modularization + robust validation + secure fallback
-const VERSION = "7.1.22"
+// v7.1.23: Version identifier - aggressive compaction + enhanced safeguards
+const VERSION = "7.1.23"
 
-// v7.1.22: Sanitize pipe string for safe /file set contents in RouterOS
+// v7.1.23: Sanitize pipe string for safe /file set contents in RouterOS
 // Removes characters that cause truncation or parsing errors
 // CRITICAL: Do NOT replace backslash - it breaks \$(mac) placeholders
-// NEW: Collapse multiple semicolons and pipes for cleaner parsing
+// Enhanced: Trim leading/trailing semicolons, strip CR
 function sanitizePipeForFileContents(pipe: string): string {
   return pipe
     .replace(/[\x00-\x1F]/g, '')    // Remove control characters
-    .replace(/"/g, "'")             // Double quotes -> single (safer in MikroTik)
+    .replace(/\r/g, '')             // Strip CR
     .replace(/;{2,}/g, ';')         // Collapse multiple semicolons
+    .replace(/(^;|;$)/g, '')        // Trim leading/trailing semicolons
     .replace(/\|\|+/g, '|')         // Collapse multiple pipes
+    .replace(/"/g, "'")             // Double quotes -> single (safer in MikroTik)
     // PRESERVED: backslash - needed for \$(mac) placeholders
 }
 
