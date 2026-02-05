@@ -1,156 +1,92 @@
 
+## Diagnóstico (baseado no seu print + validação no backend)
+O seu MikroTik está conseguindo baixar e instalar os scripts (v7.1.19), porém o **navspot-sync falha no FETCH** porque o endpoint que ele chama **não existe no backend neste momento**.
 
-# Correção v7.1.18: Fetch Raw Source Strategy
+Eu confirmei isso de duas formas:
+1) Pelos logs do backend: requisições **POST** para `.../functions/v1/mikrotik-sync` retornando **HTTP 404** (“Requested function was not found”).
+2) Pelo teste direto do backend: chamada `GET /mikrotik-sync` retornou **404**.
 
-## Diagnóstico do Problema
+Ou seja: não é problema de DNS/TLS no MikroTik agora; é **função não publicada/deployada**.
 
-Os logs mostram que após `/import navspot-bootstrap-v7.1.17.rsc`:
-```routeros
-/system script print where name~"navspot"
-# source=
-#   # feb/ 5/2026  9:11:44 by RouterOS 6.49.11
-#   # software id = TDDJ-5DEI
-#   #
-#    # NAME                   TYPE                        SIZE CREATION-TIME
-```
+Além disso, identifiquei que **várias outras funções do backend também estão 404** (ex.: `mikrotik-config-update`, `mikrotik-recovery-download`, `hotspot-login`, `list-users`, etc.). Hoje, parecem estar ativas apenas `mikrotik-scripts` e `mikrotik-script-generator` (as que nós deployamos recentemente).
 
-O source contém apenas o **header genérico** gerado pelo comando `/file print file=... where name="__never__"`. Isso significa que o comando `/file set contents="<SCRIPT_ESCAPADO>"` está falhando silenciosamente no RouterOS 6.x quando executado via `/import`.
+---
 
-### Causa Raiz Confirmada
-O padrão atual `generateScriptViaFile()` tenta injetar o script inteiro dentro de um comando `contents="..."` durante o `/import`. O RouterOS 6.x não consegue processar strings multi-linha/grandes nesse contexto.
+## Objetivo
+1) **Disponibilizar (deploy) as funções do backend** necessárias para o fluxo MikroTik + painel admin.
+2) Confirmar que o MikroTik passa a receber resposta 200 do `mikrotik-sync` e que o sync volta a marcar hotspot como Online.
 
-## Solução v7.1.18: Fetch Raw Source
+---
 
-### Estratégia
-Em vez de embutir o source no RSC, vamos:
-1. Criar endpoints que retornam **source puro** (texto RouterOS sem wrapper)
-2. O instalador usa `/tool fetch` para baixar o source em arquivo `.src`
-3. Cria o script via `/system script add source=[/file get ... contents]`
+## Implementação (o que vou fazer após sua aprovação)
+### 1) Deploy das funções do backend que estão 404
+Vou executar deploy explícito das funções (já existentes no código) para que deixem de retornar “Requested function was not found”:
 
-### Por que funciona
-- O `/tool fetch` salva o conteúdo diretamente no sistema de arquivos
-- O RouterOS não precisa parsear o script durante o `/import`
-- O `[/file get ... contents]` lê bytes crus do arquivo
+- `mikrotik-sync` (crítica: sync do hotspot)
+- `mikrotik-recovery-download` (guardian/recovery)
+- `mikrotik-config-update` (ações do painel para aplicar mudanças no MikroTik)
+- `hotspot-login`
+- `hotspot-portal-config`
+- `list-users`
+- `create-user`
+- `update-user`
+- `delete-user`
+- `tripulante-self-register`
+- `send-alert-notification`
+- `auto-resolve-alerts`
 
-## Mudanças Técnicas
+Motivo: todas aparecem configuradas no `supabase/config.toml` com `verify_jwt = false`, mas atualmente estão **não encontradas** em runtime.
 
-### Arquivo: `supabase/functions/mikrotik-scripts/index.ts`
+### 2) Validação técnica imediata (sem depender do MikroTik)
+Depois do deploy, vou validar que **não há mais 404** chamando cada função pelo backend:
 
-#### 1) Adicionar endpoints `*-raw` (linhas ~170-195)
+- `GET /mikrotik-sync` deve retornar **200** (healthcheck JSON).
+- `GET /mikrotik-recovery-download` deve retornar **400** (faltando parâmetros), mas **não 404**.
+- `POST /mikrotik-config-update` sem token deve retornar **401**, mas **não 404**.
+- `GET /hotspot-login`, `GET /list-users` etc. devem retornar **401/405/400** conforme esperado, mas **não 404**.
 
-Novos tipos que retornam **source puro** (texto RouterOS apenas):
-- `type=sync-raw` → retorna `generateSyncSource()` direto (sem wrapper RSC)
-- `type=action-raw` → retorna `generateActionProcessorSource()` direto
-- `type=guardian-raw` → retorna `generateGuardianSource()` direto
+Se algum deploy falhar, vou:
+- Checar o erro de build/deploy da função específica
+- Ajustar o código (se necessário) e redeployar até ficar “resolvível” (sem 404)
 
-#### 2) Reescrever `generateAllScripts()` (linhas 221-361)
-
-O instalador principal passa a:
-- Baixar cada script via `/tool fetch url=...?type=*-raw` para arquivo `.src`
-- Logar tamanho do arquivo baixado (diagnóstico)
-- Criar script via `source=[/file get "ns-*.src" contents]`
-- Remover arquivo temporário
-- Manter schedulers/netwatch como está
-
-#### 3) Atualizar `*-source` endpoints (linhas 399-419)
-
-Simplificar para também usarem estratégia de fetch + file:
-- Em vez de `/file set contents="..."`, fazem fetch do `*-raw` correspondente
-
-#### 4) Remover dependência de `escapeForFileContents()` no fluxo principal
-
-A função pode ficar como fallback, mas o caminho principal não usa mais.
-
-#### 5) Adicionar diagnóstico de conteúdo baixado
-
-Após cada fetch, logar:
-- Tamanho do arquivo: `[/file get "ns-*.src" size]`
-- Primeiros 80 chars do conteúdo (para detectar HTML de erro)
-
-#### 6) Version bump para 7.1.18
-
-### Arquivo: `supabase/functions/mikrotik-script-generator/index.ts`
-- Bump VERSION para "7.1.18"
-
-### Arquivo: `src/components/modals/ScriptModal.tsx`
-- Bump scriptVersion para "7.1.18"
-
-### Arquivo: `src/pages/Embarcacoes.tsx`
-- Bump currentScriptVersion para "7.1.18"
-
-## Código do Instalador v7.1.18 (generateAllScripts)
-
-```text
-Para cada script (sync, action, guardian):
-  1. /tool fetch url=<API>?type=<script>-raw&token=<tk> dst-path="ns-<script>.src"
-  2. :delay 2s (flash write)
-  3. :local fsize [/file get "ns-<script>.src" size]
-  4. :log info ("Downloaded " . $fsize . " bytes")
-  5. :local prefix [:pick [/file get "ns-<script>.src" contents] 0 80]
-  6. :if ([:find $prefix ":log info"] >= 0) do={
-       /system script add name=navspot-<script> source=[/file get ... contents]
-       :log info "Script installed OK"
-     } else={
-       :log error "Invalid content - not RouterOS script"
-     }
-  7. /file remove "ns-<script>.src"
-```
-
-## Exemplo de Fluxo v7.1.18
-
-```text
-Bootstrap -> /import ns-install.rsc
-                |
-                v
-ns-install.rsc executes:
-  1. /tool fetch ...?type=sync-raw -> ns-sync.src (7KB texto puro)
-  2. /system script add source=[/file get "ns-sync.src" contents]
-  3. /file remove "ns-sync.src"
-  4. (repete para action, guardian)
-  5. Cria schedulers/netwatch
-  6. Executa primeiro sync
-```
-
-## Comparação de Abordagens
-
-| Aspecto | v7.1.17 (Atual) | v7.1.18 (Proposta) |
-|---------|-----------------|-------------------|
-| Método | `/file set contents="..."` no RSC | `/tool fetch` + file get |
-| Problema | Falha silenciosa em strings grandes | Funciona independente do tamanho |
-| Parsing | RouterOS parseia contents durante import | Conteúdo lido como bytes crus |
-| Diagnóstico | Difícil de debugar | Logs de tamanho e prefixo |
-
-## Validação no MikroTik
+### 3) Validação no MikroTik (roteiro que você executa)
+Sem precisar reimportar (mas pode reimportar se preferir limpar o ciclo), o mais rápido é:
 
 ```routeros
-# 1. Importar bootstrap v7.1.18
-/import navspot-bootstrap-v7.1.18.rsc
-
-# 2. Verificar scripts (source NÃO deve ser header genérico)
-/system script print where name~"navspot"
-
-# 3. Verificar prefixo do source (CRÍTICO)
-:local src [/system script get navspot-sync source]
-:put [:pick $src 0 120]
-# Esperado: ":log info \"NAVSPOT-SYNC v7.1.18..."
-
-# 4. Rodar sync e verificar logs
 /system script run navspot-sync
 /log print where message~"NAVSPOT-SYNC" last=30
-# Esperado: "NAVSPOT-SYNC v7.1.18: OK"
-
-# 5. Aguardar frontend mostrar Online
 ```
 
-## Checklist de Implementação
+Esperado após o backend estar no ar:
+- Em vez de “FETCH falhou”, deve aparecer:
+  - `NAVSPOT-SYNC: Resp recebida (...)`
+  - `NAVSPOT-SYNC: pending_actions_pipe (...)`
+  - `NAVSPOT-SYNC v7.1.19: OK`
+- E o hotspot deve voltar a ficar **Online** no frontend quando `ultima_sincronizacao` atualizar.
 
-- [ ] Adicionar endpoints `sync-raw`, `action-raw`, `guardian-raw` (source puro)
-- [ ] Reescrever `generateAllScripts()` com fetch + file pattern
-- [ ] Adicionar logs de diagnóstico (tamanho e prefixo do arquivo)
-- [ ] Validar conteúdo antes de criar script (detectar HTML de erro)
-- [ ] Bump VERSION para 7.1.18 em todos os arquivos
-- [ ] Deploy edge functions
-- [ ] Testar em RouterOS 6.49.x
-- [ ] Confirmar scripts sem flag **I** e source correto
-- [ ] Verificar hotspot Online no frontend
+---
+
+## (Opcional, se ainda houver erro após remover o 404)
+Se após o deploy o fetch ainda falhar, a próxima melhoria (v7.1.20) será **diagnóstico mais preciso** no `navspot-sync`:
+- Capturar e logar o **HTTP status code** quando `/tool fetch` falhar (para diferenciar 401/404/500 vs DNS/TLS real)
+- Fazer um `GET` de healthcheck antes do `POST` quando houver falha, para diagnosticar conectividade vs aplicação
+
+Eu só sigo com essa etapa opcional se, depois do deploy, o log do MikroTik ainda não mostrar “Resp recebida”.
+
+---
+
+## Critérios de sucesso
+- `GET /mikrotik-sync` retorna 200 no backend (sem 404)
+- O MikroTik consegue fazer POST no sync (sem 404) e o log mostra resposta recebida + `OK`
+- O painel mostra hotspot Online e a data de última sincronização atualiza
+
+---
+
+## Riscos / Observações
+- No momento, o erro dominante é **função inexistente (404)**, então a correção principal é o deploy.
+- Depois disso, qualquer problema remanescente tende a ser:
+  - token inválido (401)
+  - payload inválido (400)
+  - conectividade real (DNS/TLS)
+  E aí o diagnóstico opcional do navspot-sync ajuda muito.
 
