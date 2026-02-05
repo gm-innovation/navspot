@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.16
+ * mikrotik-scripts v7.1.18
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -14,24 +14,24 @@ const corsHeaders = {
  * 
  * Parameters:
  *   - type: "sync" | "action-processor" | "guardian" | "all" | 
- *           "sync-source" | "action-source" | "guardian-source" (default: "all")
+ *           "sync-source" | "action-source" | "guardian-source" |
+ *           "sync-raw" | "action-raw" | "guardian-raw" (default: "all")
  *   - token: sync_token for authentication
  * 
- * v7.1.16: FILE-BASED SCRIPT CREATION (Critical Fix)
- *   - Scripts are now created via temporary files using [/file get ... contents]
- *   - This bypasses RouterOS 6.x /import line length limits completely
- *   - Removed wrapSourceWithContinuation() which caused "expected end of command" errors
- *   - New escapeForFileContents() escapes only: backslashes, quotes, and dollar signs
- *   - Pattern: write file -> create script reading file contents -> remove temp file
+ * v7.1.18: FETCH RAW SOURCE STRATEGY (Critical Fix)
+ *   - New *-raw endpoints return pure RouterOS source (no RSC wrapper)
+ *   - Installer uses /tool fetch to download .src files
+ *   - Scripts created via source=[/file get ... contents]
+ *   - Completely bypasses /file set contents="..." parsing issues
+ *   - Diagnostics: logs file size and content prefix after each fetch
  * 
- * v7.1.15: JSON optimization for RouterOS truncation resilience
- * v7.1.14: Line continuation attempt (caused issues - reverted)
- * v7.1.13: CRITICAL FIX for RouterOS 6.x strict syntax
+ * v7.1.17: Preserve RouterOS escape sequences (partial fix)
+ * v7.1.16: FILE-BASED SCRIPT CREATION (still had issues)
  * 
- * Returns: text/plain RSC script that can be imported directly
+ * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.17"
+const VERSION = "7.1.18"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -40,34 +40,24 @@ function maskToken(token: string): string {
 }
 
 /**
- * v7.1.17: Escape script source for /file set contents="..."
- * 
- * CRITICAL: Preserve RouterOS escape sequences like \22 (quote), \5C (backslash), \n, \r, \t
- * Pattern: preserve → escape → restore
- * 
- * This prevents double-escaping of intentional RouterOS hex/escape sequences
+ * v7.1.18: escapeForFileContents is now LEGACY
+ * Kept for backwards compatibility but main flow uses fetch raw source
  */
 function escapeForFileContents(script: string): string {
-  // Map placeholder -> original
   const preserved = new Map<string, string>()
   let counter = 0
-  
-  // Helper to create unique placeholder
   const makePlaceholder = () => `__PRESERVED_${Date.now().toString(36)}_${counter++}__`
   
-  // 1) Preserve hex escapes like \22, \5C and common escapes \n \r \t
   let result = script.replace(/\\([0-9A-Fa-f]{2}|[nrt])/g, (m) => {
     const ph = makePlaceholder()
     preserved.set(ph, m)
     return ph
   })
   
-  // 2) Now escape remaining backslashes, quotes and $ safely
-  result = result.replace(/\\/g, '\\\\')   // Escape backslashes first
-  result = result.replace(/"/g, '\\"')      // Then quotes
-  result = result.replace(/\$/g, '\\$')     // Then $ for variable expansion
+  result = result.replace(/\\/g, '\\\\')
+  result = result.replace(/"/g, '\\"')
+  result = result.replace(/\$/g, '\\$')
   
-  // 3) Restore preserved sequences (they contain backslash+char that should remain as-is)
   preserved.forEach((orig, ph) => {
     result = result.replace(ph, orig)
   })
@@ -76,20 +66,8 @@ function escapeForFileContents(script: string): string {
 }
 
 /**
- * v7.1.16: Generate RSC that creates script via temporary file
- * 
- * This bypasses RouterOS 6.x /import line length limits completely!
- * 
- * Pattern:
- *   1. Remove any existing temp file
- *   2. Create empty placeholder file
- *   3. Set file contents to script source
- *   4. Create system script reading from file via [/file get ... contents]
- *   5. Remove temporary file
- * 
- * @param scriptName - Name of the script to create (e.g., "navspot-sync")
- * @param sourceText - Raw RouterOS script source (not escaped)
- * @param policy - Script policy (default: "read,write,test")
+ * v7.1.18: LEGACY - generateScriptViaFile
+ * Kept for backwards compatibility but main flow uses fetch raw source
  */
 function generateScriptViaFile(
   scriptName: string,
@@ -166,8 +144,21 @@ Deno.serve(async (req) => {
     const syncIntervalMinutes = hotspot.sync_interval_minutes || 5
 
     let script = ''
+    let contentType = 'text/plain; charset=utf-8'
 
     switch (scriptType) {
+      // v7.1.18: NEW - Raw source endpoints (pure RouterOS code, no wrapper)
+      case 'sync-raw':
+        script = generateSyncSource(syncUrl, syncToken)
+        break
+      case 'action-raw':
+        script = generateActionProcessorSource()
+        break
+      case 'guardian-raw':
+        script = generateGuardianSource(recoveryUrl, syncToken)
+        break
+      
+      // Legacy: RSC wrappers (kept for compatibility)
       case 'sync':
         script = generateSyncScript(syncUrl, syncToken)
         break
@@ -177,7 +168,6 @@ Deno.serve(async (req) => {
       case 'guardian':
         script = generateGuardianScript(recoveryUrl, syncToken)
         break
-      // v7.1.16: RSC with file-based script creation
       case 'sync-source':
         script = generateSyncRSC(syncUrl, syncToken)
         break
@@ -187,6 +177,8 @@ Deno.serve(async (req) => {
       case 'guardian-source':
         script = generateGuardianRSC(recoveryUrl, syncToken)
         break
+      
+      // v7.1.18: Updated installer with fetch raw source strategy
       case 'all':
       default:
         script = generateAllScripts(supabaseUrl, syncToken, syncIntervalMinutes)
@@ -199,7 +191,7 @@ Deno.serve(async (req) => {
       status: 200,
       headers: {
         ...corsHeaders,
-        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Type': contentType,
         'Content-Disposition': `attachment; filename="navspot-${scriptType}-v${VERSION}.rsc"`,
         'Cache-Control': 'no-store, no-cache, must-revalidate',
       },
@@ -215,8 +207,21 @@ Deno.serve(async (req) => {
 })
 
 /**
- * v7.1.16: Generate installer with file-based script creation
- * v7.1.10: Uses /import directly - bypasses RouterOS 6.x 4KB variable limit
+ * v7.1.18: REWRITTEN - Generate installer using FETCH RAW SOURCE strategy
+ * 
+ * Critical fix: Instead of embedding script source in RSC files,
+ * we now fetch the raw source into .src files and create scripts
+ * by reading the file contents directly.
+ * 
+ * This completely bypasses RouterOS 6.x /file set contents="..." parsing issues.
+ * 
+ * Pattern for each script:
+ *   1. /tool fetch url=...?type=*-raw -> ns-*.src
+ *   2. :delay 2s (flash write)
+ *   3. Log file size for diagnostics
+ *   4. Validate content starts with ":log info" (not HTML error)
+ *   5. /system script add source=[/file get "ns-*.src" contents]
+ *   6. /file remove "ns-*.src"
  */
 function generateAllScripts(
   supabaseUrl: string,
@@ -227,10 +232,10 @@ function generateAllScripts(
   
   return `# =========================================
 # NAVSPOT Scripts Installer v${VERSION}
-# File-based script creation (bypasses /import line limits)
+# FETCH RAW SOURCE Strategy
 # =========================================
 # _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
-:log info "NAVSPOT-SCRIPTS v${VERSION}: Iniciando instalacao..."
+:log info "NAVSPOT-INSTALL v${VERSION}: Iniciando instalacao..."
 
 # URLs construidas incrementalmente (limite 160 chars)
 :local apiBase "${apiBase}"
@@ -244,9 +249,9 @@ function generateAllScripts(
 :if ([:len $gw] > 0) do={ :set hasRoute true }
 } on-error={}
 :if ($hasRoute = true) do={
-:log info "NAVSPOT-SCRIPTS: Rota default OK"
+:log info "NAVSPOT-INSTALL: Rota default OK"
 } else={
-:log warning "NAVSPOT-SCRIPTS: Rota default NAO encontrada"
+:log warning "NAVSPOT-INSTALL: Rota default NAO encontrada"
 }
 
 # DNS check
@@ -256,113 +261,155 @@ function generateAllScripts(
 :set dnsOk true
 } on-error={}
 :if ($dnsOk = true) do={
-:log info "NAVSPOT-SCRIPTS: DNS OK"
+:log info "NAVSPOT-INSTALL: DNS OK"
 } else={
-:log warning "NAVSPOT-SCRIPTS: DNS pode estar com problemas"
+:log warning "NAVSPOT-INSTALL: DNS pode estar com problemas"
 }
 
-# ===== 1. SYNC SCRIPT (via /import direto) =====
-:log info "NAVSPOT-SCRIPTS: Baixando sync..."
-:local syncUrl ($apiBase . $ep . "?type=sync-source&token=" . $tk)
+# ===== 1. SYNC SCRIPT (fetch raw source) =====
+:log info "NAVSPOT-INSTALL: Baixando sync-raw..."
+:local syncRawUrl ($apiBase . $ep . "?type=sync-raw&token=" . $tk)
 :local syncOk false
 :local syncRetry 0
 :while (($syncRetry < 3) && ($syncOk = false)) do={
 :set syncRetry ($syncRetry + 1)
-:log info ("NAVSPOT-SCRIPTS: Tentativa " . $syncRetry . "/3")
+:log info ("NAVSPOT-INSTALL: sync tentativa " . $syncRetry . "/3")
 :do {
-/tool fetch url=$syncUrl check-certificate=no dst-path="ns-sync.rsc"
+/tool fetch url=$syncRawUrl check-certificate=no dst-path="ns-sync.src"
 :set syncOk true
 } on-error={
-:log warning ("NAVSPOT-SCRIPTS: sync fetch tentativa " . $syncRetry . " falhou")
+:log warning ("NAVSPOT-INSTALL: sync fetch tentativa " . $syncRetry . " falhou")
 :delay 5s
 }
 }
 :if ($syncOk = true) do={
 :delay 2s
-:do { /import ns-sync.rsc } on-error={ :log error "NAVSPOT-SCRIPTS: Falha ao importar sync" }
-:do { /file remove "ns-sync.rsc" } on-error={}
+:local fsize 0
+:do { :set fsize [/file get "ns-sync.src" size] } on-error={}
+:log info ("NAVSPOT-INSTALL: sync baixado (" . $fsize . " bytes)")
+:local prefix ""
+:do { :set prefix [:pick [/file get "ns-sync.src" contents] 0 40] } on-error={}
+:if ([:find $prefix ":log info"] >= 0) do={
+:log info "NAVSPOT-INSTALL: sync content valido"
+:do { /system script remove [find where name="navspot-sync"] } on-error={}
+:delay 200ms
+:do { /system script add name="navspot-sync" policy=read,write,test source=[/file get "ns-sync.src" contents] } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar sync" }
+:do { /file remove "ns-sync.src" } on-error={}
+:log info "NAVSPOT-INSTALL: navspot-sync v${VERSION} instalado"
 } else={
-:log error "NAVSPOT-SCRIPTS: Sync fetch falhou apos 3 tentativas"
+:log error ("NAVSPOT-INSTALL: sync content INVALIDO (prefix=" . $prefix . ")")
+:do { /file remove "ns-sync.src" } on-error={}
+}
+} else={
+:log error "NAVSPOT-INSTALL: sync fetch falhou apos 3 tentativas"
 }
 
-# ===== 2. ACTION PROCESSOR (via /import direto) =====
-:log info "NAVSPOT-SCRIPTS: Baixando action-processor..."
-:local actionUrl ($apiBase . $ep . "?type=action-source&token=" . $tk)
+# ===== 2. ACTION PROCESSOR (fetch raw source) =====
+:log info "NAVSPOT-INSTALL: Baixando action-raw..."
+:local actionRawUrl ($apiBase . $ep . "?type=action-raw&token=" . $tk)
 :local actionOk false
 :local actionRetry 0
 :while (($actionRetry < 3) && ($actionOk = false)) do={
 :set actionRetry ($actionRetry + 1)
-:log info ("NAVSPOT-SCRIPTS: Tentativa " . $actionRetry . "/3")
+:log info ("NAVSPOT-INSTALL: action tentativa " . $actionRetry . "/3")
 :do {
-/tool fetch url=$actionUrl check-certificate=no dst-path="ns-action.rsc"
+/tool fetch url=$actionRawUrl check-certificate=no dst-path="ns-action.src"
 :set actionOk true
 } on-error={
-:log warning ("NAVSPOT-SCRIPTS: action fetch tentativa " . $actionRetry . " falhou")
+:log warning ("NAVSPOT-INSTALL: action fetch tentativa " . $actionRetry . " falhou")
 :delay 5s
 }
 }
 :if ($actionOk = true) do={
 :delay 2s
-:do { /import ns-action.rsc } on-error={ :log error "NAVSPOT-SCRIPTS: Falha ao importar action" }
-:do { /file remove "ns-action.rsc" } on-error={}
+:local fsize 0
+:do { :set fsize [/file get "ns-action.src" size] } on-error={}
+:log info ("NAVSPOT-INSTALL: action baixado (" . $fsize . " bytes)")
+:local prefix ""
+:do { :set prefix [:pick [/file get "ns-action.src" contents] 0 40] } on-error={}
+:if ([:find $prefix ":log info"] >= 0) do={
+:log info "NAVSPOT-INSTALL: action content valido"
+:do { /system script remove [find where name="navspot-action-processor"] } on-error={}
+:delay 200ms
+:do { /system script add name="navspot-action-processor" policy=read,write,test source=[/file get "ns-action.src" contents] } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar action" }
+:do { /file remove "ns-action.src" } on-error={}
+:log info "NAVSPOT-INSTALL: navspot-action-processor v${VERSION} instalado"
 } else={
-:log error "NAVSPOT-SCRIPTS: Action fetch falhou apos 3 tentativas"
+:log error ("NAVSPOT-INSTALL: action content INVALIDO (prefix=" . $prefix . ")")
+:do { /file remove "ns-action.src" } on-error={}
+}
+} else={
+:log error "NAVSPOT-INSTALL: action fetch falhou apos 3 tentativas"
 }
 
-# ===== 3. GUARDIAN (via /import direto) =====
-:log info "NAVSPOT-SCRIPTS: Baixando guardian..."
-:local guardUrl ($apiBase . $ep . "?type=guardian-source&token=" . $tk)
+# ===== 3. GUARDIAN (fetch raw source) =====
+:log info "NAVSPOT-INSTALL: Baixando guardian-raw..."
+:local guardRawUrl ($apiBase . $ep . "?type=guardian-raw&token=" . $tk)
 :local guardOk false
 :local guardRetry 0
 :while (($guardRetry < 3) && ($guardOk = false)) do={
 :set guardRetry ($guardRetry + 1)
-:log info ("NAVSPOT-SCRIPTS: Tentativa " . $guardRetry . "/3")
+:log info ("NAVSPOT-INSTALL: guardian tentativa " . $guardRetry . "/3")
 :do {
-/tool fetch url=$guardUrl check-certificate=no dst-path="ns-guard.rsc"
+/tool fetch url=$guardRawUrl check-certificate=no dst-path="ns-guard.src"
 :set guardOk true
 } on-error={
-:log warning ("NAVSPOT-SCRIPTS: guardian fetch tentativa " . $guardRetry . " falhou")
+:log warning ("NAVSPOT-INSTALL: guardian fetch tentativa " . $guardRetry . " falhou")
 :delay 5s
 }
 }
 :if ($guardOk = true) do={
 :delay 2s
-:do { /import ns-guard.rsc } on-error={ :log error "NAVSPOT-SCRIPTS: Falha ao importar guardian" }
-:do { /file remove "ns-guard.rsc" } on-error={}
+:local fsize 0
+:do { :set fsize [/file get "ns-guard.src" size] } on-error={}
+:log info ("NAVSPOT-INSTALL: guardian baixado (" . $fsize . " bytes)")
+:local prefix ""
+:do { :set prefix [:pick [/file get "ns-guard.src" contents] 0 40] } on-error={}
+:if ([:find $prefix ":log info"] >= 0) do={
+:log info "NAVSPOT-INSTALL: guardian content valido"
+:do { /system script remove [find where name="navspot-guardian"] } on-error={}
+:delay 200ms
+:do { /system script add name="navspot-guardian" policy=read,write,test source=[/file get "ns-guard.src" contents] } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar guardian" }
+:do { /file remove "ns-guard.src" } on-error={}
+:log info "NAVSPOT-INSTALL: navspot-guardian v${VERSION} instalado"
 } else={
-:log error "NAVSPOT-SCRIPTS: Guardian fetch falhou apos 3 tentativas"
+:log error ("NAVSPOT-INSTALL: guardian content INVALIDO (prefix=" . $prefix . ")")
+:do { /file remove "ns-guard.src" } on-error={}
+}
+} else={
+:log error "NAVSPOT-INSTALL: guardian fetch falhou apos 3 tentativas"
 }
 
 # ===== 4. SCHEDULERS (idempotent remove-then-add) =====
 :do { /system scheduler remove [find where name="navspot-sync-scheduler"] } on-error={}
 /system scheduler add name="navspot-sync-scheduler" interval=${syncIntervalMinutes}m on-event="/system script run navspot-sync" start-time=startup start-date=jan/01/1970
-:log info "NAVSPOT-SCRIPTS: Scheduler sync criado"
+:log info "NAVSPOT-INSTALL: Scheduler sync criado"
 
 :do { /system scheduler remove [find where name="navspot-guardian-scheduler"] } on-error={}
 /system scheduler add name="navspot-guardian-scheduler" interval=10m on-event="/system script run navspot-guardian" start-time=startup start-date=jan/01/1970
-:log info "NAVSPOT-SCRIPTS: Scheduler guardian criado"
+:log info "NAVSPOT-INSTALL: Scheduler guardian criado"
 
 # ===== 5. NETWATCH =====
 :do { /tool netwatch remove [find where comment="navspot-netwatch"] } on-error={}
 /tool netwatch add host=8.8.8.8 interval=30s up-script="/system script run navspot-sync" comment="navspot-netwatch"
-:log info "NAVSPOT-SCRIPTS: Netwatch configurado"
+:log info "NAVSPOT-INSTALL: Netwatch configurado"
 
 :log info "=========================================="
-:log info "NAVSPOT-SCRIPTS v${VERSION}: INSTALACAO CONCLUIDA!"
+:log info "NAVSPOT-INSTALL v${VERSION}: INSTALACAO CONCLUIDA!"
 :log info "Scripts: navspot-sync, navspot-action-processor, navspot-guardian"
 :log info "Schedulers: sync a cada ${syncIntervalMinutes}m, guardian a cada 10m"
 :log info "=========================================="
 
 # ===== 6. PRIMEIRO SYNC =====
-:log info "NAVSPOT-SCRIPTS: Executando primeiro sync..."
+:log info "NAVSPOT-INSTALL: Executando primeiro sync..."
 :delay 2s
 /system script run navspot-sync
 `
 }
 
 /**
- * v7.1.16: Generate sync script using file-based approach
- * This bypasses RouterOS 6.x line length limits
+ * v7.1.18: LEGACY - Generate sync script using file-based approach
+ * Kept for backwards compatibility
  */
 function generateSyncScript(syncUrl: string, syncToken: string): string {
   const source = generateSyncSource(syncUrl, syncToken)
@@ -370,8 +417,8 @@ function generateSyncScript(syncUrl: string, syncToken: string): string {
 }
 
 /**
- * v7.1.16: Generate action-processor script using file-based approach
- * This bypasses RouterOS 6.x line length limits
+ * v7.1.18: LEGACY - Generate action-processor script using file-based approach
+ * Kept for backwards compatibility
  */
 function generateActionProcessorScript(): string {
   const source = generateActionProcessorSource()
@@ -379,8 +426,8 @@ function generateActionProcessorScript(): string {
 }
 
 /**
- * v7.1.16: Generate guardian script using file-based approach
- * This bypasses RouterOS 6.x line length limits
+ * v7.1.18: LEGACY - Generate guardian script using file-based approach
+ * Kept for backwards compatibility
  */
 function generateGuardianScript(recoveryUrl: string, syncToken: string): string {
   const source = generateGuardianSource(recoveryUrl, syncToken)
@@ -388,32 +435,19 @@ function generateGuardianScript(recoveryUrl: string, syncToken: string): string 
 }
 
 // ==========================================
-// v7.1.16: RSC files with file-based script creation
-// RouterOS reads file contents directly without re-parsing
+// v7.1.18: LEGACY RSC wrappers (backwards compatibility)
 // ==========================================
 
-/**
- * v7.1.16: Generate sync RSC using file-based script creation
- * Bypasses all RouterOS 6.x /import line length limitations
- */
 function generateSyncRSC(syncUrl: string, syncToken: string): string {
   const source = generateSyncSource(syncUrl, syncToken)
   return generateScriptViaFile("navspot-sync", source)
 }
 
-/**
- * v7.1.16: Generate action-processor RSC using file-based script creation
- * Bypasses all RouterOS 6.x /import line length limitations
- */
 function generateActionProcessorRSC(): string {
   const source = generateActionProcessorSource()
   return generateScriptViaFile("navspot-action-processor", source)
 }
 
-/**
- * v7.1.16: Generate guardian RSC using file-based script creation
- * Bypasses all RouterOS 6.x /import line length limitations
- */
 function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
   const source = generateGuardianSource(recoveryUrl, syncToken)
   return generateScriptViaFile("navspot-guardian", source)
@@ -421,14 +455,12 @@ function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
 
 // ==========================================
 // SCRIPT SOURCES (RouterOS code - pure, no wrapper)
-// v7.1.10: All commands properly separated with ; and prefixed with :
+// v7.1.18: These are now served directly via *-raw endpoints
 // ==========================================
 
 /**
- * v7.1.11: Sync source with concurrency lock to prevent parallel executions
- * - navspotSyncLock global to prevent scheduler + netwatch + manual conflicts
- * - check-certificate=no for SSL bypass
- * - Specific error messages for debugging
+ * v7.1.18: Sync source with concurrency lock
+ * - Fixed: use literal quote character in :local q definition
  */
 function generateSyncSource(syncUrl: string, syncToken: string): string {
   return `:log info "NAVSPOT-SYNC v${VERSION}: Iniciando..."
@@ -445,7 +477,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local users ""
 :local registered ""
 :local profiles ""
-:local q "\\""
+:local q "\""
 /ip hotspot active
 :foreach a in=[find] do={
 :local u [get $a user]
@@ -533,20 +565,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 
 /**
- * v7.1.13: Action Processor with STRICT RouterOS 6.x syntax
- * 
- * CRITICAL FIXES v7.1.13:
- * - All / commands wrapped in :do { } on-error={}
- * - Removed ~ (regex) operator from walled-garden find (causes parsing issues)
- * - Variables used directly (login-url=$loginUrl instead of ("" . $loginUrl))
- * - Each handler wrapped in :do { } on-error={} for isolation
- * - Lock released in all error paths
- * 
- * Essential handlers:
- * - configure_hotspot_profile
- * - create_profile / create_user / remove_user
- * - create_whitelist_domain / create_blacklist_domain (walled-garden)
- * - disable_user / enable_user / kick_session / update_password
+ * v7.1.18: Action Processor with STRICT RouterOS 6.x syntax
  */
 function generateActionProcessorSource(): string {
   return `:log info "NAVSPOT-ACTION v${VERSION}: Start"
