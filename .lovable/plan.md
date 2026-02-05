@@ -1,71 +1,64 @@
 
 
-# Plano v7.1.27: Sync Thin + Proteções Conservadoras
+# Plano v7.1.28: Correção com Header Detection Preservado
 
-## Diagnóstico Confirmado
+## Diagnóstico
 
-O sync script v7.1.26 tem **4597 bytes** (limite seguro: ~3.2KB). A causa é o fallback inline (linhas 707-748) que adiciona ~1.5KB desnecessariamente.
+Os logs de v7.1.27 mostram:
+- `try=1 len=0` - arquivo recém-criado vazio
+- `try=2 len=151` - arquivo contém header MikroTik (~151 bytes)
+- `write failed - abortando` - lógica de retry não corrigiu
 
-O **installer já tem smoke test completo** (linhas 456-499) que:
-- Valida o action-processor source
-- Executa smoke test com captura de `[:tostr $error]`
-- Aplica fallback inline se falhar
-- Limpa o perfil de teste
+**Problema raiz identificado:** O comando `/file print file=xxx where name="__x__"` cria um header de ~151 bytes. O `/file set contents` **não está sobrescrevendo** no RouterOS 6.x.
 
-**Conclusão:** O fallback no sync é redundante e viola o princípio "Thin Client".
+**Correção crítica que você apontou:** Manter `# NAME` header detection no check, pois `[:len $sv]>10` aceitaria header de 151 bytes como válido.
 
 ---
 
-## Estratégia v7.1.27
+## Mudanças v7.1.28
 
-### 1. Remover Fallback Inline do Sync (OBRIGATÓRIO)
-- Elimina ~1.5KB, trazendo sync para ~2.0KB
-- O installer já garante que action-processor funciona
+### 1. Usar `where name="__never__"` (padrão mais confiável)
+```diff
+- /file print file=$tmpName where name="__x__"
++ /file print file=navspot-actions.txt where name="__never__"
+```
 
-### 2. Manter Write/Read-Back Leve (2 tentativas + prefix check)
-Adiciona ~200 bytes mas previne regressões:
+### 2. Aumentar delays para sistema de arquivos
+```diff
+- :delay 250ms (após criar arquivo)
+- :delay 300ms (entre retries)
++ :delay 700ms (após criar arquivo)
++ :delay 500ms (entre retries)
+```
+
+### 3. Aumentar tentativas para 3
+```diff
+- :while (($tries<2)&&($wrote=false)) do={
++ :while (($wt<3)&&($wok=false)) do={
+```
+
+### 4. MANTER Header Detection com prefix de 200 chars
 ```routeros
-:local wrote false
-:local tries 0
-:while (($tries<2)&&($wrote=false)) do={
-  :set tries ($tries+1)
-  :do {/file set [find name=$tmpName] contents=$a} on-error={}
-  :delay 300ms
-  :local saved ""
-  :do {:set saved [/file get [find name=$tmpName] contents]} on-error={}
-  :local pf [:pick $saved 0 50]
-  :if (([:len $saved]=[:len $a])&&([:find $pf "# NAME"]<0)) do={:set wrote true} else={
-    :log warning ("SYNC: write err try=".$tries." len=".[:len $saved])
-  }
+:local pf [:pick $sv 0 200]
+:if (([:len $sv]>12)&&([:find $pf "# NAME"]<0)) do={:set wok true} else={
+  :log warning ("NAVSPOT-SYNC: write try=".$wt." len=".[:len $sv]." pf=[".[:pick $pf 0 80]."]")
 }
 ```
 
-### 3. Manter Execução com Captura de Erro
-```routeros
-:local hasAP [:len [/system script find name="navspot-action-processor"]]
-:if ($hasAP=0) do={
-  :log error "NAVSPOT-SYNC: action-processor NAO ENCONTRADO!"
-} else={
-  :local aerr ""
-  :do {/system script run navspot-action-processor} on-error={:set aerr [:tostr $error]}
-  :if ([:len $aerr]>0) do={:log error ("NAVSPOT-SYNC: AP ERRO=".$aerr)} else={:log info "NAVSPOT-SYNC: AP OK"}
-}
-```
+### 5. Simplificar removendo temp-file/rename (lock protege)
+Dado que `navspotSyncLock` é inicializado e resetado em todos os caminhos, não há concorrência - podemos escrever direto em `navspot-actions.txt`.
 
-### 4. Garantir Lock Limpo em Todos os on-error
+### 6. Garantir lock reset em TODOS os paths
 ```routeros
-:global navspotSyncLock
-:if ([:len $navspotSyncLock]=0) do={:set navspotSyncLock "0"}
-:if ($navspotSyncLock="1") do={:log info "NAVSPOT-SYNC: locked";:return}
-:set navspotSyncLock "1"
-# ... lógica ...
-# Em TODOS os on-error paths: adicionar :set navspotSyncLock "0"
+# Já temos na linha 667:
+} on-error={:set navspotSyncLock "0"}
+# Adicionamos no final da função (já existe linha 719):
 :set navspotSyncLock "0"
 ```
 
 ---
 
-## Código Atualizado - generateSyncSource (~2.1KB)
+## Código Atualizado - generateSyncSource (~2.0KB)
 
 ```typescript
 function generateSyncSource(syncUrl: string, syncToken: string): string {
@@ -111,26 +104,22 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local a ""
 :if ($j>=$i) do={:set a [:pick $raw $i ($j+1)]}
 :if ([:len $a]>0) do={
-:local ts [/system clock get time]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local tmpName ("navspot-actions-".$tsStr.".txt")
-/file print file=$tmpName where name="__x__"
-:delay 250ms
-:local wrote false
-:local tries 0
-:while (($tries<2)&&($wrote=false)) do={
-:set tries ($tries+1)
-:do {/file set [find name=$tmpName] contents=$a} on-error={}
-:delay 300ms
-:local saved ""
-:do {:set saved [/file get [find name=$tmpName] contents]} on-error={}
-:local pf [:pick $saved 0 50]
-:if (([:len $saved]=[:len $a])&&([:find $pf "# NAME"]<0)) do={:set wrote true} else={
-:log warning ("NAVSPOT-SYNC: write err try=".$tries." len=".[:len $saved])
-}}
-:if ($wrote) do={
 :do {/file remove "navspot-actions.txt"} on-error={}
-:do {/file rename $tmpName navspot-actions.txt} on-error={}
+/file print file=navspot-actions.txt where name="__never__"
+:delay 700ms
+:local wok false
+:local wt 0
+:while (($wt<3)&&($wok=false)) do={
+:set wt ($wt+1)
+:do {/file set [find name="navspot-actions.txt"] contents=$a} on-error={}
+:delay 500ms
+:local sv ""
+:do {:set sv [/file get "navspot-actions.txt" contents]} on-error={}
+:local pf [:pick $sv 0 200]
+:if (([:len $sv]>12)&&([:find $pf "# NAME"]<0)) do={:set wok true} else={
+:log warning ("NAVSPOT-SYNC: write try=".$wt." len=".[:len $sv]." pf=[".[:pick $pf 0 80]."]")
+}}
+:if ($wok) do={
 :local hasAP [:len [/system script find name="navspot-action-processor"]]
 :if ($hasAP=0) do={
 :log error "NAVSPOT-SYNC: action-processor NAO ENCONTRADO!"
@@ -140,8 +129,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ([:len $aerr]>0) do={:log error ("NAVSPOT-SYNC: AP ERRO=".$aerr)} else={:log info "NAVSPOT-SYNC: AP OK"}
 }
 } else={
-:log error "NAVSPOT-SYNC: write failed - abortando"
-:do {/file remove $tmpName} on-error={}
+:log error "NAVSPOT-SYNC: write failed after 3 tries"
 }
 }
 }
@@ -151,7 +139,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 ```
 
-**Tamanho estimado:** ~2.1KB (bem abaixo do limite de 3.2KB)
+**Tamanho estimado:** ~2.0KB (bem abaixo do limite de 3.2KB)
 
 ---
 
@@ -159,86 +147,102 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 
 ### 1. `supabase/functions/mikrotik-scripts/index.ts`
 
-**Mudanças em `generateSyncSource()` (linhas 641-766):**
-- Bump VERSION para "7.1.27"
-- **REMOVER** todo o fallback inline (linhas 707-748)
-- **MANTER** write/read-back leve (2 tentativas + prefix check)
-- **MANTER** execução com captura de erro `[:tostr $error]`
-- **MANTER** locks limpos em todos os caminhos
+**Linha 41:** Bump VERSION para "7.1.28"
 
-**Mudanças na linha 41:**
-- Bump VERSION para "7.1.27"
+**Linhas 641-720 (generateSyncSource):**
+- Usar `where name="__never__"` (linha 687)
+- Aumentar delay após criar arquivo: 700ms
+- Aumentar tentativas: 3
+- Aumentar delay entre retries: 500ms
+- **MANTER** header detection: `[:find $pf "# NAME"]<0`
+- Prefix de 200 chars para verificação
+- Log diagnóstico com primeiros 80 chars do prefix
+- Remover lógica de temp-file/rename (simplificar)
 
 ### 2. Version bumps (4 arquivos)
 
-- `supabase/functions/mikrotik-sync/index.ts` - VERSION para 7.1.27
-- `supabase/functions/mikrotik-script-generator/index.ts` - VERSION para 7.1.27
-- `src/components/modals/ScriptModal.tsx` - scriptVersion para "7.1.27"
-- `src/pages/Embarcacoes.tsx` - currentScriptVersion para "7.1.27"
+- `supabase/functions/mikrotik-sync/index.ts` - VERSION para 7.1.28
+- `supabase/functions/mikrotik-script-generator/index.ts` - VERSION para 7.1.28
+- `src/components/modals/ScriptModal.tsx` - scriptVersion para "7.1.28"
+- `src/pages/Embarcacoes.tsx` - currentScriptVersion para "7.1.28"
 
 ---
 
-## Tamanhos Esperados
+## Comparação de Verificação
 
-| Script | v7.1.26 | v7.1.27 | Limite | Status |
-|--------|---------|---------|--------|--------|
-| sync-raw | **4597 bytes** | ~2.1 KB | < 3.2 KB | **CORRIGIDO** |
-| action-raw | 2709 bytes | 2709 bytes | < 3.2 KB | OK |
-| guardian-raw | 1993 bytes | 1993 bytes | < 3.2 KB | OK |
+| Aspecto | v7.1.27 (falhou) | v7.1.28 (proposto) |
+|---------|------------------|-------------------|
+| Arquivo temp | `navspot-actions-HHMMSS.txt` | `navspot-actions.txt` direto |
+| Criação | `where name="__x__"` | `where name="__never__"` |
+| Delay criação | 250ms | **700ms** |
+| Delay retry | 300ms | **500ms** |
+| Tentativas | 2 | **3** |
+| Header check | `[:find $pf "# NAME"]<0` | **PRESERVADO** |
+| Prefix size | 50 chars | **200 chars** |
+| Log diagnóstico | `len=` apenas | `len=` + `pf=[80 chars]` |
+
+---
+
+## Tamanho Esperado
+
+| Script | v7.1.27 | v7.1.28 | Limite |
+|--------|---------|---------|--------|
+| sync-raw | ~2.1 KB | ~2.0 KB | < 3.2 KB |
 
 ---
 
 ## Verificação Pós-Deploy
 
 ```routeros
-/import navspot-bootstrap-v7.1.27.rsc
+/import navspot-bootstrap-v7.1.28.rsc
 
-# 1. Verificar tamanho do sync
-/log print where message~"NAVSPOT-INSTALL" last=50
-# Esperado: "sync baixado (21XX bytes)" - NÃO 4597!
-# Esperado: "sync content valido"
-# Esperado: "smoke test PASSOU"
+# 1. Verificar logs de escrita - NÃO deve ter write try=X mais
+/log print where message~"NAVSPOT-SYNC" last=30
+# Esperado: "AP OK" (sem write warnings)
 
-# 2. Verificar se action-processor é chamado
-/log print where message~"NAVSPOT-SYNC" last=20
-# Esperado: "AP OK" ou "AP ERRO=..." (diagnóstico real)
-
-# 3. Verificar login-url configurado
+# 2. Verificar login-url configurado
 /ip hotspot profile print where name="hsprof-navspot"
 # login-url DEVE mostrar https://navspot.lovable.app/hotspot-login?...
 
-# 4. Verificar tamanhos dos scripts
-:put ("sync: " . [:len [/system script get navspot-sync source]] . " bytes")
-:put ("action: " . [:len [/system script get navspot-action-processor source]] . " bytes")
+# 3. Verificar usuários criados
+/ip hotspot user print where comment~"navspot"
+
+# 4. Testar login de dispositivo
+# Dispositivo conecta -> redireciona para portal -> login funciona
 ```
 
 ---
 
-## Checklist de Implementação
+## Checklist de Implementação (Conservador)
 
-- [ ] Remover fallback inline do sync (linhas 707-748)
-- [ ] Manter write/read-back leve (2 tentativas + prefix check)
-- [ ] Manter execução com captura de erro `[:tostr $error]`
-- [ ] Garantir lock reset em on-error do fetch
-- [ ] Verificar tamanho final sync < 3.2KB (~2.1KB esperado)
-- [ ] Bump VERSION para 7.1.27 em todos os arquivos
+- [ ] Usar `where name="__never__"` para criar arquivo
+- [ ] Delay após criação: 700ms
+- [ ] 3 tentativas de write com delay 500ms
+- [ ] **PRESERVAR** header detection `[:find $pf "# NAME"]<0`
+- [ ] Prefix de 200 chars para verificação
+- [ ] Log diagnóstico com primeiros 80 chars do prefix
+- [ ] Remover temp-file/rename (simplificar com lock)
+- [ ] Garantir lock reset em todos os on-error paths
+- [ ] Captura de erro do AP com `[:tostr $error]`
+- [ ] Bump VERSION para 7.1.28 em todos os arquivos
 - [ ] Deploy edge functions
 - [ ] Testar no RouterOS 6.49.x
-- [ ] Verificar logs de diagnóstico
+- [ ] Verificar que escrita funciona (sem write warnings)
+- [ ] Verificar que AP executa (AP OK)
 - [ ] Verificar login-url configurado
-- [ ] Verificar usuários criados
+- [ ] Verificar login de usuário funciona
 
 ---
 
-## Riscos Mitigados vs Preservados
+## Riscos Mitigados
 
-| Proteção | v7.1.26 | v7.1.27 | Status |
-|----------|---------|---------|--------|
-| Write/read-back | 3 tries | 2 tries + prefix | ✓ Preservado |
-| Prefix check (# NAME) | Sim | Sim | ✓ Preservado |
-| Erro do AP `[:tostr $error]` | Sim | Sim | ✓ Preservado |
-| Lock reset on-error | Parcial | Completo | ✓ Melhorado |
-| Fallback inline no sync | Sim (1.5KB) | **Removido** | ✓ Eliminado |
-| Smoke test no installer | Sim | Sim | ✓ Preservado |
-| Tamanho < 3.2KB | **Violado** | ~2.1KB | ✓ Corrigido |
+| Proteção | Status v7.1.28 |
+|----------|----------------|
+| Header detection (`# NAME`) | ✓ PRESERVADO |
+| Delay sistema de arquivos | ✓ Aumentado (700ms + 500ms) |
+| Múltiplas tentativas | ✓ 3 tentativas |
+| Captura erro AP | ✓ Preservado |
+| Lock cleanup | ✓ Em todos os paths |
+| Tamanho < 3.2KB | ✓ ~2.0KB |
+| Fallback no installer | ✓ Mantido (não no sync) |
 
