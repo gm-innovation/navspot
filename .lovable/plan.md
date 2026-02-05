@@ -1,248 +1,256 @@
 
+# Plano v7.1.29: Correção Completa da Sincronização MikroTik
 
-# Plano v7.1.28: Correção com Header Detection Preservado
+## Diagnóstico Confirmado
 
-## Diagnóstico
+Baseado na análise do código atual e nos logs do usuário:
 
-Os logs de v7.1.27 mostram:
-- `try=1 len=0` - arquivo recém-criado vazio
-- `try=2 len=151` - arquivo contém header MikroTik (~151 bytes)
-- `write failed - abortando` - lógica de retry não corrigiu
-
-**Problema raiz identificado:** O comando `/file print file=xxx where name="__x__"` cria um header de ~151 bytes. O `/file set contents` **não está sobrescrevendo** no RouterOS 6.x.
-
-**Correção crítica que você apontou:** Manter `# NAME` header detection no check, pois `[:len $sv]>10` aceitaria header de 151 bytes como válido.
+1. **Validação de escrita incompleta**: O check `[:find $pf "# NAME"]<0` não detecta todos os headers do `/file print` — alguns começam com `# feb/...` ou outros padrões
+2. **`reconcileUsers()` aborta em roteador vazio**: Linhas 333-337 retornam imediatamente quando `registeredUsersCsv` é vazio, impedindo criação de usuários em instalação limpa
+3. **`initial_config_sent=true` bloqueia reaplicação do portal**: Após reinstalar bootstrap no roteador, o backend não injeta `configure_hotspot_profile` novamente
+4. **Handlers do walled-garden não estão no CORE**: Os handlers `create_whitelist_domain`/`add_whitelist_domain` estão apenas no AUX (não instalado automaticamente)
+5. **`create_user` não é idempotente**: Se o usuário já existe, o handler não atualiza senha/perfil
 
 ---
 
-## Mudanças v7.1.28
+## Mudanças v7.1.29
 
-### 1. Usar `where name="__never__"` (padrão mais confiável)
-```diff
-- /file print file=$tmpName where name="__x__"
-+ /file print file=navspot-actions.txt where name="__never__"
-```
+### A) `generateSyncSource()` - Validação mais robusta
 
-### 2. Aumentar delays para sistema de arquivos
-```diff
-- :delay 250ms (após criar arquivo)
-- :delay 300ms (entre retries)
-+ :delay 700ms (após criar arquivo)
-+ :delay 500ms (entre retries)
-```
+**Arquivo:** `supabase/functions/mikrotik-scripts/index.ts` (linhas 641-716)
 
-### 3. Aumentar tentativas para 3
-```diff
-- :while (($tries<2)&&($wrote=false)) do={
-+ :while (($wt<3)&&($wok=false)) do={
-```
-
-### 4. MANTER Header Detection com prefix de 200 chars
+Mudanças na validação de escrita:
 ```routeros
-:local pf [:pick $sv 0 200]
-:if (([:len $sv]>12)&&([:find $pf "# NAME"]<0)) do={:set wok true} else={
-  :log warning ("NAVSPOT-SYNC: write try=".$wt." len=".[:len $sv]." pf=[".[:pick $pf 0 80]."]")
+# ANTES (v7.1.28):
+:if (([:len $sv]>12)&&([:find $pf "# NAME"]<0)) do={:set wok true}
+
+# DEPOIS (v7.1.29):
+:local fc ""
+:if ([:len $sv]>0) do={:set fc [:pick $sv 0 1]}
+# Rejeitar se: primeiro char é "#" OU len < 12 OU não contém "|"
+:if (([:len $sv]>=12)&&($fc!="#")&&([:find $sv "|"]>=0)) do={:set wok true}
+```
+
+Lógica:
+- **Primeiro char = `#`**: Qualquer header de `/file print` começa com `#`
+- **Len >= 12**: Conteúdo mínimo para uma action válida (ex: `create_user|`)
+- **Contém `|`**: Toda action válida tem formato `cmd|params;`
+- **Lock cleanup robusto**: Adicionar `:return` após log de erro para garantir saída limpa
+
+### B) `generateActionProcessorCoreSource()` - Handlers idempotentes + walled-garden
+
+**Arquivo:** `supabase/functions/mikrotik-scripts/index.ts` (linhas 727-822)
+
+1. **`create_user` idempotente** (linhas 793-818):
+```routeros
+# ANTES: só cria se não existe
+:if ([:len $ex]=0) do={...add...}
+
+# DEPOIS: cria ou atualiza
+:if ([:len $ex]>0) do={
+  # usuário existe -> atualizar password e profile
+  :if ([:len $pw]>0) do={:do {/ip hotspot user set $ex password=$pw} on-error={}}
+  :if (([:len $pf]>0)&&($pf!="default")) do={:do {/ip hotspot user set $ex profile=$pf} on-error={}}
+  :set cnt ($cnt+1)
+} else={
+  # usuário não existe -> criar
+  :if ([:len $pw]>0) do={
+    :do {/ip hotspot user add name=$un password=$pw profile=$pf comment="navspot"} on-error={}
+    :set cnt ($cnt+1)
+  }
 }
 ```
 
-### 5. Simplificar removendo temp-file/rename (lock protege)
-Dado que `navspotSyncLock` é inicializado e resetado em todos os caminhos, não há concorrência - podemos escrever direto em `navspot-actions.txt`.
-
-### 6. Garantir lock reset em TODOS os paths
+2. **`create_profile` atualizável** (linhas 765-791):
 ```routeros
-# Já temos na linha 667:
-} on-error={:set navspotSyncLock "0"}
-# Adicionamos no final da função (já existe linha 719):
-:set navspotSyncLock "0"
+# ANTES: pula se existe
+:if ([:len $ex]=0) do={...add...}
+
+# DEPOIS: cria ou atualiza
+:if ([:len $ex]>0) do={
+  # profile existe -> atualizar rate-limit e shared-users
+  :if ([:len $rt]>0) do={:do {/ip hotspot user profile set $ex rate-limit=$rt} on-error={}}
+  :do {/ip hotspot user profile set $ex shared-users=$sh} on-error={}
+  :set cnt ($cnt+1)
+} else={
+  # profile não existe -> criar
+  ...add...
+}
 ```
 
----
+3. **Adicionar handler `add_whitelist_domain` no CORE** (novo handler):
+```routeros
+:if (($c="create_whitelist_domain")||($c="add_whitelist_domain")) do={
+:do {
+:local dom $r
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={:set dom [:pick $r ($p2+1) [:len $r]]}
+:if ([:len $dom]>0) do={
+:local dh ("*".$dom."*")
+:local wg [/ip hotspot walled-garden find dst-host~$dom]
+:if ([:len $wg]=0) do={
+:do {/ip hotspot walled-garden add dst-host=$dh action=allow comment="navspot"} on-error={}
+:set cnt ($cnt+1)
+}}} on-error={}
+}
+```
 
-## Código Atualizado - generateSyncSource (~2.0KB)
+### C) `reconcileUsers()` - Não abortar em roteador vazio
+
+**Arquivo:** `supabase/functions/mikrotik-sync/index.ts` (linhas 325-337)
 
 ```typescript
-function generateSyncSource(syncUrl: string, syncToken: string): string {
-  return `:log info "NAVSPOT-SYNC v${VERSION}"
-:global navspotSyncLock
-:if ([:len $navspotSyncLock]=0) do={:set navspotSyncLock "0"}
-:if ($navspotSyncLock="1") do={:log info "NAVSPOT-SYNC: locked";:return}
-:set navspotSyncLock "1"
-:local tk ""
-:do {:set tk [/file get "navspot-token.txt" contents]} on-error={}
-:if ([:len $tk]<10) do={:set tk "${syncToken}"}
-:local u ""
-:local r ""
-:local p ""
-:local q "\\22"
-/ip hotspot active
-:foreach a in=[find] do={
-:set u ($u.[get $a user].",".[get $a mac-address].",".[get $a bytes-in].",".[get $a bytes-out].";")
+// ANTES (v7.1.28):
+if (!registeredUsersCsv || registeredUsersCsv.trim().length === 0) {
+  console.warn(`[mikrotik-sync] v6.9.8: WARNING - MikroTik not sending...`)
+  return  // <-- PROBLEMA: aborta em roteador limpo
 }
-/ip hotspot user
-:foreach i in=[find where dynamic=no] do={:set r ($r.[get $i name].",")}
-/ip hotspot user profile
-:foreach x in=[find] do={:set p ($p.[get $x name].",")}
-:local b ("{".$q."sync_token".$q.":".$q.$tk.$q.",".$q."active_users_csv".$q.":".$q.$u.$q.",".$q."registered_users_csv".$q.":".$q.$r.$q.",".$q."registered_profiles_csv".$q.":".$q.$p.$q."}")
-:local ok false
-:do {
-/tool fetch url="${syncUrl}" http-method=post http-data=$b http-header-field="Content-Type: application/json" check-certificate=no dst-path="navspot-resp.txt"
-:set ok true
-} on-error={:set navspotSyncLock "0"}
-:if ($ok) do={
-:delay 500ms
-:local resp ""
-:do {:set resp [/file get "navspot-resp.txt" contents]} on-error={}
-:do {/file remove "navspot-resp.txt"} on-error={}
-:local s [:find $resp "[["]
-:local e [:find $resp "]]"]
-:if (($s>=0)&&($e>$s)) do={
-:local raw [:pick $resp ($s+2) $e]
-:local i 0
-:local j ([:len $raw]-1)
-:while (($i<=$j)&&([:pick $raw $i ($i+1)]=" ")) do={:set i ($i+1)}
-:while (($j>=$i)&&([:pick $raw $j ($j+1)]=" ")) do={:set j ($j-1)}
-:local a ""
-:if ($j>=$i) do={:set a [:pick $raw $i ($j+1)]}
-:if ([:len $a]>0) do={
-:do {/file remove "navspot-actions.txt"} on-error={}
-/file print file=navspot-actions.txt where name="__never__"
-:delay 700ms
-:local wok false
-:local wt 0
-:while (($wt<3)&&($wok=false)) do={
-:set wt ($wt+1)
-:do {/file set [find name="navspot-actions.txt"] contents=$a} on-error={}
-:delay 500ms
-:local sv ""
-:do {:set sv [/file get "navspot-actions.txt" contents]} on-error={}
-:local pf [:pick $sv 0 200]
-:if (([:len $sv]>12)&&([:find $pf "# NAME"]<0)) do={:set wok true} else={
-:log warning ("NAVSPOT-SYNC: write try=".$wt." len=".[:len $sv]." pf=[".[:pick $pf 0 80]."]")
-}}
-:if ($wok) do={
-:local hasAP [:len [/system script find name="navspot-action-processor"]]
-:if ($hasAP=0) do={
-:log error "NAVSPOT-SYNC: action-processor NAO ENCONTRADO!"
-} else={
-:local aerr ""
-:do {/system script run navspot-action-processor} on-error={:set aerr [:tostr $error]}
-:if ([:len $aerr]>0) do={:log error ("NAVSPOT-SYNC: AP ERRO=".$aerr)} else={:log info "NAVSPOT-SYNC: AP OK"}
+
+// DEPOIS (v7.1.29):
+// Diferenciar "campo ausente" (script antigo) vs "lista vazia" (roteador limpo)
+if (registeredUsersCsv === undefined || registeredUsersCsv === null) {
+  // Script antigo que não envia o campo - pular reconciliação
+  console.warn(`[mikrotik-sync] v7.1.29: WARNING - MikroTik not sending registeredUsersCsv field`)
+  return
 }
-} else={
-:log error "NAVSPOT-SYNC: write failed after 3 tries"
-}
-}
-}
-}
-:set navspotSyncLock "0"
-:log info "NAVSPOT-SYNC v${VERSION}: OK"`
+// Se chegou aqui com string vazia, significa roteador limpo - CONTINUAR
+console.log(`[mikrotik-sync] v7.1.29: MikroTik has ${registeredUsersCsv.trim().length === 0 ? '0' : 'some'} registered users`)
+```
+
+### D) Autorreparo do portal - Independente de `initial_config_sent`
+
+**Arquivo:** `supabase/functions/mikrotik-sync/index.ts` (após linha 980)
+
+Adicionar lógica para reaplicar portal quando detectar que não está configurado:
+
+```typescript
+// v7.1.29: Auto-repair portal config
+// Inject configure_hotspot_profile if not in first-sync AND no pending config action
+const hasPendingPortalConfig = formattedActions.some(a => a.type === 'configure_hotspot_profile')
+
+if (!hasPendingPortalConfig && hotspot.initial_config_sent) {
+  // Check if there are any pending users without portal - they can't login
+  // Always reinject portal config to ensure it's applied after router reset
+  const hasUserActions = formattedActions.some(a => 
+    a.type === 'create_user' || a.type === 'add_user_profile'
+  )
+  
+  if (hasUserActions) {
+    const portalHost = 'navspot.lovable.app'
+    const hotspotSlug = hotspot.nome.toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
+    
+    const loginUrl = escapeRouterOSPlaceholders(
+      `https://${portalHost}/hotspot-login?hotspot_id=${hotspot.id}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
+    )
+    const dnsName = `${hotspotSlug}.navspot.local`
+    
+    // Inject at the beginning (before profiles and users)
+    formattedActions.unshift({
+      id: 'repair-config-profile',
+      type: 'configure_hotspot_profile',
+      payload: { login_url: loginUrl, dns_name: dnsName }
+    })
+    
+    // Also ensure essential walled garden
+    formattedActions.unshift({
+      id: 'repair-wg-portal',
+      type: 'add_whitelist_domain',
+      payload: { domain: portalHost }
+    })
+    
+    console.log(`[mikrotik-sync] v7.1.29: Injected portal repair config with user actions`)
+  }
 }
 ```
 
-**Tamanho estimado:** ~2.0KB (bem abaixo do limite de 3.2KB)
+### E) Version bump + Guardrail de tamanho
+
+**Arquivos a atualizar:**
+1. `supabase/functions/mikrotik-scripts/index.ts` - `VERSION = "7.1.29"`
+2. `supabase/functions/mikrotik-sync/index.ts` - `VERSION = "7.1.29"`
+3. `supabase/functions/mikrotik-script-generator/index.ts` - `VERSION = "7.1.29"`
+4. `src/components/modals/ScriptModal.tsx` - `scriptVersion = "7.1.29"`
+5. `src/pages/Embarcacoes.tsx` - `currentScriptVersion = "7.1.29"`
+
+**Guardrail no gerador** (após gerar sync-raw):
+```typescript
+const syncSource = generateSyncSource(syncUrl, syncToken)
+if (syncSource.length > 3200) {
+  console.error(`[mikrotik-scripts] CRITICAL: sync-raw exceeds 3200 bytes: ${syncSource.length}`)
+  // Log but don't fail - admin needs to compact
+}
+```
 
 ---
 
-## Arquivos a Modificar
+## Tamanho Estimado
 
-### 1. `supabase/functions/mikrotik-scripts/index.ts`
-
-**Linha 41:** Bump VERSION para "7.1.28"
-
-**Linhas 641-720 (generateSyncSource):**
-- Usar `where name="__never__"` (linha 687)
-- Aumentar delay após criar arquivo: 700ms
-- Aumentar tentativas: 3
-- Aumentar delay entre retries: 500ms
-- **MANTER** header detection: `[:find $pf "# NAME"]<0`
-- Prefix de 200 chars para verificação
-- Log diagnóstico com primeiros 80 chars do prefix
-- Remover lógica de temp-file/rename (simplificar)
-
-### 2. Version bumps (4 arquivos)
-
-- `supabase/functions/mikrotik-sync/index.ts` - VERSION para 7.1.28
-- `supabase/functions/mikrotik-script-generator/index.ts` - VERSION para 7.1.28
-- `src/components/modals/ScriptModal.tsx` - scriptVersion para "7.1.28"
-- `src/pages/Embarcacoes.tsx` - currentScriptVersion para "7.1.28"
-
----
-
-## Comparação de Verificação
-
-| Aspecto | v7.1.27 (falhou) | v7.1.28 (proposto) |
-|---------|------------------|-------------------|
-| Arquivo temp | `navspot-actions-HHMMSS.txt` | `navspot-actions.txt` direto |
-| Criação | `where name="__x__"` | `where name="__never__"` |
-| Delay criação | 250ms | **700ms** |
-| Delay retry | 300ms | **500ms** |
-| Tentativas | 2 | **3** |
-| Header check | `[:find $pf "# NAME"]<0` | **PRESERVADO** |
-| Prefix size | 50 chars | **200 chars** |
-| Log diagnóstico | `len=` apenas | `len=` + `pf=[80 chars]` |
-
----
-
-## Tamanho Esperado
-
-| Script | v7.1.27 | v7.1.28 | Limite |
+| Script | v7.1.28 | v7.1.29 | Limite |
 |--------|---------|---------|--------|
-| sync-raw | ~2.1 KB | ~2.0 KB | < 3.2 KB |
+| sync-raw | ~2.0 KB | ~2.1 KB | < 3.2 KB |
+| action-raw | ~2.5 KB | ~2.8 KB | < 3.2 KB |
+
+O aumento no action-raw é devido ao handler de walled-garden e à lógica idempotente.
 
 ---
 
 ## Verificação Pós-Deploy
 
 ```routeros
-/import navspot-bootstrap-v7.1.28.rsc
+/import navspot-bootstrap-v7.1.29.rsc
 
-# 1. Verificar logs de escrita - NÃO deve ter write try=X mais
-/log print where message~"NAVSPOT-SYNC" last=30
-# Esperado: "AP OK" (sem write warnings)
+# 1. Verificar logs do sync - NÃO deve ter "write try=X" nem "write failed"
+/log print where message~"NAVSPOT-SYNC" last=50
+# Esperado: "AP OK"
 
-# 2. Verificar login-url configurado
+# 2. Verificar portal configurado
 /ip hotspot profile print where name="hsprof-navspot"
-# login-url DEVE mostrar https://navspot.lovable.app/hotspot-login?...
+# Esperado: login-url contendo navspot.lovable.app
 
-# 3. Verificar usuários criados
-/ip hotspot user print where comment~"navspot"
+# 3. Verificar walled-garden essencial
+/ip hotspot walled-garden print where comment~"navspot"
+# Esperado: entradas para navspot.lovable.app, backend, captive checks
 
-# 4. Testar login de dispositivo
-# Dispositivo conecta -> redireciona para portal -> login funciona
+# 4. Verificar perfis criados
+/ip hotspot user profile print
+# Esperado: perfis da empresa (ex: tripulacao-padrao)
+
+# 5. Verificar usuários criados
+/ip hotspot user print where comment="navspot"
+# Esperado: usuários dos tripulantes
+
+# 6. Teste E2E
+# Conectar dispositivo -> abrir site -> deve redirecionar para portal navspot -> login funciona
 ```
 
 ---
 
-## Checklist de Implementação (Conservador)
+## Checklist de Implementação
 
-- [ ] Usar `where name="__never__"` para criar arquivo
-- [ ] Delay após criação: 700ms
-- [ ] 3 tentativas de write com delay 500ms
-- [ ] **PRESERVAR** header detection `[:find $pf "# NAME"]<0`
-- [ ] Prefix de 200 chars para verificação
-- [ ] Log diagnóstico com primeiros 80 chars do prefix
-- [ ] Remover temp-file/rename (simplificar com lock)
-- [ ] Garantir lock reset em todos os on-error paths
-- [ ] Captura de erro do AP com `[:tostr $error]`
-- [ ] Bump VERSION para 7.1.28 em todos os arquivos
+- [ ] Atualizar validação de escrita em `generateSyncSource()` (primeiro char != `#`, len >= 12, contém `|`)
+- [ ] Adicionar `:return` após log de erro de escrita para garantir saída limpa
+- [ ] Tornar `create_user` idempotente no action-processor CORE
+- [ ] Tornar `create_profile` atualizável no action-processor CORE
+- [ ] Adicionar handler `add_whitelist_domain` no CORE (mover do AUX)
+- [ ] Corrigir `reconcileUsers()` para diferenciar "campo ausente" vs "lista vazia"
+- [ ] Adicionar lógica de autorreparo do portal quando houver user actions
+- [ ] Bump VERSION para 7.1.29 em todos os arquivos
+- [ ] Adicionar log de guardrail se sync-raw > 3200 bytes
 - [ ] Deploy edge functions
 - [ ] Testar no RouterOS 6.49.x
-- [ ] Verificar que escrita funciona (sem write warnings)
-- [ ] Verificar que AP executa (AP OK)
-- [ ] Verificar login-url configurado
-- [ ] Verificar login de usuário funciona
 
 ---
 
 ## Riscos Mitigados
 
-| Proteção | Status v7.1.28 |
+| Proteção | Status v7.1.29 |
 |----------|----------------|
-| Header detection (`# NAME`) | ✓ PRESERVADO |
-| Delay sistema de arquivos | ✓ Aumentado (700ms + 500ms) |
-| Múltiplas tentativas | ✓ 3 tentativas |
-| Captura erro AP | ✓ Preservado |
-| Lock cleanup | ✓ Em todos os paths |
-| Tamanho < 3.2KB | ✓ ~2.0KB |
-| Fallback no installer | ✓ Mantido (não no sync) |
-
+| Header detection (qualquer `#`) | ✓ Corrigido |
+| Pipe check (`\|` obrigatório) | ✓ Adicionado |
+| Lock cleanup em todos os paths | ✓ Garantido |
+| Roteador vazio suportado | ✓ Corrigido |
+| Portal reaplicado após reset | ✓ Implementado |
+| Walled-garden no CORE | ✓ Movido |
+| Tamanho < 3.2KB | ✓ Monitorado |
