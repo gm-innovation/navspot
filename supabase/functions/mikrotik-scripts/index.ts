@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.24
+ * mikrotik-scripts v7.1.25
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -17,6 +17,12 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" |
  *           "sync-raw" | "action-raw" | "action-aux-raw" | "guardian-raw" (default: "all")
  *   - token: sync_token for authentication
+ * 
+ * v7.1.25: FILE READ TIMING FIX for RouterOS 6.x
+ *   - Increased post-fetch delay from 700ms to 1500ms
+ *   - Added retry loop (3 attempts) for file size validation
+ *   - Added minimum size check (50 bytes) before content validation
+ *   - Fixes 0-byte file reads on slow flash storage
  * 
  * v7.1.24: RouterOS 6.x COMPATIBILITY FIX
  *   - Removed :rndnum (only exists in RouterOS 7.x)
@@ -32,7 +38,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.24"
+const VERSION = "7.1.25"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -351,10 +357,24 @@ function generateAllScripts(
 }
 }
 :if ($syncOk = true) do={
-:delay 700ms
+# v7.1.25: Increased delay + retry loop for file read timing issues
+:delay 1500ms
 :local fsize 0
+:local readRetry 0
+:while (($fsize = 0) && ($readRetry < 3)) do={
+:set readRetry ($readRetry + 1)
 :do { :set fsize [/file get $syncTempFile size] } on-error={}
+:if ($fsize = 0) do={
+:log info ("NAVSPOT-INSTALL: sync read retry " . $readRetry . "/3")
+:delay 1000ms
+}
+}
 :log info ("NAVSPOT-INSTALL: sync baixado (" . $fsize . " bytes)")
+# v7.1.25: Validate minimum size before content check
+:if ($fsize < 50) do={
+:log error ("NAVSPOT-INSTALL: sync arquivo muito pequeno ou vazio - " . $fsize . " bytes")
+:do { /file remove $syncTempFile } on-error={}
+} else={
 :local prefix ""
 :do { :set prefix [:pick [/file get $syncTempFile contents] 0 100] } on-error={}
 # v7.1.23: Enhanced validation - detect header pattern OR missing :log
@@ -370,6 +390,7 @@ function generateAllScripts(
 :delay 300ms
 :do { /file remove $syncTempFile } on-error={}
 :log info "NAVSPOT-INSTALL: navspot-sync v${VERSION} instalado"
+}
 }
 } else={
 :log error "NAVSPOT-INSTALL: sync fetch falhou apos 3 tentativas"
@@ -393,10 +414,24 @@ function generateAllScripts(
 }
 }
 :if ($actionOk = true) do={
-:delay 700ms
+# v7.1.25: Increased delay + retry loop for file read timing issues
+:delay 1500ms
 :local fsize 0
+:local readRetry 0
+:while (($fsize = 0) && ($readRetry < 3)) do={
+:set readRetry ($readRetry + 1)
 :do { :set fsize [/file get $actionTempFile size] } on-error={}
+:if ($fsize = 0) do={
+:log info ("NAVSPOT-INSTALL: action read retry " . $readRetry . "/3")
+:delay 1000ms
+}
+}
 :log info ("NAVSPOT-INSTALL: action baixado (" . $fsize . " bytes)")
+# v7.1.25: Validate minimum size before content check
+:if ($fsize < 50) do={
+:log error ("NAVSPOT-INSTALL: action arquivo muito pequeno ou vazio - " . $fsize . " bytes")
+:do { /file remove $actionTempFile } on-error={}
+} else={
 :local prefix ""
 :do { :set prefix [:pick [/file get $actionTempFile contents] 0 100] } on-error={}
 # v7.1.23: Enhanced validation - detect header pattern OR missing :log
@@ -412,6 +447,7 @@ function generateAllScripts(
 :delay 300ms
 :do { /file remove $actionTempFile } on-error={}
 :log info "NAVSPOT-INSTALL: navspot-action-processor v${VERSION} instalado"
+}
 }
 } else={
 :log error "NAVSPOT-INSTALL: action fetch falhou apos 3 tentativas"
@@ -480,10 +516,24 @@ function generateAllScripts(
 }
 }
 :if ($guardOk = true) do={
-:delay 700ms
+# v7.1.25: Increased delay + retry loop for file read timing issues
+:delay 1500ms
 :local fsize 0
+:local readRetry 0
+:while (($fsize = 0) && ($readRetry < 3)) do={
+:set readRetry ($readRetry + 1)
 :do { :set fsize [/file get $guardTempFile size] } on-error={}
+:if ($fsize = 0) do={
+:log info ("NAVSPOT-INSTALL: guardian read retry " . $readRetry . "/3")
+:delay 1000ms
+}
+}
 :log info ("NAVSPOT-INSTALL: guardian baixado (" . $fsize . " bytes)")
+# v7.1.25: Validate minimum size before content check
+:if ($fsize < 50) do={
+:log error ("NAVSPOT-INSTALL: guardian arquivo muito pequeno ou vazio - " . $fsize . " bytes")
+:do { /file remove $guardTempFile } on-error={}
+} else={
 :local prefix ""
 :do { :set prefix [:pick [/file get $guardTempFile contents] 0 100] } on-error={}
 # v7.1.23: Enhanced validation
@@ -498,6 +548,7 @@ function generateAllScripts(
 :delay 300ms
 :do { /file remove $guardTempFile } on-error={}
 :log info "NAVSPOT-INSTALL: navspot-guardian v${VERSION} instalado"
+}
 }
 } else={
 :log error "NAVSPOT-INSTALL: guardian fetch falhou apos 3 tentativas"
