@@ -1,450 +1,368 @@
 
-# Plano v7.1.22: Modularização + Validação Robusta + Fallback Seguro
 
-## Resumo Executivo
+# Plano de Implementação v7.1.23: Compactação Agressiva + Safeguards
 
-Esta versão implementa uma arquitetura mais resiliente, seguindo rigorosamente as recomendações para **não resolver um problema gerando outro**.
+## Problema Identificado
 
----
+Os logs do v7.1.22 confirmam que os scripts estão acima do limite de ~4KB do RouterOS 6.x:
 
-## Diagnóstico do Estado Atual (v7.1.21)
+| Script | Tamanho v7.1.22 | Status |
+|--------|-----------------|--------|
+| sync-raw | 4371 bytes | **INVALIDO** (prefix=) |
+| action-raw | 4754 bytes | **INVALIDO** (prefix=) |
+| guardian-raw | 2674 bytes | OK |
 
-| Componente | Tamanho | Status |
-|------------|---------|--------|
-| `navspot-action-processor` | ~6.7KB | **FALHA** (> 4KB limite do RouterOS 6.x) |
-| `navspot-sync` | ~3.7KB | OK |
-| `navspot-guardian` | ~2KB | OK |
-| Fallback inline | ~3.5KB (linha única) | Escaping problemático |
+## Estratégia de Correção
 
-**Problema Principal**: O comando `/file get ... contents` no RouterOS 6.x trunca arquivos maiores que ~4KB.
+### 1. Compactação Agressiva dos Scripts
 
----
+#### A. `generateSyncSource()` - Reduzir de ~4.3KB para ~2.8KB
 
-## Estratégia v7.1.22: Modularizar em vez de Descartar
+**Técnicas de compactação:**
+- Remover comentários inline
+- Minificar nomes de variáveis (`processedCount` → `cnt`, `rawData` → `d`)
+- Remover logs verbosos (manter apenas Start/OK/Error)
+- Simplificar retry logic (delay fixo ao invés de exponencial)
+- Remover validações redundantes de escrita
 
-### Arquitetura de Scripts
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                    NAVSPOT SCRIPTS v7.1.22                  │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  navspot-action-processor (~2.5KB - CORE HANDLERS)          │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ • configure_hotspot_profile  (login-url/dns)        │    │
-│  │ • create_profile            (perfis de velocidade)  │    │
-│  │ • create_user               (usuários hotspot)      │    │
-│  │ • remove_user               (remoção de usuários)   │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                                                             │
-│  navspot-action-aux (~2KB - HANDLERS SECUNDÁRIOS)           │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ • create_whitelist_domain   (walled garden allow)   │    │
-│  │ • create_blacklist_domain   (walled garden deny)    │    │
-│  │ • disable_user / enable_user                        │    │
-│  │ • kick_session                                      │    │
-│  │ • update_password                                   │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                                                             │
-│  Fallback Inline v7.1.22F (~1.2KB - MULTI-LINHA)            │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ • create_profile (parsing robusto 4 params)         │    │
-│  │ • create_user                                       │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+**Estrutura compactada:**
+```routeros
+:log info "NAVSPOT-SYNC v7.1.23"
+:global navspotSyncLock
+:if ($navspotSyncLock="1") do={:return}
+:set navspotSyncLock "1"
+# Token, coleta de dados, fetch, parse - tudo minificado
+:set navspotSyncLock "0"
+:log info "NAVSPOT-SYNC v7.1.23: OK"
 ```
 
----
+#### B. `generateActionProcessorCoreSource()` - Reduzir de ~4.7KB para ~3.1KB
 
-## Mudanças Detalhadas
+**Técnicas de compactação:**
+- Minificar nomes de variáveis (`pName` → `n`, `uPass` → `pw`)
+- Remover logs de warning intermediários
+- Manter apenas 3 handlers: `configure_hotspot_profile`, `create_profile`, `create_user`
+- Mover `remove_user` para script AUX
 
-### 1. Modularização do Action Processor
+### 2. Nomes de Arquivos Temporários Únicos
 
-**Arquivo**: `supabase/functions/mikrotik-scripts/index.ts`
-
-#### 1.1 Nova função `generateActionProcessorCoreSource()` (~2.5KB)
-
-Mantém apenas handlers críticos:
-- `configure_hotspot_profile` - Crítico para login-url
-- `create_profile` - Parsing robusto de 4 parâmetros
-- `create_user` - Core functionality
-- `remove_user` - Necessário para remoção
-
-**Código RouterOS** (estrutura):
+**Atual (v7.1.22):**
 ```routeros
-:log info "NAVSPOT-ACTION v7.1.22: Start"
-:global navspotLock
-:if ($navspotLock = "1") do={ :return }
-:set navspotLock "1"
-# ... leitura do arquivo de ações ...
-
-# HANDLER: configure_hotspot_profile
-:if ($cmd = "configure_hotspot_profile") do={ ... }
-
-# HANDLER: create_profile (robusto - 4 params)
-:if ($cmd = "create_profile") do={ ... }
-
-# HANDLER: create_user
-:if ($cmd = "create_user") do={ ... }
-
-# HANDLER: remove_user
-:if ($cmd = "remove_user") do={ ... }
-
-:set navspotLock "0"
-:log info ("NAVSPOT-ACTION v7.1.22: OK - " . $processedCount . " acoes")
+:local tsStr [:pick $ts 0 2]
+:set tsStr ($tsStr . [:pick $ts 3 5])
 ```
 
-#### 1.2 Nova função `generateActionAuxSource()` (~2KB)
-
-Handlers secundários instalados separadamente:
-- `create_whitelist_domain`
-- `create_blacklist_domain`
-- `disable_user` / `enable_user`
-- `kick_session`
-- `update_password`
-
-#### 1.3 Novo endpoint `action-aux-raw`
-
-Adicionado ao switch case para servir o script auxiliar.
-
----
-
-### 2. Instalador com Fetch Seguro + Validação Real
-
-**Arquivo**: `supabase/functions/mikrotik-scripts/index.ts` (função `generateAllScripts`)
-
-#### 2.1 Nomes de arquivos temporários únicos
-
-Usar timestamp para evitar conflitos:
+**v7.1.23 - Adicionar randomness:**
 ```routeros
-:local ts [:timestamp]
-:local tempFile ("ns-action-" . $ts . ".src")
+:local ts [/system clock get time]
+:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
+:local rnd [:rndnum from=0 to=9999]
+:local tempFile ("ns-action-" . $tsStr . "-" . $rnd . ".src")
 ```
 
-#### 2.2 Delays configuráveis para flash lento
+### 3. Validação com Detecção de Header
 
+**Atual:** Verifica apenas `[:find $prefix ":log info"]`
+
+**v7.1.23 - Adicionar detecção de header inválido:**
 ```routeros
-:delay 700ms  # Após fetch (flash write)
-:delay 500ms  # Após /file set
-:delay 300ms  # Após /system script add
-```
-
-#### 2.3 Validação pós-criação com smoke test
-
-```routeros
-# Após criar action-processor
-:delay 1s
-:local apSrc ""
-:do { :set apSrc [/system script get navspot-action-processor source] } on-error={}
-:local apLen [:len $apSrc]
-:local apPrefix [:pick $apSrc 0 40]
-:log info ("NAVSPOT-INSTALL: action-processor source len=" . $apLen . " prefix=" . $apPrefix)
-
-# Validação 1: Tamanho mínimo
-:if ($apLen < 100) do={
-  :log error "NAVSPOT-INSTALL: action-processor muito curto - FALLBACK"
-  # aplicar fallback
+:local prefix ""
+:do { :set prefix [:pick [/file get $tempFile contents] 0 200] } on-error={}
+# Detectar padrões inválidos: header de /file output OU ausência de :log info
+:if (([:find $prefix "# NAME"] >= 0) || ([:find $prefix ":log info"] < 0)) do={
+  :log error ("NAVSPOT-INSTALL: content INVALIDO - header detectado ou sem :log")
+  :local fullPrefix ""
+  :do { :set fullPrefix [:pick [/file get $tempFile contents] 0 200] } on-error={}
+  :log error ("NAVSPOT-INSTALL: Primeiros 200 chars: " . $fullPrefix)
+  # Trigger fallback...
 }
+```
 
-# Validação 2: Contém header esperado
-:if ([:find $apSrc ":log info"] < 0) do={
-  :log error "NAVSPOT-INSTALL: action-processor sem header - FALLBACK"
-  # aplicar fallback
-}
+### 4. Smoke Test com Captura de $error
 
-# Validação 3: SMOKE TEST
+**v7.1.23 - Capturar e logar mensagem de erro específica:**
+```routeros
 :log info "NAVSPOT-INSTALL: Executando smoke test..."
-# Criar arquivo de teste inofensivo
 :do { /file remove "navspot-actions.txt" } on-error={}
 /file print file=navspot-actions.txt where name="__never__"
-:delay 300ms
-/file set [find name="navspot-actions.txt"] contents="create_profile|test_min|1M|1;"
-:delay 300ms
-
-# Executar e capturar erro
-:local smokeOk false
+:delay 500ms
+/file set [find name="navspot-actions.txt"] contents="create_profile|navspot-smoke|1M|1;"
+:delay 500ms
+:local smokeErr ""
 :do {
   /system script run navspot-action-processor
-  :set smokeOk true
 } on-error={
-  :log error ("NAVSPOT-INSTALL: smoke test ERRO=" . $error)
+  :set smokeErr [:tostr $error]
+  :log error ("NAVSPOT-INSTALL: smoke test ERRO=" . $smokeErr)
 }
-
-:if ($smokeOk = false) do={
+:if ([:len $smokeErr] > 0) do={
   :log error "NAVSPOT-INSTALL: smoke test falhou - aplicando FALLBACK INLINE"
-  # remover script corrompido e aplicar fallback
+  # Aplicar fallback...
+} else={
+  :log info "NAVSPOT-INSTALL: smoke test PASSOU - action-processor OK"
 }
+# Cleanup do profile de teste
+:do { /ip hotspot user profile remove [find name="navspot-smoke"] } on-error={}
 ```
 
----
+### 5. Sanitização Não-Destrutiva Melhorada
 
-### 3. Fallback Inline Multi-Linha (~1.2KB)
-
-**Problema do v7.1.21**: Linha única com escaping complexo (`\\"`) pode falhar no parser.
-
-**Solução v7.1.22**: Formato multi-linha legível com escaping mínimo.
-
-```typescript
-const fallbackSource = `:log info "NAVSPOT-ACTION v7.1.22F: Start"
-:global navspotLock
-:if ($navspotLock = "1") do={ :return }
-:set navspotLock "1"
-:local fid [/file find name="navspot-actions.txt"]
-:if ([:len $fid] = 0) do={ :set navspotLock "0"; :return }
-:local raw [/file get $fid contents]
-:do { /file remove $fid } on-error={}
-:local pos 0
-:local cnt 0
-:while ([:find $raw ";" $pos] >= 0) do={
-:local ep [:find $raw ";" $pos]
-:local ln [:pick $raw $pos $ep]
-:set pos ($ep + 1)
-:if ([:len $ln] > 0) do={
-:local p1 [:find $ln "|"]
-:if ($p1 >= 0) do={
-:local c [:pick $ln 0 $p1]
-:local r [:pick $ln ($p1 + 1) [:len $ln]]
-:if ($c = "create_profile") do={
-:local p2 [:find $r "|"]
-:if ($p2 >= 0) do={
-:local pn [:pick $r 0 $p2]
-:local sub [:pick $r ($p2 + 1) [:len $r]]
-:local p3 [:find $sub "|"]
-:local ps "1"
-:if ($p3 >= 0) do={
-:local sub2 [:pick $sub ($p3 + 1) [:len $sub]]
-:local p4 [:find $sub2 "|"]
-:if ($p4 >= 0) do={ :set ps [:pick $sub2 0 $p4] } else={ :set ps $sub2 }
-}
-:do { /ip hotspot user profile add name=$pn shared-users=$ps } on-error={}
-:set cnt ($cnt + 1)
-}}
-:if ($c = "create_user") do={
-:local p2 [:find $r "|"]
-:if ($p2 >= 0) do={
-:local u [:pick $r 0 $p2]
-:local sub [:pick $r ($p2 + 1) [:len $r]]
-:local p3 [:find $sub "|"]
-:local pw ""
-:local pf "default"
-:if ($p3 >= 0) do={
-:set pw [:pick $sub 0 $p3]
-:set pf [:pick $sub ($p3 + 1) [:len $sub]]
-}
-:do { /ip hotspot user profile add name=$pf } on-error={}
-:do { /ip hotspot user add name=$u password=$pw profile=$pf } on-error={}
-:set cnt ($cnt + 1)
-}}
-}}}
-:set navspotLock "0"
-:log info ("NAVSPOT-ACTION v7.1.22F: OK - " . $cnt)`
-```
-
-**Instalação do fallback** (sem escaping problemático):
-```routeros
-/system script add name="navspot-action-processor" policy=read,write,test source=$fallbackSource
-```
-
-> Nota: O instalador usará uma variável :local com o source multi-linha, evitando inline escaping.
-
----
-
-### 4. Robustez na Escrita do Arquivo de Ações
-
-**Arquivo**: `supabase/functions/mikrotik-scripts/index.ts` (script navspot-sync)
-
-#### 4.1 Retry com delays exponenciais
-
-```routeros
-:local writeOk false
-:local retry 0
-:while (($retry < 3) && ($writeOk = false)) do={
-  :set retry ($retry + 1)
-  :local delayMs (500 * $retry)  # 500ms, 1000ms, 1500ms
-  
-  # Escrever arquivo
-  :do { /file remove "navspot-actions.txt" } on-error={}
-  /file print file=navspot-actions.txt where name="__never__"
-  :delay ($delayMs . "ms")
-  /file set [find name="navspot-actions.txt"] contents=$actions
-  :delay ($delayMs . "ms")
-  
-  # Verificar tamanho
-  :local savedLen [:len [/file get [find name="navspot-actions.txt"] contents]]
-  :local expectedLen [:len $actions]
-  
-  :if ($savedLen = $expectedLen) do={
-    :set writeOk true
-    :log info ("NAVSPOT-SYNC: Arquivo salvo OK (tentativa " . $retry . ", size=" . $savedLen . ")")
-  } else={
-    :log warning ("NAVSPOT-SYNC: Mismatch tentativa " . $retry . " (expected=" . $expectedLen . ", saved=" . $savedLen . ")")
-  }
-}
-
-:if ($writeOk = false) do={
-  :log error "NAVSPOT-SYNC: Falha ao salvar arquivo apos 3 tentativas"
-}
-```
-
-#### 4.2 Normalização do pipe (collapse `;;` em `;`)
-
-No backend (`mikrotik-sync/index.ts`):
+**Atualizar `sanitizePipeForFileContents` em mikrotik-sync:**
 ```typescript
 function sanitizePipeForFileContents(pipe: string): string {
   return pipe
-    .replace(/[\x00-\x1F]/g, '')    // Remove control characters
-    .replace(/"/g, "'")             // Double quotes -> single
-    .replace(/;{2,}/g, ';')         // Collapse multiple semicolons
-    .replace(/\|\|+/g, '|')         // Collapse multiple pipes
-    // NÃO substituir backslash - preserva \$(mac)
+    .replace(/[\x00-\x1F]/g, '')    // Remove control chars
+    .replace(/\r/g, '')             // Strip CR
+    .replace(/;{2,}/g, ';')         // Collapse double semicolons
+    .replace(/(^;|;$)/g, '')        // Trim leading/trailing semicolons
+    .replace(/"/g, "'")             // Safer quotes
+    // CRITICAL: Não substituir backslash - preserva \$(mac)
 }
 ```
 
----
+## Tamanhos Alvo (Margem Conservadora)
 
-### 5. Diagnósticos Aprimorados
-
-#### 5.1 Captura de $error no on-error
-
-```routeros
-:do {
-  /system script run navspot-action-processor
-} on-error={
-  :log error ("NAVSPOT-SYNC: action-processor ERRO=" . $error)
-}
-```
-
-#### 5.2 Log do prefixo em caso de conteúdo inválido
-
-```routeros
-:if ([:find $prefix ":log info"] < 0) do={
-  :local fullPrefix [:pick [/file get "ns-action.src" contents] 0 200]
-  :log error ("NAVSPOT-INSTALL: Conteudo invalido, primeiros 200 chars: " . $fullPrefix)
-}
-```
-
----
+| Script | v7.1.22 | v7.1.23 Target | Margem Segurança |
+|--------|---------|----------------|------------------|
+| sync-raw | 4371 bytes | **< 3200 bytes** | ~800 bytes |
+| action-raw | 4754 bytes | **< 3200 bytes** | ~800 bytes |
+| guardian-raw | 2674 bytes | ~2500 bytes | OK |
 
 ## Arquivos a Modificar
 
-### Backend (Edge Functions)
+### 1. `supabase/functions/mikrotik-scripts/index.ts`
 
-| Arquivo | Mudanças |
-|---------|----------|
-| `supabase/functions/mikrotik-scripts/index.ts` | Modularizar action-processor, novo endpoint action-aux-raw, fallback multi-linha, smoke test |
-| `supabase/functions/mikrotik-sync/index.ts` | Melhorar sanitização, bump versão |
-| `supabase/functions/mikrotik-script-generator/index.ts` | Bump versão |
+**Mudanças:**
+- Linha 35: Bump VERSION para "7.1.23"
+- Linhas 553-703: Reescrever `generateSyncSource()` compactado (~2.8KB)
+- Linhas 714-869: Reescrever `generateActionProcessorCoreSource()` compactado (~3.1KB)
+- Linhas 293-560: Atualizar `generateAllScripts()`:
+  - Adicionar [:rndnum] aos nomes de arquivos temporários
+  - Adicionar detecção de header `# NAME`
+  - Melhorar smoke test com captura de $error
+  - Adicionar cleanup do profile navspot-smoke
 
-### Frontend
+### 2. `supabase/functions/mikrotik-sync/index.ts`
 
-| Arquivo | Mudanças |
-|---------|----------|
-| `src/components/modals/ScriptModal.tsx` | Bump scriptVersion para 7.1.22 |
-| `src/pages/Embarcacoes.tsx` | Bump currentScriptVersion para 7.1.22 |
+**Mudanças:**
+- Linha 9: Bump VERSION para "7.1.23"
+- Linhas 15-22: Melhorar `sanitizePipeForFileContents()`:
+  - Adicionar `.replace(/\r/g, '')`
+  - Adicionar `.replace(/(^;|;$)/g, '')`
 
----
+### 3. `supabase/functions/mikrotik-script-generator/index.ts`
 
-## Tamanhos Target
+**Mudanças:**
+- Bump VERSION para "7.1.23"
 
-| Componente | v7.1.21 | v7.1.22 Target |
-|------------|---------|----------------|
-| navspot-action-processor | 6729 bytes | **~2500 bytes** |
-| navspot-action-aux | N/A | ~2000 bytes |
-| fallback inline | ~3500 bytes | **~1200 bytes** |
-| navspot-sync | ~3700 bytes | ~3800 bytes |
+### 4. Frontend
 
----
+**`src/components/modals/ScriptModal.tsx`:**
+- Bump scriptVersion para "7.1.23"
 
-## Fluxo de Instalação v7.1.22
+**`src/pages/Embarcacoes.tsx`:**
+- Bump currentScriptVersion para "7.1.23"
 
-```text
-Bootstrap importa
-    │
-    ├─1─► Fetch sync-raw (3.8KB)
-    │     └─► Cria navspot-sync [OK]
-    │
-    ├─2─► Fetch action-raw (2.5KB) 
-    │     └─► Cria navspot-action-processor
-    │         │
-    │         ├─► Validação source (len >= 100, contém ":log info")
-    │         │
-    │         └─► SMOKE TEST (create_profile|test_min|1M|1)
-    │             │
-    │             ├─► SUCESSO: "action-processor validado"
-    │             │
-    │             └─► FALHA: Aplica Fallback Inline v7.1.22F
-    │
-    ├─3─► Fetch action-aux-raw (2KB) [OPCIONAL]
-    │     └─► Cria navspot-action-aux (handlers secundários)
-    │
-    ├─4─► Fetch guardian-raw (2KB)
-    │     └─► Cria navspot-guardian [OK]
-    │
-    ├─5─► Cria schedulers + netwatch
-    │
-    └─6─► Primeiro sync
-          └─► Action processor executa [OK]
-```
-
----
-
-## Critérios de Sucesso
-
-1. Action-processor baixado com ~2.5KB (dentro do limite de 4KB)
-2. Log mostra "action content valido" (não "prefix=")
-3. Smoke test passa OU fallback inline aplicado
-4. Sync executa action-processor sem erro
-5. Arquivo de ações salvo sem truncamento (size esperado = size real)
-6. Hotspot fica Online no painel
-
----
-
-## Testes Recomendados
-
-### Backend (Unit Tests)
+## Código Compactado - Sync Source (~2.8KB)
 
 ```typescript
-// Garantir tamanho do action-processor
-test('generateActionProcessorSource deve ter < 2800 bytes', () => {
-  const source = generateActionProcessorSource()
-  expect(source.length).toBeLessThan(2800)
-})
-
-// Garantir que sanitização preserva backslash
-test('sanitizePipeForFileContents preserva \\$(mac)', () => {
-  const input = 'configure_hotspot_profile|http://example.com?mac=\\$(mac)|hotspot.local'
-  const output = sanitizePipeForFileContents(input)
-  expect(output).toContain('\\$(mac)')
-})
+function generateSyncSource(syncUrl: string, syncToken: string): string {
+  return `:log info "NAVSPOT-SYNC v${VERSION}"
+:global navspotSyncLock
+:if ($navspotSyncLock="1") do={:return}
+:set navspotSyncLock "1"
+:local tk ""
+:do {:set tk [/file get "navspot-token.txt" contents]} on-error={}
+:if ([:len $tk]<10) do={:set tk "${syncToken}"}
+:local u ""
+:local r ""
+:local p ""
+:local q "\\22"
+/ip hotspot active
+:foreach a in=[find] do={
+:set u ($u.[get $a user].",".[get $a mac-address].",".[get $a bytes-in].",".[get $a bytes-out].";")
+}
+/ip hotspot user
+:foreach i in=[find where dynamic=no] do={:set r ($r.[get $i name].",")}
+/ip hotspot user profile
+:foreach x in=[find] do={:set p ($p.[get $x name].",")}
+:local b ("{".$q."sync_token".$q.":".$q.$tk.$q.",".$q."active_users_csv".$q.":".$q.$u.$q.",".$q."registered_users_csv".$q.":".$q.$r.$q.",".$q."registered_profiles_csv".$q.":".$q.$p.$q."}")
+:local ok false
+:do {
+/tool fetch url="${syncUrl}" http-method=post http-data=$b http-header-field="Content-Type: application/json" check-certificate=no dst-path="navspot-resp.txt"
+:set ok true
+} on-error={}
+:if ($ok) do={
+:delay 500ms
+:local resp ""
+:do {:set resp [/file get "navspot-resp.txt" contents]} on-error={}
+:do {/file remove "navspot-resp.txt"} on-error={}
+:local s [:find $resp "[["]
+:local e [:find $resp "]]"]
+:if (($s>=0)&&($e>$s)) do={
+:local raw [:pick $resp ($s+2) $e]
+:local i 0
+:local j ([:len $raw]-1)
+:while (($i<=$j)&&([:pick $raw $i ($i+1)]=" ")) do={:set i ($i+1)}
+:while (($j>=$i)&&([:pick $raw $j ($j+1)]=" ")) do={:set j ($j-1)}
+:local a ""
+:if ($j>=$i) do={:set a [:pick $raw $i ($j+1)]}
+:if ([:len $a]>0) do={
+:do {/file remove "navspot-actions.txt"} on-error={}
+/file print file=navspot-actions.txt where name="__x__"
+:delay 700ms
+:do {/file set [find name="navspot-actions.txt"] contents=$a} on-error={}
+:delay 300ms
+:do {/system script run navspot-action-processor} on-error={}
+}
+}
+}
+:set navspotSyncLock "0"
+:log info "NAVSPOT-SYNC v${VERSION}: OK"`
+}
 ```
 
-### Hardware (E2E)
+## Código Compactado - Action Processor (~3.1KB)
 
-1. **Staging em múltiplos modelos**:
-   - hAP lite (flash lento)
-   - hAP ac
-   - CCR (firmware diferente)
+```typescript
+function generateActionProcessorCoreSource(): string {
+  return `:log info "NAVSPOT-ACTION v${VERSION}"
+:global navspotLock
+:if ($navspotLock="1") do={:return}
+:set navspotLock "1"
+:local f [/file find name="navspot-actions.txt"]
+:if ([:len $f]=0) do={:set navspotLock "0";:return}
+:local d ""
+:do {:set d [/file get $f contents]} on-error={:set navspotLock "0";:return}
+:do {/file remove $f} on-error={}
+:if ([:len $d]=0) do={:set navspotLock "0";:return}
+:local pos 0
+:local cnt 0
+:while ([:find $d ";" $pos]>=0) do={
+:local ep [:find $d ";" $pos]
+:local ln [:pick $d $pos $ep]
+:set pos ($ep+1)
+:if ([:len $ln]>0) do={
+:local p1 [:find $ln "|"]
+:if ($p1>=0) do={
+:local c [:pick $ln 0 $p1]
+:local r [:pick $ln ($p1+1) [:len $ln]]
+:if ($c="configure_hotspot_profile") do={
+:do {
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={
+:local lu [:pick $r 0 $p2]
+:local dn [:pick $r ($p2+1) [:len $r]]
+:if (([:len $lu]>0)&&([:len $dn]>0)) do={
+:local hp [/ip hotspot profile find name="hsprof-navspot"]
+:if ([:len $hp]>0) do={
+:do {/ip hotspot profile set $hp login-url=$lu} on-error={}
+:do {/ip hotspot profile set $hp dns-name=$dn} on-error={}
+:do {/ip hotspot profile set $hp login-by=http-pap,http-chap} on-error={}
+:set cnt ($cnt+1)
+}}}
+} on-error={}
+}
+:if ($c="create_profile") do={
+:do {
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={
+:local n [:pick $r 0 $p2]
+:if ([:len $n]>0) do={
+:local sub [:pick $r ($p2+1) [:len $r]]
+:local p3 [:find $sub "|"]
+:local rt ""
+:local sh "1"
+:if ($p3>=0) do={
+:set rt [:pick $sub 0 $p3]
+:local s2 [:pick $sub ($p3+1) [:len $sub]]
+:local p4 [:find $s2 "|"]
+:if ($p4>=0) do={:set sh [:pick $s2 0 $p4]} else={:set sh $s2}
+} else={:set rt $sub}
+:local ex [/ip hotspot user profile find name=$n]
+:if ([:len $ex]=0) do={
+:if ([:len $rt]>0) do={
+:do {/ip hotspot user profile add name=$n rate-limit=$rt shared-users=$sh} on-error={}
+} else={
+:do {/ip hotspot user profile add name=$n shared-users=$sh} on-error={}
+}
+:set cnt ($cnt+1)
+}
+}}
+} on-error={}
+}
+:if ($c="create_user") do={
+:do {
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={
+:local un [:pick $r 0 $p2]
+:if ([:len $un]>0) do={
+:local sub [:pick $r ($p2+1) [:len $r]]
+:local p3 [:find $sub "|"]
+:local pw ""
+:local pf "default"
+:if ($p3>=0) do={
+:set pw [:pick $sub 0 $p3]
+:set pf [:pick $sub ($p3+1) [:len $sub]]
+} else={:set pw $sub}
+:if ([:len $pf]=0) do={:set pf "default"}
+:local pe [/ip hotspot user profile find name=$pf]
+:if ([:len $pe]=0) do={:do {/ip hotspot user profile add name=$pf} on-error={}}
+:local ex [/ip hotspot user find name=$un]
+:if ([:len $ex]=0) do={
+:if ([:len $pw]>0) do={
+:do {/ip hotspot user add name=$un password=$pw profile=$pf comment="navspot"} on-error={}
+:set cnt ($cnt+1)
+}}
+}}
+} on-error={}
+}
+}}}
+:set navspotLock "0"
+:log info ("NAVSPOT-ACTION v${VERSION}: OK - ".$cnt)`
+}
+```
 
-2. **Cenários de teste**:
-   - Escrita lenta em flash
-   - Conteúdo com aspas, backslashes, percent-encoded chars
-   - Payload grande (muitas ações)
+## Verificação no MikroTik
 
----
+```routeros
+/import navspot-bootstrap-v7.1.23.rsc
+
+# 1. Verificar tamanhos dos downloads (devem ser < 3500)
+/log print where message~"baixado" last=10
+# Esperado: sync (~2800), action (~3100), guardian (~2500)
+
+# 2. Verificar se validação passou
+/log print where message~"content" last=10
+# Esperado: "content valido" para TODOS (não "INVALIDO")
+
+# 3. Verificar smoke test
+/log print where message~"smoke" last=5
+# Esperado: "smoke test PASSOU" (não "ERRO")
+
+# 4. Confirmar scripts instalados
+/system script print
+# Esperado: navspot-sync, navspot-action-processor, navspot-guardian
+
+# 5. Verificar tamanhos no dispositivo
+:put ("sync: " . [:len [/system script get navspot-sync source]] . " bytes")
+:put ("action: " . [:len [/system script get navspot-action-processor source]] . " bytes")
+```
 
 ## Checklist de Implementação
 
-- [ ] Criar `generateActionProcessorCoreSource()` (~2.5KB) com handlers essenciais
-- [ ] Criar `generateActionAuxSource()` (~2KB) com handlers secundários
-- [ ] Adicionar endpoint `action-aux-raw` no switch case
-- [ ] Implementar fallback multi-linha (~1.2KB) sem escaping complexo
-- [ ] Adicionar smoke test no instalador com captura de `$error`
-- [ ] Implementar retries na escrita do arquivo de ações (3 tentativas)
-- [ ] Adicionar normalização do pipe (collapse `;;`)
-- [ ] Bump VERSION para 7.1.22 em todos os arquivos
+- [ ] Compactar `generateSyncSource()` para < 3200 bytes
+- [ ] Compactar `generateActionProcessorCoreSource()` para < 3200 bytes
+- [ ] Mover `remove_user` handler para `generateActionAuxSource()`
+- [ ] Adicionar [:rndnum] aos nomes de arquivos temporários
+- [ ] Adicionar detecção de header (`# NAME`) na validação
+- [ ] Adicionar captura de `$error` no smoke test
+- [ ] Adicionar cleanup do profile navspot-smoke
+- [ ] Melhorar `sanitizePipeForFileContents()` (trim semicolons)
+- [ ] Bump VERSION para 7.1.23 em todos os arquivos
 - [ ] Deploy edge functions
-- [ ] Testar em RouterOS 6.49.x (múltiplos modelos)
-- [ ] Verificar tamanho do action-processor (~2.5KB)
-- [ ] Confirmar smoke test passa ou fallback aplicado
-- [ ] Monitorar logs por 48-72h (taxas de fallback, erros)
+- [ ] Testar em RouterOS 6.49.x
+- [ ] Verificar todos os scripts < 3500 bytes após download
+- [ ] Verificar "content valido" nos logs
+- [ ] Verificar "smoke test PASSOU" nos logs
+
