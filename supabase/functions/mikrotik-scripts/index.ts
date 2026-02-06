@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.38
+ * mikrotik-scripts v7.1.47
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -873,7 +873,7 @@ function generateActionProcessorCoreSource(): string {
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
 /ip hotspot profile set $hp login-url=$lu dns-name=$dn
-/ip hotspot profile set $hp login-by="cookie,http-pap"
+/ip hotspot profile set $hp login-by=cookie,http-pap
 :log info ("NAVSPOT: login-by=cookie,http-pap aplicado em ".[/ip hotspot profile get $hp name])
 :set cnt ($cnt+1)
 }}}} on-error={}}
@@ -983,7 +983,7 @@ function generateActionProcessorFullSource(): string {
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
 /ip hotspot profile set $hp login-url=$lu dns-name=$dn
-/ip hotspot profile set $hp login-by="cookie,http-pap"
+/ip hotspot profile set $hp login-by=cookie,http-pap
 :log info ("NAVSPOT: login-by=cookie,http-pap aplicado em ".[/ip hotspot profile get $hp name])
 :set cnt ($cnt+1)
 }}}} on-error={}}

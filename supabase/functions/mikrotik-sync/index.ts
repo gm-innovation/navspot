@@ -5,11 +5,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.1.46: State Reconciliation - telemetry-based confirmation
-const VERSION = "7.1.46"
+// v7.1.47: State Reconciliation - telemetry-based confirmation (syntax fix)
+const VERSION = "7.1.47"
 
-// v7.1.46: Required portal profile version - only marked after telemetry confirms
-const REQUIRED_PORTAL_VERSION = "7.1.46-http-pap"
+// v7.1.47: Required portal profile version - only marked after telemetry confirms
+const REQUIRED_PORTAL_VERSION = "7.1.47-http-pap"
 
 // v7.1.23: Sanitize pipe string for safe /file set contents in RouterOS
 // Removes characters that cause truncation or parsing errors
