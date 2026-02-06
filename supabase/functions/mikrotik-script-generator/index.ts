@@ -197,8 +197,8 @@ Deno.serve(async (req) => {
       console.warn(`[script-generator ${VERSION}] Warning: Bootstrap may contain embedded script logic`)
     }
 
-    // v7.1: Verify fetch+import pattern exists
-    if (!bootstrapScript.includes('/tool fetch') || !bootstrapScript.includes('/import ns-install.rsc')) {
+    // v7.1.36: Verify fetch+import pattern exists (dynamic tmpFile)
+    if (!bootstrapScript.includes('/tool fetch') || !bootstrapScript.includes('/import $tmpFile')) {
       throw new Error('Erro critico: Bootstrap nao contem fetch+import pattern')
     }
 
