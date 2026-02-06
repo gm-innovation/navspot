@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.34"
+const VERSION = "7.1.35"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -308,9 +308,6 @@ function generateBootstrapScript(
 :do { /interface bridge port remove [find comment="navspot-lan"] } on-error={}
 :do { /interface bridge remove [find name="bridge1"] } on-error={}
 :do { /ip dhcp-client remove [find comment="navspot-wan"] } on-error={}
-:do { /ip dhcp-server remove [find name="defconf"] } on-error={}
-:do { /ip dhcp-server remove [find name="dhcp1"] } on-error={}
-:do { /ip pool remove [find name="default-dhcp"] } on-error={}
 :delay 2s
 :log info "NAVSPOT v${VERSION}: Cleanup concluido"
 
