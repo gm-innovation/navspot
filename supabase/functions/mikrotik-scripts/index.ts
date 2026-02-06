@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.31
+ * mikrotik-scripts v7.1.32
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -17,6 +17,12 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" |
  *           "sync-raw" | "action-raw" | "action-aux-raw" | "guardian-raw" (default: "all")
  *   - token: sync_token for authentication
+ * 
+ * v7.1.32: CRITICAL FIX - Read full content BEFORE creating script
+ *   - The :pick [contents] worked but [/file get contents] for script creation was still racing
+ *   - Now we read FULL contents into $scriptContent with retry loop
+ *   - Script is created from $scriptContent variable (not direct file read)
+ *   - This eliminates the timing gap between validation and script creation
  * 
  * v7.1.31: CONTENT READ TIMING FIX for RouterOS 6.x
  *   - Increased post-fetch delay from 1500ms to 2500ms
@@ -29,21 +35,10 @@ const corsHeaders = {
  *   - Added minimum size check (50 bytes) before content validation
  *   - Fixes 0-byte file reads on slow flash storage
  * 
- * v7.1.24: RouterOS 6.x COMPATIBILITY FIX
- *   - Removed :rndnum (only exists in RouterOS 7.x)
- *   - Using timestamp only for unique temp file names
- * 
- * v7.1.23: AGGRESSIVE COMPACTION + ENHANCED SAFEGUARDS
- *   - sync-raw reduced to ~2.8KB (minified variables/logs)
- *   - action-raw reduced to ~3.1KB (move remove_user to AUX)
- *   - Header detection (# NAME) in content validation
- *   - Smoke test with $error capture and cleanup
- *   - Multi-line fallback with minimal escaping (~1.2KB)
- * 
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.31"
+const VERSION = "7.1.32"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -383,27 +378,29 @@ function generateAllScripts(
 :log error ("NAVSPOT-INSTALL: sync arquivo muito pequeno ou vazio - " . $fsize . " bytes")
 :do { /file remove $syncTempFile } on-error={}
 } else={
-# v7.1.31: Content read with retry loop (flash content sync can lag behind metadata)
-:local prefix ""
+# v7.1.32: Read FULL content into variable with retry loop (eliminates timing gap)
+:local scriptContent ""
 :local prefixRetry 0
-:while (([:len $prefix] = 0) && ($prefixRetry < 3)) do={
+:while (([:len $scriptContent] < 50) && ($prefixRetry < 3)) do={
 :set prefixRetry ($prefixRetry + 1)
-:do { :set prefix [:pick [/file get $syncTempFile contents] 0 100] } on-error={}
-:if ([:len $prefix] = 0) do={
-:log info ("NAVSPOT-INSTALL: sync content retry " . $prefixRetry . "/3")
+:do { :set scriptContent [/file get $syncTempFile contents] } on-error={}
+:if ([:len $scriptContent] < 50) do={
+:log info ("NAVSPOT-INSTALL: sync content retry " . $prefixRetry . "/3 (" . [:len $scriptContent] . " bytes)")
 :delay 1500ms
 }
 }
+:local prefix [:pick $scriptContent 0 100]
 # v7.1.23: Enhanced validation - detect header pattern OR missing :log
 :if (([:find $prefix "# NAME"] >= 0) || ([:find $prefix ":log info"] < 0)) do={
 :log error ("NAVSPOT-INSTALL: sync content INVALIDO - header ou sem :log")
 :log error ("NAVSPOT-INSTALL: prefix=" . $prefix)
 :do { /file remove $syncTempFile } on-error={}
 } else={
-:log info "NAVSPOT-INSTALL: sync content valido"
+:log info ("NAVSPOT-INSTALL: sync content valido (" . [:len $scriptContent] . " bytes)")
 :do { /system script remove [find where name="navspot-sync"] } on-error={}
 :delay 300ms
-:do { /system script add name="navspot-sync" policy=read,write,test source=[/file get $syncTempFile contents] } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar sync" }
+# v7.1.32: Create from variable (not direct file read) - eliminates race condition
+:do { /system script add name="navspot-sync" policy=read,write,test source=$scriptContent } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar sync" }
 :delay 300ms
 :do { /file remove $syncTempFile } on-error={}
 :log info "NAVSPOT-INSTALL: navspot-sync v${VERSION} instalado"
@@ -449,27 +446,29 @@ function generateAllScripts(
 :log error ("NAVSPOT-INSTALL: action arquivo muito pequeno ou vazio - " . $fsize . " bytes")
 :do { /file remove $actionTempFile } on-error={}
 } else={
-# v7.1.31: Content read with retry loop (flash content sync can lag behind metadata)
-:local prefix ""
+# v7.1.32: Read FULL content into variable with retry loop (eliminates timing gap)
+:local scriptContent ""
 :local prefixRetry 0
-:while (([:len $prefix] = 0) && ($prefixRetry < 3)) do={
+:while (([:len $scriptContent] < 50) && ($prefixRetry < 3)) do={
 :set prefixRetry ($prefixRetry + 1)
-:do { :set prefix [:pick [/file get $actionTempFile contents] 0 100] } on-error={}
-:if ([:len $prefix] = 0) do={
-:log info ("NAVSPOT-INSTALL: action content retry " . $prefixRetry . "/3")
+:do { :set scriptContent [/file get $actionTempFile contents] } on-error={}
+:if ([:len $scriptContent] < 50) do={
+:log info ("NAVSPOT-INSTALL: action content retry " . $prefixRetry . "/3 (" . [:len $scriptContent] . " bytes)")
 :delay 1500ms
 }
 }
+:local prefix [:pick $scriptContent 0 100]
 # v7.1.23: Enhanced validation - detect header pattern OR missing :log
 :if (([:find $prefix "# NAME"] >= 0) || ([:find $prefix ":log info"] < 0)) do={
 :log error ("NAVSPOT-INSTALL: action content INVALIDO - header ou sem :log")
 :log error ("NAVSPOT-INSTALL: prefix=" . $prefix)
 :do { /file remove $actionTempFile } on-error={}
 } else={
-:log info "NAVSPOT-INSTALL: action content valido"
+:log info ("NAVSPOT-INSTALL: action content valido (" . [:len $scriptContent] . " bytes)")
 :do { /system script remove [find where name="navspot-action-processor"] } on-error={}
 :delay 300ms
-:do { /system script add name="navspot-action-processor" policy=read,write,test source=[/file get $actionTempFile contents] } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar action" }
+# v7.1.32: Create from variable (not direct file read) - eliminates race condition
+:do { /system script add name="navspot-action-processor" policy=read,write,test source=$scriptContent } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar action" }
 :delay 300ms
 :do { /file remove $actionTempFile } on-error={}
 :log info "NAVSPOT-INSTALL: navspot-action-processor v${VERSION} instalado"
@@ -560,26 +559,28 @@ function generateAllScripts(
 :log error ("NAVSPOT-INSTALL: guardian arquivo muito pequeno ou vazio - " . $fsize . " bytes")
 :do { /file remove $guardTempFile } on-error={}
 } else={
-# v7.1.31: Content read with retry loop (flash content sync can lag behind metadata)
-:local prefix ""
+# v7.1.32: Read FULL content into variable with retry loop (eliminates timing gap)
+:local scriptContent ""
 :local prefixRetry 0
-:while (([:len $prefix] = 0) && ($prefixRetry < 3)) do={
+:while (([:len $scriptContent] < 50) && ($prefixRetry < 3)) do={
 :set prefixRetry ($prefixRetry + 1)
-:do { :set prefix [:pick [/file get $guardTempFile contents] 0 100] } on-error={}
-:if ([:len $prefix] = 0) do={
-:log info ("NAVSPOT-INSTALL: guardian content retry " . $prefixRetry . "/3")
+:do { :set scriptContent [/file get $guardTempFile contents] } on-error={}
+:if ([:len $scriptContent] < 50) do={
+:log info ("NAVSPOT-INSTALL: guardian content retry " . $prefixRetry . "/3 (" . [:len $scriptContent] . " bytes)")
 :delay 1500ms
 }
 }
+:local prefix [:pick $scriptContent 0 100]
 # v7.1.23: Enhanced validation
 :if (([:find $prefix "# NAME"] >= 0) || ([:find $prefix ":log info"] < 0)) do={
 :log error ("NAVSPOT-INSTALL: guardian content INVALIDO - header ou sem :log")
 :do { /file remove $guardTempFile } on-error={}
 } else={
-:log info "NAVSPOT-INSTALL: guardian content valido"
+:log info ("NAVSPOT-INSTALL: guardian content valido (" . [:len $scriptContent] . " bytes)")
 :do { /system script remove [find where name="navspot-guardian"] } on-error={}
 :delay 300ms
-:do { /system script add name="navspot-guardian" policy=read,write,test source=[/file get $guardTempFile contents] } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar guardian" }
+# v7.1.32: Create from variable (not direct file read) - eliminates race condition
+:do { /system script add name="navspot-guardian" policy=read,write,test source=$scriptContent } on-error={ :log error "NAVSPOT-INSTALL: Falha ao criar guardian" }
 :delay 300ms
 :do { /file remove $guardTempFile } on-error={}
 :log info "NAVSPOT-INSTALL: navspot-guardian v${VERSION} instalado"
