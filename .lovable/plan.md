@@ -1,151 +1,419 @@
 
 
-# Plano: Migration Automática com Refinamentos de Resiliência
+# Plano: Autenticação Segura v7.1.41 - HTTP-PAP com Auto-POST
 
-## Diagnóstico Atual
+## Sumário Executivo
 
-### Hotspots Conflitantes Encontrados
-| ID | Nome | Rede Atual | Status |
-|----|------|------------|--------|
-| 27a1e1be... | Engenharia Googlemarine | 192.168.88.0 | CONFLITANTE |
-
-### Colunas a Adicionar
-- `rede_prev` (text) - para auditoria/rollback
-- `migration_state` (text) - para tracking
-
-### Default a Corrigir
-- `rede` tem default `'192.168.88.0/24'` - precisa mudar para `'10.10.10.0/24'`
+Este plano implementa a correção de autenticação HTTP-PAP com todas as medidas de segurança sugeridas, evitando exposição de credenciais na URL através de um mecanismo de auto-submit POST.
 
 ---
 
-## Migration SQL Refinada
+## Diagnóstico do Problema
 
-A migration incluirá os refinamentos sugeridos:
+### Sintoma Atual
+```
+hotspot, info, debug: alexandre.silva (10.10.10.254): login failed: password is not chap encrypted
+```
 
-1. **trim()** no WHERE para cobrir espaços acidentais
-2. **Alterar o DEFAULT** da coluna `rede` para `'10.10.10.0/24'`
-3. **CHECK CONSTRAINT** aplicada após o UPDATE garantir dados limpos
-4. **Tratamento de variações** como `192.168.88.1/24`, `192.168.88.0`, etc.
+### Causa
+O hotspot profile está configurado com `login-by=http-pap,http-chap`. O MikroTik tenta CHAP primeiro, mas o portal envia senha em texto plano (PAP).
 
-### Arquivo: supabase/migrations/[timestamp]_migrate_reserved_networks.sql
+### Risco de Segurança (Abordagem Atual)
+```
+VULNERÁVEL: http://10.10.10.1/login?username=USER&password=PASS
+```
+Credenciais ficam expostas em:
+- Histórico do navegador
+- Logs de proxy/firewall
+- Header Referer
+- Barra de endereços visível
+
+---
+
+## Solução Proposta: Auto-POST Seguro
+
+### Nova Arquitetura de Autenticação
+
+```text
+┌─────────────────┐     POST (body)      ┌──────────────────┐
+│  Portal React   │ ──────────────────── │  hotspot-login   │
+│  HotspotLogin   │   login/senha/h/mac  │  Edge Function   │
+└─────────────────┘                      └────────┬─────────┘
+                                                   │
+                                                   │ Valida credenciais
+                                                   │ Gera HTML auto-post
+                                                   ▼
+                                    ┌──────────────────────────────┐
+                                    │   Retorna HTML auto-submit   │
+                                    │   (credenciais em hidden)    │
+                                    └─────────────┬────────────────┘
+                                                  │
+                                                  │ Browser executa
+                                                  │ form.submit()
+                                                  ▼
+                                    ┌──────────────────────────────┐
+                                    │   http://10.10.10.1/login    │
+                                    │   POST username=X&password=Y │
+                                    └──────────────────────────────┘
+```
+
+### Benefícios
+
+| Aspecto | GET (Antigo) | POST (Novo) |
+|---------|--------------|-------------|
+| Credenciais na URL | ⚠️ Sim | ✅ Não |
+| Histórico do browser | ⚠️ Exposto | ✅ Seguro |
+| Logs de proxy | ⚠️ Visível | ✅ Apenas POST body |
+| Header Referer | ⚠️ Vaza senha | ✅ Não vaza |
+| Compatível HTTP-PAP | ✅ Sim | ✅ Sim |
+| Cross-origin | ✅ Funciona | ✅ Forms funcionam |
+
+---
+
+## Arquivos a Modificar
+
+### 1. supabase/functions/hotspot-login/index.ts
+
+**Mudança Principal:** Em vez de retornar `redirect_url` com credenciais na query string, retornar uma página HTML que auto-submete um formulário POST.
+
+#### Antes (Linha 304-306):
+```typescript
+// Status is 'ativo' - redirect to MikroTik to authorize
+// URL format: http://GATEWAY/login?username=USER&password=PASS
+redirectUrl = `http://${gateway}/login?username=${encodeURIComponent(tripulante.login_wifi)}&password=${encodeURIComponent(tripulante.senha_wifi)}`;
+```
+
+#### Depois:
+```typescript
+// Status is 'ativo' - return HTML auto-post page
+// This avoids exposing credentials in URL (security best practice)
+const autoPostHtml = generateAutoPostHtml(
+  gateway,
+  tripulante.login_wifi,
+  tripulante.senha_wifi,
+  config?.embarcacao_nome || 'NAVSPOT'
+);
+
+// Return HTML page instead of JSON
+return new Response(autoPostHtml, {
+  status: 200,
+  headers: {
+    ...corsHeaders,
+    'Content-Type': 'text/html; charset=utf-8',
+  },
+});
+```
+
+#### Nova Função generateAutoPostHtml:
+```typescript
+function generateAutoPostHtml(
+  gateway: string,
+  username: string,
+  password: string,
+  embarcacaoNome: string
+): string {
+  // HTML-escape values to prevent XSS
+  const escapeHtml = (str: string) => 
+    str.replace(/&/g, '&amp;')
+       .replace(/</g, '&lt;')
+       .replace(/>/g, '&gt;')
+       .replace(/"/g, '&quot;');
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Conectando - ${escapeHtml(embarcacaoNome)}</title>
+  <style>
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex; 
+      justify-content: center; 
+      align-items: center; 
+      height: 100vh; 
+      margin: 0;
+      background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+    }
+    .container { 
+      text-align: center; 
+      padding: 2rem;
+      background: white;
+      border-radius: 1rem;
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+    }
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #e5e7eb;
+      border-top: 4px solid #1e3a8a;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h2 { color: #1e3a8a; margin: 0 0 0.5rem; }
+    p { color: #64748b; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="spinner"></div>
+    <h2>Conectando...</h2>
+    <p>Aguarde enquanto liberamos seu acesso</p>
+  </div>
+  <form id="loginForm" method="POST" action="http://${escapeHtml(gateway)}/login">
+    <input type="hidden" name="username" value="${escapeHtml(username)}" />
+    <input type="hidden" name="password" value="${escapeHtml(password)}" />
+  </form>
+  <script>
+    // Auto-submit form after brief delay (allows page to render)
+    setTimeout(function() {
+      document.getElementById('loginForm').submit();
+    }, 100);
+  </script>
+</body>
+</html>`;
+}
+```
+
+---
+
+### 2. src/pages/HotspotLogin.tsx
+
+**Mudança:** Detectar se a resposta é HTML (auto-post) ou JSON, e renderizar o HTML diretamente.
+
+#### Antes (Linhas 150-169):
+```typescript
+const data = await response.json();
+
+if (!response.ok || !data.success) {
+  // ... error handling
+}
+
+// Success - redirect based on status
+setRedirecting(true);
+
+if (data.redirect_url) {
+  setTimeout(() => {
+    window.location.href = data.redirect_url;
+  }, 500);
+}
+```
+
+#### Depois:
+```typescript
+const contentType = response.headers.get('content-type') || '';
+
+// v7.1.41: Handle HTML auto-post response (secure credential submission)
+if (contentType.includes('text/html')) {
+  // Server returned auto-post HTML page - render it
+  const html = await response.text();
+  setRedirecting(true);
+  
+  // Replace entire document with the auto-post page
+  document.open();
+  document.write(html);
+  document.close();
+  return;
+}
+
+// Handle JSON response (errors, pending_cadastro, etc)
+const data = await response.json();
+
+if (!response.ok || !data.success) {
+  if (data.rate_limited) {
+    const minutes = Math.ceil((data.retry_after_seconds || 900) / 60);
+    throw new Error(`Muitas tentativas. Aguarde ${minutes} minuto(s).`);
+  }
+  throw new Error(data.error || "Falha na autenticação");
+}
+
+// Success with JSON - redirect based on status (pendente_cadastro)
+setRedirecting(true);
+
+if (data.redirect_url) {
+  setTimeout(() => {
+    window.location.href = data.redirect_url;
+  }, 500);
+}
+```
+
+---
+
+### 3. supabase/functions/mikrotik-scripts/index.ts
+
+**Mudança 1:** VERSION = "7.1.41"
+```typescript
+const VERSION = "7.1.41"
+```
+
+**Mudança 2:** Linha 861 (CORE action processor)
+```routeros
+# DE:
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap,http-chap
+
+# PARA:
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap
+```
+
+**Mudança 3:** Linha 966 (FULL action processor)
+```routeros
+# DE:
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap,http-chap
+
+# PARA:
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap
+```
+
+---
+
+### 4. Database Migration (Faseada)
+
+**Nova migration SQL para forçar reconfiguração apenas do hotspot afetado:**
 
 ```sql
 -- ================================================================
--- Migração Automática de Rede Reservada v7.1.40
+-- Migration: Forçar Reconfiguração HTTP-PAP v7.1.41
 -- ================================================================
--- Hotspots com 192.168.88.x são migrados para 10.10.10.0/24
--- A rede 192.168.88.0/24 é reservada para gerência MikroTik (Winbox)
+-- Apenas hotspots que já receberam config inicial precisam re-sincronizar
+-- para aplicar a nova configuração login-by=http-pap
 -- ================================================================
 
--- 1. Adicionar colunas de auditoria (se não existirem)
-ALTER TABLE public.hotspots 
-ADD COLUMN IF NOT EXISTS rede_prev text NULL;
-
-ALTER TABLE public.hotspots 
-ADD COLUMN IF NOT EXISTS migration_state text DEFAULT 'idle';
-
--- 2. Migrar hotspots com rede conflitante
--- Usando trim() para cobrir espaços acidentais
--- Cobre variações: "192.168.88.0", "192.168.88.0/24", "192.168.88.1", etc.
-UPDATE public.hotspots  
+-- 1. Marcar hotspots para reconfiguração (faseado)
+-- Apenas os que já foram configurados (initial_config_sent = true)
+UPDATE public.hotspots
 SET 
-  rede_prev = rede,  
-  rede = '10.10.10.0/24',  
-  migration_state = 'migrated',
+  initial_config_sent = false,
   updated_at = now()
-WHERE trim(rede) LIKE '192.168.88%'
-  AND (migration_state IS NULL OR migration_state = 'idle');
+WHERE initial_config_sent = true;
 
--- 3. Alterar o DEFAULT da coluna rede para a nova rede segura
--- Isso garante que novos hotspots usem 10.10.10.0/24 por padrão
-ALTER TABLE public.hotspots 
-ALTER COLUMN rede SET DEFAULT '10.10.10.0/24';
+-- 2. Log para auditoria (opcional mas recomendado)
+-- O próximo sync vai re-injetar configure_hotspot_profile automaticamente
+```
 
--- 4. Adicionar constraint para prevenir futuras inserções com rede reservada
--- Usando trim() na constraint para ser consistente com a migração
-ALTER TABLE public.hotspots
-DROP CONSTRAINT IF EXISTS hotspots_rede_not_reserved;
+**Nota:** Esta migration é conservadora - apenas 1 hotspot será afetado (Engenharia Googlemarine).
 
-ALTER TABLE public.hotspots
-ADD CONSTRAINT hotspots_rede_not_reserved 
-CHECK (trim(rede) NOT LIKE '192.168.88%');
+---
+
+### 5. src/pages/Embarcacoes.tsx
+
+**Mudança:** VERSION = "7.1.41"
+```typescript
+const [currentScriptVersion, setCurrentScriptVersion] = useState("7.1.41");
 ```
 
 ---
 
-## Ordem de Execução (Segura)
+## Fluxo de Autenticação v7.1.41
 
 ```text
-1. ALTER TABLE ADD COLUMN rede_prev
-   └─ Não falha se já existir (IF NOT EXISTS)
+1. Usuário conecta ao WiFi
+   └─ MikroTik redireciona para: https://navspot.lovable.app/hotspot-login?h=ID&mac=$(mac)&ip=$(ip)
 
-2. ALTER TABLE ADD COLUMN migration_state
-   └─ Não falha se já existir (IF NOT EXISTS)
+2. Usuário preenche login/senha no portal React
+   └─ Frontend envia: POST /functions/v1/hotspot-login { login, senha, hotspot_id, mac, ip }
 
-3. UPDATE ... SET rede = '10.10.10.0/24'
-   └─ Migra todos os conflitantes
-   └─ Usa trim() para cobrir espaços
-   └─ Registra valor anterior em rede_prev
+3. Edge Function valida credenciais no banco
+   ├─ Se ERRO: retorna JSON { success: false, error: "..." }
+   ├─ Se pendente_cadastro: retorna JSON { redirect_url: "/completar-cadastro?..." }
+   └─ Se ATIVO: retorna HTML auto-post page
 
-4. ALTER COLUMN rede SET DEFAULT
-   └─ Muda default para novos registros
+4. Frontend recebe HTML
+   └─ Escreve HTML no document (document.write)
 
-5. ADD CONSTRAINT hotspots_rede_not_reserved
-   └─ Só executa após UPDATE limpar a tabela
-   └─ Se falhar = algum registro ainda viola (edge case)
+5. Browser executa auto-submit
+   └─ POST http://10.10.10.1/login (body: username=X&password=Y)
+
+6. MikroTik autentica via HTTP-PAP
+   └─ Usuário liberado! ✅
 ```
 
 ---
 
-## Resultado Esperado
+## Segurança em Camadas (Defense in Depth)
 
-### Antes da Migration
-| Hotspot | rede | rede_prev |
+```text
+✅ Camada 1: Auto-POST HTML
+   └─ Credenciais nunca aparecem na URL
+
+✅ Camada 2: HTML Escaping
+   └─ Previne XSS no HTML gerado
+
+✅ Camada 3: Rate Limiting
+   └─ Bloqueia após 5 tentativas (15 min)
+
+✅ Camada 4: Validação Server-Side
+   └─ Credenciais validadas antes do auto-post
+
+✅ Camada 5: Logs Seguros
+   └─ Senha nunca logada em cleartext
+
+✅ Camada 6: HTTP-PAP Only
+   └─ Remove ambiguidade CHAP/PAP
+```
+
+---
+
+## Rollback Rápido
+
+Se algo der errado:
+
+### Opção 1: Reverter no código
+```typescript
+// Em mikrotik-scripts: voltar para
+login-by=http-pap,http-chap
+```
+
+### Opção 2: Manual no MikroTik
+```routeros
+/ip hotspot profile set [find name="hsprof-navspot"] login-by=http-pap,http-chap
+```
+
+### Opção 3: Forçar re-sync
+```sql
+UPDATE public.hotspots SET initial_config_sent = false WHERE id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1';
+```
+
+---
+
+## Testes Recomendados
+
+| Teste | Descrição | Resultado Esperado |
+|-------|-----------|-------------------|
+| Login ativo | Usuário ativo faz login | Recebe HTML, auto-post, conectado |
+| Login pendente | Usuário pendente_cadastro | Recebe JSON, redirect /completar-cadastro |
+| Login bloqueado | Usuário bloqueado | Recebe JSON erro 403 |
+| Credenciais erradas | Senha incorreta | Recebe JSON erro 401 |
+| Rate limit | 6+ tentativas | Recebe JSON erro 429 |
+| Verificar logs | Após login bem sucedido | Senha NÃO aparece em logs |
+| Verificar histórico | Após login bem sucedido | URL não contém password |
+
+---
+
+## Arquivos Modificados
+
+| Arquivo | Ação | Descrição |
 |---------|------|-----------|
-| Engenharia Googlemarine | 192.168.88.0 | NULL |
-
-### Após a Migration
-| Hotspot | rede | rede_prev | migration_state |
-|---------|------|-----------|-----------------|
-| Engenharia Googlemarine | 10.10.10.0/24 | 192.168.88.0 | migrated |
-
-### Camadas de Proteção Ativas
-
-```text
-✅ Camada 1: Database CONSTRAINT (hotspots_rede_not_reserved)
-   └─ Bloqueia INSERT/UPDATE com 192.168.88.x
-
-✅ Camada 2: Database DEFAULT
-   └─ Novos hotspots usam 10.10.10.0/24 automaticamente
-
-✅ Camada 3: Backend (mikrotik-script-generator)
-   └─ Retorna erro 400 se rede bloqueada
-
-✅ Camada 4: Frontend (Forms)
-   └─ Toast de erro + bloqueia submit
-
-✅ Camada 5: RouterOS (Bootstrap)
-   └─ Aborta se detectar conflito de IP
-```
+| `supabase/functions/hotspot-login/index.ts` | Modificar | Auto-POST HTML para usuários ativos |
+| `src/pages/HotspotLogin.tsx` | Modificar | Detectar HTML vs JSON, document.write |
+| `supabase/functions/mikrotik-scripts/index.ts` | Modificar | login-by=http-pap, VERSION 7.1.41 |
+| `src/pages/Embarcacoes.tsx` | Modificar | VERSION 7.1.41 |
+| Database Migration | Criar | Reset initial_config_sent |
 
 ---
 
-## Benefícios dos Refinamentos
+## Checklist Pre-Deploy
 
-| Aspecto | Antes | Depois |
-|---------|-------|--------|
-| Espaços em branco | Poderia passar | Bloqueado (trim) |
-| Default da coluna | 192.168.88.0/24 | 10.10.10.0/24 |
-| Auditoria | Nenhuma | rede_prev + migration_state |
-| Reincidência | Possível | Bloqueada por CONSTRAINT |
-
----
-
-## Arquivos a Criar
-
-| Arquivo | Descrição |
-|---------|-----------|
-| `supabase/migrations/[timestamp]_migrate_reserved_networks.sql` | Migration automática completa |
-
-A migration será executada automaticamente no próximo deploy, sem qualquer intervenção manual do usuário.
+| Item | Status |
+|------|--------|
+| Auto-POST HTML em hotspot-login | A implementar |
+| Frontend detecta HTML vs JSON | A implementar |
+| mikrotik-scripts login-by=http-pap | A implementar |
+| VERSION bump para 7.1.41 | A implementar |
+| Migration reset initial_config_sent | A implementar |
+| Deploy Edge Functions | A executar |
+| Teste no hAP ax² | Após deploy |
+| Verificar logs sem senha | Após teste |
+| Verificar histórico navegador | Após teste |
 
