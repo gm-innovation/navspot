@@ -1,310 +1,156 @@
 
-# Plano: NAVSPOT v7.1.36 - Revisao Tecnica Robusta
 
-## Resumo das Melhorias a Implementar
+# Plano: NAVSPOT v7.1.37 - Corrigir Acesso via ether2 (Gerencia)
 
-Baseado na sua revisao tecnica, implementaremos as seguintes correcoes:
+## Diagnostico do Problema
 
-| Melhoria | Descricao |
-|----------|-----------|
-| Deteccao robusta de versao | Parsing do major release via [:find] em vez de [:pick] simples |
-| Arquivo temporario unico | Sufixo com timestamp para evitar conteudo residual |
-| fetch com dst-path direto | Grava resposta diretamente no arquivo (evita headers) |
-| Limpeza segura de temporarios | Remocao com tratamento de erro |
-| Retry com backoff variavel | Delays maiores no ROS 6.x vs ROS 7.x |
-| Logs sem tokens expostos | Sanitizar logs para nao vazar credenciais |
+Analisando os logs e o codigo, identifiquei a causa raiz:
 
----
+| Situacao | Estado de Fabrica | Apos NAVSPOT v7.1.36 |
+|----------|-------------------|---------------------|
+| ether2 | Na bridge padrao | Na bridge padrao (OK) |
+| bridge padrao | IP 192.168.88.1 | **SEM IP** (PROBLEMA!) |
+| bridge1 | Nao existe | IP 192.168.88.1 |
+| DHCP defconf | Na bridge padrao | Na bridge padrao (mas sem IP!) |
 
-## Problema 1: Deteccao de Versao Fragil
-
-### Codigo Atual (v7.1.35)
-O bootstrap NAO detecta a versao do RouterOS em runtime. Ele assume que o parametro ja foi passado.
-
-### Correcao (v7.1.36)
-Adicionar deteccao robusta ANTES do fetch:
-
-```text
-# Detectar versao do RouterOS (obter major release de forma robusta)
-:local rosVer [/system resource get version]
-:local dotIndex [:find $rosVer "."]
-:local rosMajor $rosVer
-:if ($dotIndex != 0) do={ :set rosMajor [:pick $rosVer 0 $dotIndex] }
-:local rosV "6"
-:if ($rosMajor = "7") do={
-  :set rosV "7"
-  :log info ("NAVSPOT: RouterOS " . $rosVer . " - modo otimizado (ros_version=" . $rosV . ")")
-} else={
-  :log info ("NAVSPOT: RouterOS " . $rosVer . " - modo compatibilidade (ros_version=" . $rosV . ")")
-}
-```
+O problema: o script cria bridge1 com o IP 192.168.88.1, mas a bridge padrao (onde ether2 ainda esta) fica sem IP. Resultado: o notebook conectado na ether2 nao consegue obter IP nem acessar o Winbox.
 
 ---
 
-## Problema 2: Nome de Arquivo Estatico
-
-### Codigo Atual
-```text
-:local scriptsUrl ($apiBase . "?type=all&token=" . $tk)
-/tool fetch url=$scriptsUrl check-certificate=no dst-path="ns-install.rsc"
-```
-
-O nome `ns-install.rsc` e fixo, podendo conter conteudo residual de execucoes anteriores.
-
-### Correcao
-Usar sufixo com timestamp para arquivo unico:
+## Arquitetura Desejada
 
 ```text
-:local ts [/system clock get time]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local tmpFile ("ns-install-" . $tsStr . ".rsc")
-/tool fetch url=$scriptsUrl check-certificate=no dst-path=$tmpFile
++------------------+
+|   MikroTik hAP   |
++------------------+
+| ether1 (WAN)     | <-- Internet
+| ether2 (MGMT)    | <-- IP DIRETO: 192.168.88.254/24
+| ether3-5         | <-- bridge1 (Hotspot)
++------------------+
+| bridge (padrao)  | <-- Manter (pode ficar vazia)
+| bridge1 (navspot)| <-- IP 192.168.88.1/24 + Hotspot
++------------------+
 ```
+
+### Solucao: Adicionar IP direto na ether2
+
+Em vez de depender da bridge padrao, vamos dar um IP **diretamente** na interface ether2. Isso garante:
+- Acesso Winbox sempre funciona
+- Independente de bridges
+- IP fixo conhecido: 192.168.88.254
 
 ---
 
-## Problema 3: URL sem ros_version
+## Mudancas Necessarias
 
-### Codigo Atual
-```text
-:local scriptsUrl ($apiBase . "?type=all&token=" . $tk)
+### 1. Adicionar IP na ether2 (NOVA secao no bootstrap)
+
+Inserir apos o cleanup e antes da criacao da bridge1:
+
+```routeros
+# 1.5. CONFIGURAR IP DE GERENCIA NA ETHER2
+:do { /ip address remove [find interface=ether2 comment="navspot-mgmt"] } on-error={}
+/ip address add address=192.168.88.254/24 interface=ether2 comment="navspot-mgmt"
+:log info "NAVSPOT: IP de gerencia 192.168.88.254 configurado na ether2"
 ```
 
-A URL NAO inclui o parametro `ros_version`, entao a API assume ROS 6.x por padrao.
+### 2. Garantir que ether2 NAO esteja em nenhuma bridge
 
-### Correcao
-Incluir ros_version na URL:
+Adicionar no cleanup:
 
-```text
-:local scriptsUrl ($apiBase . "?type=all&token=" . $tk . "&ros_version=" . $rosV)
+```routeros
+:do { /interface bridge port remove [find interface=ether2] } on-error={}
 ```
+
+Isso remove ether2 de qualquer bridge (padrao ou outra), garantindo que o IP direto funcione.
+
+### 3. Ajustar comentario da regra Winbox
+
+Atualizar log para indicar o IP de gerencia.
 
 ---
 
-## Problema 4: Retry com Backoff Fixo
+## Resumo das Mudancas
 
-### Codigo Atual
-```text
-:delay 5s  # delay fixo entre retries
+| Item | v7.1.36 | v7.1.37 |
+|------|---------|---------|
+| ether2 na bridge padrao | Sim (problema) | Removida da bridge |
+| IP direto na ether2 | Nao | 192.168.88.254/24 |
+| Acesso Winbox | Falha | Funciona via 192.168.88.254 |
+
+---
+
+## Secao Tecnica
+
+### Arquivo: supabase/functions/mikrotik-script-generator/index.ts
+
+#### 1. Atualizar VERSION
+
+Linha ~10:
+```typescript
+const VERSION = "7.1.37"
 ```
 
-### Correcao
-Backoff variavel baseado na versao do RouterOS:
+#### 2. Adicionar remocao de ether2 de bridges no CLEANUP (apos linha 308)
+
+```routeros
+:do { /interface bridge port remove [find interface=ether2] } on-error={}
+```
+
+#### 3. Adicionar configuracao de IP na ether2 (apos validacao WAN, antes de DNS)
+
+Nova secao entre passos 1 e 2:
+
+```routeros
+# 1.5. CONFIGURAR IP DE GERENCIA NA ETHER2
+:do { /ip address remove [find interface=ether2] } on-error={}
+/ip address add address=192.168.88.254/24 interface=ether2 comment="navspot-mgmt"
+:log info "NAVSPOT: IP de gerencia 192.168.88.254 configurado na ether2"
+```
+
+### Arquivos a Atualizar
+
+1. supabase/functions/mikrotik-script-generator/index.ts
+   - VERSION = "7.1.37"
+   - Adicionar remocao de ether2 de bridges
+   - Adicionar IP 192.168.88.254 na ether2
+
+2. supabase/functions/mikrotik-scripts/index.ts
+   - VERSION = "7.1.37"
+
+3. src/pages/Embarcacoes.tsx
+   - defaultScriptVersion = "7.1.37"
+
+---
+
+## Resultado Esperado
+
+1. Admin conecta notebook na ether2
+2. Notebook recebe/configura IP na faixa 192.168.88.x
+3. Admin acessa Winbox via 192.168.88.254:8291
+4. Hotspot funciona normalmente na bridge1 (192.168.88.1)
+5. Ambas as redes coexistem sem conflito
+
+### Logs Esperados
 
 ```text
-:local retryDelay 5s
-:if ($rosV = "7") do={ :set retryDelay 2s } else={ :set retryDelay 5s }
+NAVSPOT v7.1.37: Iniciando bootstrap ULTRA-THIN...
+NAVSPOT v7.1.37: Cleanup concluido
+NAVSPOT: IP de gerencia 192.168.88.254 configurado na ether2
+NAVSPOT: Interface WAN (ether1) validada
 ...
-:delay $retryDelay
+NAVSPOT v7.1.37: INSTALACAO CONCLUIDA!
 ```
 
 ---
 
-## Problema 5: Sync Escrevendo Header do Sistema
+## Instrucoes de Acesso pos-Instalacao
 
-### Codigo Atual (generateSyncSource)
-```text
-/tool fetch url="${syncUrl}" http-method=post http-data=$b http-header-field="Content-Type: application/json" check-certificate=no dst-path="navspot-resp.txt"
-:delay 500ms
-:local resp ""
-:do {:set resp [/file get "navspot-resp.txt" contents]} on-error={}
-```
+Apos rodar o script v7.1.37, o administrador deve:
 
-O arquivo `navspot-resp.txt` pode conter header residual do sistema (# 2026-02-06...).
+1. Conectar notebook na **porta 2** do hAP ax2
+2. Configurar IP manual: 192.168.88.100 (ou usar DHCP se disponivel)
+3. Acessar Winbox: **192.168.88.254:8291**
 
-### Correcao
-Usar arquivo temporario unico e remover ANTES de criar:
-
-```text
-:local ts [/system clock get time]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local respFile ("navspot-resp-" . $tsStr . ".txt")
-# Remover arquivo se existir
-:do {/file remove [find name~"navspot-resp-"]} on-error={}
-/tool fetch url="${syncUrl}" http-method=post http-data=$b http-header-field="Content-Type: application/json" check-certificate=no dst-path=$respFile
-:delay 500ms
-:local resp ""
-:do {:set resp [/file get $respFile contents]} on-error={}
-:do {/file remove $respFile} on-error={}
-```
-
----
-
-## Arquivos a Modificar
-
-### 1. supabase/functions/mikrotik-script-generator/index.ts
-
-Modificacoes na funcao `generateBootstrapScript()`:
-
-1. Adicionar deteccao de versao do RouterOS em runtime (antes do fetch)
-2. Usar arquivo temporario com timestamp
-3. Passar ros_version na URL da API
-4. Backoff variavel entre retries
-5. Atualizar VERSION para "7.1.36"
-
-### 2. supabase/functions/mikrotik-scripts/index.ts
-
-Modificacoes na funcao `generateSyncSource()`:
-
-1. Usar arquivo de resposta temporario com timestamp
-2. Limpar arquivos antigos antes de criar novo
-3. Atualizar VERSION para "7.1.36"
-
-### 3. src/pages/Embarcacoes.tsx
-
-1. Atualizar defaultScriptVersion para "7.1.36"
-
----
-
-## Secao Tecnica: Detalhamento do Bootstrap v7.1.36
-
-### Bloco de Deteccao de Versao (inserir ANTES do fetch)
-
-```text
-# v7.1.36: Detectar versao do RouterOS de forma robusta
-:local rosVer [/system resource get version]
-:local dotIndex [:find $rosVer "."]
-:local rosMajor $rosVer
-:if ($dotIndex != 0) do={ :set rosMajor [:pick $rosVer 0 $dotIndex] }
-:local rosV "6"
-:if ($rosMajor = "7") do={
-  :set rosV "7"
-  :log info ("NAVSPOT v7.1.36: RouterOS " . $rosVer . " detectado - modo otimizado")
-} else={
-  :log info ("NAVSPOT v7.1.36: RouterOS " . $rosVer . " detectado - modo compatibilidade")
-}
-```
-
-### Bloco de Fetch com Arquivo Unico (substituir bloco atual)
-
-```text
-# v7.1.36: Arquivo temporario unico para evitar conteudo residual
-:local ts [/system clock get time]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local tmpFile ("ns-install-" . $tsStr . ".rsc")
-
-# Construir URL com ros_version
-:local scriptsUrl ($apiBase . "?type=all&token=" . $tk . "&ros_version=" . $rosV)
-
-# Retry com backoff variavel
-:local retryDelay 5s
-:if ($rosV = "7") do={ :set retryDelay 2s }
-
-:local maxRetries 3
-:local retryCount 0
-:local fetchSuccess false
-
-:while (($retryCount < $maxRetries) && ($fetchSuccess = false)) do={
-  :set retryCount ($retryCount + 1)
-  :log info ("NAVSPOT v7.1.36: Tentativa " . $retryCount . "/" . $maxRetries)
-  :do {
-    /tool fetch url=$scriptsUrl check-certificate=no dst-path=$tmpFile
-    :set fetchSuccess true
-  } on-error={
-    :log warning ("NAVSPOT v7.1.36: Fetch falhou na tentativa " . $retryCount)
-    :if ($retryCount < $maxRetries) do={
-      :delay $retryDelay
-    }
-  }
-}
-```
-
-### Bloco de Import com Limpeza (substituir bloco atual)
-
-```text
-:if ($fetchSuccess = true) do={
-  # Delay pos-fetch baseado na versao
-  :if ($rosV = "7") do={ :delay 500ms } else={ :delay 4s }
-  :log info "NAVSPOT v7.1.36: Importando scripts..."
-  /import $tmpFile
-  :delay 1s
-  :do { /file remove $tmpFile } on-error={ :log warning "NAVSPOT: nao foi possivel remover arquivo temporario" }
-  :log info "NAVSPOT v7.1.36: Scripts instalados com sucesso!"
-  
-  # ... resto do codigo (primeiro sync)
-}
-```
-
----
-
-## Secao Tecnica: Detalhamento do Sync v7.1.36
-
-### Modificacao em generateSyncSource()
-
-```text
-# v7.1.36: Arquivo de resposta unico com timestamp
-:local ts [/system clock get time]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local respFile ("navspot-resp-" . $tsStr . ".txt")
-
-# Limpar arquivos de resposta antigos
-:do {
-  :foreach oldFile in=[/file find where name~"navspot-resp-"] do={
-    /file remove $oldFile
-  }
-} on-error={}
-:delay 200ms
-
-# Fetch com dst-path direto (evita headers do sistema)
-:do {
-  /tool fetch url="${syncUrl}" http-method=post http-data=$b http-header-field="Content-Type: application/json" check-certificate=no dst-path=$respFile
-  :set ok true
-} on-error={:set navspotSyncLock "0"}
-
-:if ($ok) do={
-  :delay 500ms
-  :local resp ""
-  :do {:set resp [/file get $respFile contents]} on-error={}
-  :do {/file remove $respFile} on-error={}
-  # ... resto do processamento
-}
-```
-
----
-
-## Logs Esperados (v7.1.36)
-
-### RouterOS 7.x (hAP ax2)
-```text
-NAVSPOT v7.1.36: RouterOS 7.14.3 detectado - modo otimizado
-NAVSPOT v7.1.36: Tentativa 1/3
-NAVSPOT v7.1.36: Fetch OK! (ns-install-113512.rsc)
-NAVSPOT v7.1.36: Importando scripts...
-NAVSPOT-INSTALL v7.1.36: Iniciando (ROS 7 mode)...
-NAVSPOT-INSTALL: sync baixado (2856 bytes)
-NAVSPOT-INSTALL: action-raw (full ~4.5KB)
-NAVSPOT-INSTALL: CONCLUIDO!
-```
-
-### RouterOS 6.x
-```text
-NAVSPOT v7.1.36: RouterOS 6.49.10 detectado - modo compatibilidade
-NAVSPOT v7.1.36: Tentativa 1/3
-NAVSPOT v7.1.36: Fetch OK! (ns-install-113512.rsc)
-NAVSPOT-INSTALL v7.1.36: Iniciando (ROS 6 mode)...
-NAVSPOT-INSTALL: sync baixado (2856 bytes)
-NAVSPOT-INSTALL: action-raw (core ~2.4KB)
-NAVSPOT-INSTALL: CONCLUIDO!
-```
-
----
-
-## Testes Recomendados
-
-| Teste | Verificacao |
-|-------|-------------|
-| hAP ax2 (ROS 7.14.3) | Log mostra "modo otimizado", API recebe ros_version=7 |
-| ROS 6.x | Log mostra "modo compatibilidade", delays maiores |
-| Falha de rede | Retry funciona, logs mostram tentativas, arquivos temporarios limpos |
-| Concorrencia | Timestamps unicos evitam colisao |
-| Conteudo residual | Nao aparece mais header "# 2026-02-..." no sync |
-
----
-
-## Rollback
-
-Se algo der errado:
-1. Reverter VERSION para "7.1.35" nos 3 arquivos
-2. Reimplantar Edge Functions
-3. Gerar novo script para embarcacao
+Alternativamente, usar MAC Winbox (Neighbors) que funcionara independente de IP.
 
