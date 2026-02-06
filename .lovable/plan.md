@@ -1,102 +1,164 @@
 
-# Plano: Adaptar NAVSPOT para MikroTik hAP ax² (RouterOS 7.x)
 
-## STATUS: ✅ IMPLEMENTADO (v7.1.34)
+# Plano: NAVSPOT v7.1.35 - Cleanup Conservador (Preservar Bridge Padrao)
 
-## Especificacoes do hAP ax²
+## Problema Identificado
 
-| Caracteristica | Valor |
-|----------------|-------|
-| **Arquitetura** | ARM 64bit |
-| **CPU** | IPQ-6010 Quad-core 864 MHz |
-| **RAM** | 1 GB (vs ~128MB em modelos antigos) |
-| **Storage** | 128 MB NAND (vs ~16MB flash) |
-| **RouterOS** | v7 nativo (NAO suporta v6) |
-| **Wi-Fi** | 802.11ax (Wi-Fi 6) dual-band |
-| **Ethernet** | 5x Gigabit |
-| **PoE** | PoE-in e PoE-out na ether1 |
+O cleanup atual remove configuracoes que NAO deveriam ser removidas:
 
----
+| Linha | Comando Problematico | Efeito |
+|-------|---------------------|--------|
+| 309 | `bridge remove [find name="bridge1"]` | Remove bridge NAVSPOT anterior (OK) |
+| 311 | `dhcp-server remove [find name="defconf"]` | Remove DHCP padrao do MikroTik (PROBLEMA!) |
+| 312 | `dhcp-server remove [find name="dhcp1"]` | Remove DHCP padrao alternativo (PROBLEMA!) |
+| 313 | `pool remove [find name="default-dhcp"]` | Remove pool padrao (PROBLEMA!) |
 
-## Implementacao v7.1.34
-
-### ✅ Fase 1: Deteccao de Versao do RouterOS
-- Bootstrap detecta automaticamente a versao no runtime
-- Passa `ros_version` para a API via query string
-
-### ✅ Fase 2: Parametros Condicionais no Instalador
-- `mikrotik-scripts` aceita `ros_version=6|7|auto`
-- Delays otimizados por versao:
-
-| Parametro | RouterOS 6.x | RouterOS 7.x |
-|-----------|--------------|--------------|
-| Delay apos fetch | 2500ms | 500ms |
-| Delay apos file write | 1500ms | 300ms |
-| Content retry | 3 tentativas | 1 tentativa |
-| Flash sync delay | 700ms | 200ms |
-| Action-processor | ~2400 bytes (CORE) | ~4500 bytes (FULL) |
-
-### ✅ Fase 3: Action Processor FULL para v7
-Handlers restaurados para RouterOS 7.x:
-- `add_firewall_block` (regras de bloqueio SNI)
-- `add_firewall_allow` (regras de permissao)
-- `remove_user`
-- `disable_user` / `enable_user`
-- `kick_session`
-
-### ✅ Fase 4: Banco de Dados
-Coluna `ros_version` adicionada na tabela `hotspots`:
-- Valores: '6', '7', 'auto' (default: 'auto')
-- UI pode ser adicionada posteriormente se necessario
+A bridge padrao do hAP ax² (chamada "bridge") vem de fabrica com ether2-ether5 incluidas. Quando o script remove configuracoes de DHCP relacionadas, o Winbox perde conectividade.
 
 ---
 
-## Arquivos Modificados
+## Arquitetura Correta (conforme definida no inicio)
 
-1. `supabase/functions/mikrotik-scripts/index.ts` - v7.1.34
-   - Parametro `ros_version` na query string
-   - Funcao `getROSConfig()` para timings por versao
-   - `generateActionProcessorFullSource()` para v7
-   - Delays condicionais em todo instalador
+```text
++------------------+
+|   MikroTik hAP   |
++------------------+
+| ether1 (WAN)     | <-- Internet (DHCP client)
+| ether2           | <-- Gerencia Winbox (NAO TOCAR)
+| ether3-5         | <-- Mover para bridge1 (Hotspot)
++------------------+
+| bridge (padrao)  | <-- MANTER (nao interfere)
+| bridge1 (navspot)| <-- CRIAR para hotspot
++------------------+
+```
 
-2. `supabase/functions/mikrotik-script-generator/index.ts` - v7.1.34
-   - Busca `ros_version` do hotspot no banco
-   - Interface Hotspot atualizada
+### O que o script DEVE fazer:
 
-3. `src/pages/Embarcacoes.tsx`
-   - Versao padrao: 7.1.34
+1. Limpar hotspot NAVSPOT anterior (se houver)
+2. Limpar scripts/schedulers NAVSPOT anteriores
+3. Criar bridge1 NOVA
+4. Remover ether3-5 da bridge padrao
+5. Adicionar ether3-5 na bridge1
+6. Configurar hotspot na bridge1
+7. NAO TOCAR em ether2 ou bridge padrao
 
-4. Migracao: coluna `ros_version` na tabela `hotspots`
+### O que o script NAO DEVE fazer:
+
+1. Remover a bridge padrao
+2. Remover DHCP server padrao (defconf, dhcp1)
+3. Remover pool padrao (default-dhcp)
+4. Interferir na ether2
 
 ---
 
-## Como Testar no hAP ax²
+## Mudancas no Cleanup (v7.1.35)
 
-### Passo 1: Verificar versao do RouterOS
+### REMOVER do cleanup (nao deve tocar):
+
 ```routeros
-/system resource print
+# REMOVER ESTAS LINHAS:
+:do { /ip dhcp-server remove [find name="defconf"] } on-error={}
+:do { /ip dhcp-server remove [find name="dhcp1"] } on-error={}
+:do { /ip pool remove [find name="default-dhcp"] } on-error={}
 ```
-Esperado: `version: 7.x.x`
 
-### Passo 2: Gerar novo bootstrap v7.1.34
-O sistema agora detecta automaticamente a versao.
-Para forcar modo v7, configure o hotspot com `ros_version=7` no banco.
+### MANTER no cleanup (apenas NAVSPOT):
 
-### Passo 3: Validar nos logs
-Logs esperados para RouterOS 7.x:
-```
-NAVSPOT-INSTALL v7.1.34: Iniciando (ROS 7 mode)...
-NAVSPOT-INSTALL: action baixado (~4500 bytes)  <- FULL version
-NAVSPOT-INSTALL: action content valido (4387 bytes)
-NAVSPOT-INSTALL: navspot-action-processor v7.1.34 instalado
+```routeros
+# Limpar instalacao NAVSPOT anterior
+:do { /ip hotspot remove [find name="hs-navspot"] } on-error={}
+:do { /ip hotspot profile remove [find name="hsprof-navspot"] } on-error={}
+:do { /ip dhcp-server remove [find name="dhcp-navspot"] } on-error={}
+:do { /ip dhcp-server network remove [find comment="navspot"] } on-error={}
+:do { /ip pool remove [find name="hs-pool-navspot"] } on-error={}
+:do { /ip address remove [find comment="navspot"] } on-error={}
+:do { /interface bridge port remove [find comment="navspot-lan"] } on-error={}
+:do { /interface bridge remove [find name="bridge1"] } on-error={}
 ```
 
 ---
 
-## Resumo
+## Migracao de Portas Ajustada
 
-O sistema NAVSPOT agora e totalmente compativel com:
-- **RouterOS 6.x** (modo conservador, action-processor reduzido)
-- **RouterOS 7.x** (modo otimizado, action-processor completo, delays reduzidos)
+O script atual ja faz a migracao correta:
 
-A deteccao eh automatica e nao requer configuracao manual.
+```routeros
+# Remove porta da bridge atual (qualquer que seja)
+:do { /interface bridge port remove [find interface=ether3] } on-error={}
+# Adiciona na bridge1
+:do { /interface bridge port add bridge=bridge1 interface=ether3 comment="navspot-lan" } on-error={}
+```
+
+Isso funciona porque:
+1. Remove ether3 de QUALQUER bridge (inclusive a padrao)
+2. Adiciona na bridge1 (NAVSPOT)
+3. A bridge padrao continua existindo, apenas sem ether3-5
+
+---
+
+## Arquivo a Modificar
+
+### supabase/functions/mikrotik-script-generator/index.ts
+
+Remover as linhas 311-313 do cleanup:
+
+```diff
+  # 0. CLEANUP
+  :log info "NAVSPOT v${VERSION}: Limpando instalacoes anteriores..."
+  :do { /file remove [find where name="navspot-token.txt"] } on-error={}
+  ...
+  :do { /interface bridge port remove [find comment="navspot-lan"] } on-error={}
+  :do { /interface bridge remove [find name="bridge1"] } on-error={}
+  :do { /ip dhcp-client remove [find comment="navspot-wan"] } on-error={}
+- :do { /ip dhcp-server remove [find name="defconf"] } on-error={}
+- :do { /ip dhcp-server remove [find name="dhcp1"] } on-error={}
+- :do { /ip pool remove [find name="default-dhcp"] } on-error={}
+  :delay 2s
+  :log info "NAVSPOT v${VERSION}: Cleanup concluido"
+```
+
+### Atualizar versao para 7.1.35
+
+---
+
+## Resumo das Mudancas
+
+| Item | v7.1.34 | v7.1.35 |
+|------|---------|---------|
+| Remove defconf DHCP | Sim | Nao |
+| Remove dhcp1 | Sim | Nao |
+| Remove default-dhcp pool | Sim | Nao |
+| Remove bridge padrao | Nao (apenas bridge1) | Nao (apenas bridge1) |
+| Migra ether3-5 | Sim | Sim |
+| Preserva ether2 | Sim | Sim |
+
+---
+
+## Resultado Esperado
+
+1. Admin importa script no hAP ax²
+2. Script limpa apenas configs NAVSPOT anteriores
+3. Bridge padrao continua funcionando (com ether2)
+4. Winbox permanece conectado via ether2
+5. ether3-5 sao movidas para bridge1
+6. Hotspot configurado na bridge1
+7. Instalacao completa sem perda de conectividade
+
+---
+
+## Secao Tecnica
+
+### Arquivo: supabase/functions/mikrotik-script-generator/index.ts
+
+Modificar a funcao `generateBootstrapScript()`:
+- Linha 311-313: REMOVER comandos que deletam defconf/dhcp1/default-dhcp
+- Linha 1 (VERSION): Atualizar para "7.1.35"
+
+### Arquivo: supabase/functions/mikrotik-scripts/index.ts
+
+- Atualizar VERSION para "7.1.35"
+
+### Arquivo: src/pages/Embarcacoes.tsx
+
+- Atualizar defaultScriptVersion para "7.1.35"
+
