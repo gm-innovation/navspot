@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.25
+ * mikrotik-scripts v7.1.31
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -17,6 +17,11 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" |
  *           "sync-raw" | "action-raw" | "action-aux-raw" | "guardian-raw" (default: "all")
  *   - token: sync_token for authentication
+ * 
+ * v7.1.31: CONTENT READ TIMING FIX for RouterOS 6.x
+ *   - Increased post-fetch delay from 1500ms to 2500ms
+ *   - Added retry loop (3 attempts) for CONTENT reading (not just size)
+ *   - Fixes empty prefix on slow flash - file metadata available before content
  * 
  * v7.1.25: FILE READ TIMING FIX for RouterOS 6.x
  *   - Increased post-fetch delay from 700ms to 1500ms
@@ -38,7 +43,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.30"
+const VERSION = "7.1.31"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -360,15 +365,15 @@ function generateAllScripts(
 }
 }
 :if ($syncOk = true) do={
-# v7.1.25: Increased delay + retry loop for file read timing issues
-:delay 1500ms
+# v7.1.31: Increased delay + retry loop for BOTH size AND content reading
+:delay 2500ms
 :local fsize 0
 :local readRetry 0
 :while (($fsize = 0) && ($readRetry < 3)) do={
 :set readRetry ($readRetry + 1)
 :do { :set fsize [/file get $syncTempFile size] } on-error={}
 :if ($fsize = 0) do={
-:log info ("NAVSPOT-INSTALL: sync read retry " . $readRetry . "/3")
+:log info ("NAVSPOT-INSTALL: sync size retry " . $readRetry . "/3")
 :delay 1000ms
 }
 }
@@ -378,8 +383,17 @@ function generateAllScripts(
 :log error ("NAVSPOT-INSTALL: sync arquivo muito pequeno ou vazio - " . $fsize . " bytes")
 :do { /file remove $syncTempFile } on-error={}
 } else={
+# v7.1.31: Content read with retry loop (flash content sync can lag behind metadata)
 :local prefix ""
+:local prefixRetry 0
+:while (([:len $prefix] = 0) && ($prefixRetry < 3)) do={
+:set prefixRetry ($prefixRetry + 1)
 :do { :set prefix [:pick [/file get $syncTempFile contents] 0 100] } on-error={}
+:if ([:len $prefix] = 0) do={
+:log info ("NAVSPOT-INSTALL: sync content retry " . $prefixRetry . "/3")
+:delay 1500ms
+}
+}
 # v7.1.23: Enhanced validation - detect header pattern OR missing :log
 :if (([:find $prefix "# NAME"] >= 0) || ([:find $prefix ":log info"] < 0)) do={
 :log error ("NAVSPOT-INSTALL: sync content INVALIDO - header ou sem :log")
@@ -417,15 +431,15 @@ function generateAllScripts(
 }
 }
 :if ($actionOk = true) do={
-# v7.1.25: Increased delay + retry loop for file read timing issues
-:delay 1500ms
+# v7.1.31: Increased delay + retry loop for BOTH size AND content reading
+:delay 2500ms
 :local fsize 0
 :local readRetry 0
 :while (($fsize = 0) && ($readRetry < 3)) do={
 :set readRetry ($readRetry + 1)
 :do { :set fsize [/file get $actionTempFile size] } on-error={}
 :if ($fsize = 0) do={
-:log info ("NAVSPOT-INSTALL: action read retry " . $readRetry . "/3")
+:log info ("NAVSPOT-INSTALL: action size retry " . $readRetry . "/3")
 :delay 1000ms
 }
 }
@@ -435,8 +449,17 @@ function generateAllScripts(
 :log error ("NAVSPOT-INSTALL: action arquivo muito pequeno ou vazio - " . $fsize . " bytes")
 :do { /file remove $actionTempFile } on-error={}
 } else={
+# v7.1.31: Content read with retry loop (flash content sync can lag behind metadata)
 :local prefix ""
+:local prefixRetry 0
+:while (([:len $prefix] = 0) && ($prefixRetry < 3)) do={
+:set prefixRetry ($prefixRetry + 1)
 :do { :set prefix [:pick [/file get $actionTempFile contents] 0 100] } on-error={}
+:if ([:len $prefix] = 0) do={
+:log info ("NAVSPOT-INSTALL: action content retry " . $prefixRetry . "/3")
+:delay 1500ms
+}
+}
 # v7.1.23: Enhanced validation - detect header pattern OR missing :log
 :if (([:find $prefix "# NAME"] >= 0) || ([:find $prefix ":log info"] < 0)) do={
 :log error ("NAVSPOT-INSTALL: action content INVALIDO - header ou sem :log")
@@ -519,15 +542,15 @@ function generateAllScripts(
 }
 }
 :if ($guardOk = true) do={
-# v7.1.25: Increased delay + retry loop for file read timing issues
-:delay 1500ms
+# v7.1.31: Increased delay + retry loop for BOTH size AND content reading
+:delay 2500ms
 :local fsize 0
 :local readRetry 0
 :while (($fsize = 0) && ($readRetry < 3)) do={
 :set readRetry ($readRetry + 1)
 :do { :set fsize [/file get $guardTempFile size] } on-error={}
 :if ($fsize = 0) do={
-:log info ("NAVSPOT-INSTALL: guardian read retry " . $readRetry . "/3")
+:log info ("NAVSPOT-INSTALL: guardian size retry " . $readRetry . "/3")
 :delay 1000ms
 }
 }
@@ -537,8 +560,17 @@ function generateAllScripts(
 :log error ("NAVSPOT-INSTALL: guardian arquivo muito pequeno ou vazio - " . $fsize . " bytes")
 :do { /file remove $guardTempFile } on-error={}
 } else={
+# v7.1.31: Content read with retry loop (flash content sync can lag behind metadata)
 :local prefix ""
+:local prefixRetry 0
+:while (([:len $prefix] = 0) && ($prefixRetry < 3)) do={
+:set prefixRetry ($prefixRetry + 1)
 :do { :set prefix [:pick [/file get $guardTempFile contents] 0 100] } on-error={}
+:if ([:len $prefix] = 0) do={
+:log info ("NAVSPOT-INSTALL: guardian content retry " . $prefixRetry . "/3")
+:delay 1500ms
+}
+}
 # v7.1.23: Enhanced validation
 :if (([:find $prefix "# NAME"] >= 0) || ([:find $prefix ":log info"] < 0)) do={
 :log error ("NAVSPOT-INSTALL: guardian content INVALIDO - header ou sem :log")
