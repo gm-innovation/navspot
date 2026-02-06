@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.32
+ * mikrotik-scripts v7.1.33
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -18,27 +18,23 @@ const corsHeaders = {
  *           "sync-raw" | "action-raw" | "action-aux-raw" | "guardian-raw" (default: "all")
  *   - token: sync_token for authentication
  * 
+ * v7.1.33: CRITICAL SIZE REDUCTION - action-processor must be <3KB for RouterOS 6.x
+ *   - RouterOS 6.x has ~3KB limit for /file get contents
+ *   - sync (2931 bytes) and guardian (1993 bytes) work because they're under limit
+ *   - action-processor was 4387 bytes = TOO BIG = content read returns empty
+ *   - Removed: add_firewall_block, add_firewall_allow (moved to AUX)
+ *   - Target: <2900 bytes for safety margin
+ * 
  * v7.1.32: CRITICAL FIX - Read full content BEFORE creating script
  *   - The :pick [contents] worked but [/file get contents] for script creation was still racing
  *   - Now we read FULL contents into $scriptContent with retry loop
  *   - Script is created from $scriptContent variable (not direct file read)
  *   - This eliminates the timing gap between validation and script creation
  * 
- * v7.1.31: CONTENT READ TIMING FIX for RouterOS 6.x
- *   - Increased post-fetch delay from 1500ms to 2500ms
- *   - Added retry loop (3 attempts) for CONTENT reading (not just size)
- *   - Fixes empty prefix on slow flash - file metadata available before content
- * 
- * v7.1.25: FILE READ TIMING FIX for RouterOS 6.x
- *   - Increased post-fetch delay from 700ms to 1500ms
- *   - Added retry loop (3 attempts) for file size validation
- *   - Added minimum size check (50 bytes) before content validation
- *   - Fixes 0-byte file reads on slow flash storage
- * 
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.32"
+const VERSION = "7.1.33"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -753,13 +749,19 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 
 /**
- * v7.1.23: COMPACTED Action Processor CORE (~3.1KB)
- * Contains only essential handlers:
- * - configure_hotspot_profile (critical for login-url)
- * - create_profile (robust 4-param parsing)
- * - create_user (core functionality)
+ * v7.1.33: ULTRA-COMPACT Action Processor CORE (<2.9KB)
  * 
- * NOTE: remove_user moved to AUX script to reduce size
+ * CRITICAL: RouterOS 6.x has ~3KB limit for /file get contents
+ * The 4387-byte version was too big, causing empty content reads.
+ * 
+ * Contains ONLY essential handlers:
+ * - configure_hotspot_profile (critical for login-url)
+ * - create_profile (minimal 3-param: name|rate|shared)
+ * - create_user (minimal: name|password|profile)
+ * - add_whitelist_domain (walled garden)
+ * 
+ * REMOVED (now in AUX):
+ * - add_firewall_block, add_firewall_allow
  */
 function generateActionProcessorCoreSource(): string {
   return `:log info "NAVSPOT-ACTION v${VERSION}"
@@ -792,115 +794,58 @@ function generateActionProcessorCoreSource(): string {
 :if (([:len $lu]>0)&&([:len $dn]>0)) do={
 :local hp [/ip hotspot profile find name="hsprof-navspot"]
 :if ([:len $hp]>0) do={
-:do {/ip hotspot profile set $hp login-url=$lu} on-error={}
-:do {/ip hotspot profile set $hp dns-name=$dn} on-error={}
-:do {/ip hotspot profile set $hp login-by=http-pap,http-chap} on-error={}
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap,http-chap
 :set cnt ($cnt+1)
-}}}
-} on-error={}
-}
+}}}} on-error={}}
 :if ($c="create_profile") do={
 :do {
 :local p2 [:find $r "|"]
 :if ($p2>=0) do={
 :local n [:pick $r 0 $p2]
-:if ([:len $n]>0) do={
 :local sub [:pick $r ($p2+1) [:len $r]]
 :local p3 [:find $sub "|"]
 :local rt ""
 :local sh "1"
-:if ($p3>=0) do={
-:set rt [:pick $sub 0 $p3]
-:local s2 [:pick $sub ($p3+1) [:len $sub]]
-:local p4 [:find $s2 "|"]
-:if ($p4>=0) do={:set sh [:pick $s2 0 $p4]} else={:set sh $s2}
-} else={:set rt $sub}
+:if ($p3>=0) do={:set rt [:pick $sub 0 $p3];:set sh [:pick $sub ($p3+1) [:len $sub]]} else={:set rt $sub}
 :local ex [/ip hotspot user profile find name=$n]
 :if ([:len $ex]>0) do={
-:if ([:len $rt]>0) do={:do {/ip hotspot user profile set $ex rate-limit=$rt} on-error={}}
-:do {/ip hotspot user profile set $ex shared-users=$sh} on-error={}
-:set cnt ($cnt+1)
+:if ([:len $rt]>0) do={/ip hotspot user profile set $ex rate-limit=$rt}
+/ip hotspot user profile set $ex shared-users=$sh
 } else={
-:if ([:len $rt]>0) do={
-:do {/ip hotspot user profile add name=$n rate-limit=$rt shared-users=$sh} on-error={}
-} else={
-:do {/ip hotspot user profile add name=$n shared-users=$sh} on-error={}
+:if ([:len $rt]>0) do={/ip hotspot user profile add name=$n rate-limit=$rt shared-users=$sh} else={/ip hotspot user profile add name=$n shared-users=$sh}
 }
 :set cnt ($cnt+1)
-}
-}}
-} on-error={}
-}
+}} on-error={}}
 :if ($c="create_user") do={
 :do {
 :local p2 [:find $r "|"]
 :if ($p2>=0) do={
 :local un [:pick $r 0 $p2]
-:if ([:len $un]>0) do={
 :local sub [:pick $r ($p2+1) [:len $r]]
 :local p3 [:find $sub "|"]
 :local pw ""
 :local pf "default"
-:if ($p3>=0) do={
-:set pw [:pick $sub 0 $p3]
-:set pf [:pick $sub ($p3+1) [:len $sub]]
-} else={:set pw $sub}
+:if ($p3>=0) do={:set pw [:pick $sub 0 $p3];:set pf [:pick $sub ($p3+1) [:len $sub]]} else={:set pw $sub}
 :if ([:len $pf]=0) do={:set pf "default"}
-:local pe [/ip hotspot user profile find name=$pf]
-:if ([:len $pe]=0) do={:do {/ip hotspot user profile add name=$pf} on-error={}}
+:do {/ip hotspot user profile add name=$pf} on-error={}
 :local ex [/ip hotspot user find name=$un]
 :if ([:len $ex]>0) do={
-:if ([:len $pw]>0) do={:do {/ip hotspot user set $ex password=$pw} on-error={}}
-:if (([:len $pf]>0)&&($pf!="default")) do={:do {/ip hotspot user set $ex profile=$pf} on-error={}}
-:set cnt ($cnt+1)
+:if ([:len $pw]>0) do={/ip hotspot user set $ex password=$pw}
+:if ($pf!="default") do={/ip hotspot user set $ex profile=$pf}
 } else={
-:if ([:len $pw]>0) do={
-:do {/ip hotspot user add name=$un password=$pw profile=$pf comment="navspot"} on-error={}
-:set cnt ($cnt+1)
-}}
-}}
-} on-error={}
+:if ([:len $pw]>0) do={/ip hotspot user add name=$un password=$pw profile=$pf comment="navspot"}
 }
+:set cnt ($cnt+1)
+}} on-error={}}
 :if (($c="create_whitelist_domain")||($c="add_whitelist_domain")) do={
 :do {
 :local dom $r
 :local p2 [:find $r "|"]
 :if ($p2>=0) do={:set dom [:pick $r ($p2+1) [:len $r]]}
 :if ([:len $dom]>0) do={
-:local dh ("*".$dom."*")
 :local wg [/ip hotspot walled-garden find dst-host~$dom]
-:if ([:len $wg]=0) do={
-:do {/ip hotspot walled-garden add dst-host=$dh action=allow comment="navspot"} on-error={}
-:set cnt ($cnt+1)
-}}} on-error={}
-}
-:if ($c="add_firewall_block") do={
-:do {
-:local dom $r
-:if ([:len $dom]>0) do={
-:local cmt ("NAVSPOT-BLOCK-".$dom)
-:local ex [/ip firewall filter find comment~$cmt]
-:if ([:len $ex]=0) do={
-:local fb [/ip firewall filter find comment="defconf: fasttrack"]
-:if ([:len $fb]>0) do={
-/ip firewall filter add chain=forward action=drop protocol=tcp dst-port=80,443 content=$dom comment=$cmt place-before=$fb
-} else={
-/ip firewall filter add chain=forward action=drop protocol=tcp dst-port=80,443 content=$dom comment=$cmt
-}
-:set cnt ($cnt+1)
-}}} on-error={}
-}
-:if ($c="add_firewall_allow") do={
-:do {
-:local dom $r
-:if ([:len $dom]>0) do={
-:local cmt ("NAVSPOT-ALLOW-".$dom)
-:local ex [/ip firewall filter find comment~$cmt]
-:if ([:len $ex]=0) do={
-/ip firewall filter add chain=forward action=accept content=$dom comment=$cmt
-:set cnt ($cnt+1)
-}}} on-error={}
-}
+:if ([:len $wg]=0) do={/ip hotspot walled-garden add dst-host=("*".$dom."*") action=allow comment="navspot";:set cnt ($cnt+1)}
+}} on-error={}}
 }}}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION v${VERSION}: OK - ".$cnt)`
