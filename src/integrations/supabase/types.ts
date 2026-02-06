@@ -480,8 +480,10 @@ export type Database = {
           initial_config_sent: boolean | null
           interface_wifi: string
           max_usuarios: number | null
+          migration_state: string | null
           nome: string
           rede: string
+          rede_prev: string | null
           ros_version: string | null
           script_gerado: string | null
           script_versao: number
@@ -504,8 +506,10 @@ export type Database = {
           initial_config_sent?: boolean | null
           interface_wifi?: string
           max_usuarios?: number | null
+          migration_state?: string | null
           nome: string
           rede?: string
+          rede_prev?: string | null
           ros_version?: string | null
           script_gerado?: string | null
           script_versao?: number
@@ -528,8 +532,10 @@ export type Database = {
           initial_config_sent?: boolean | null
           interface_wifi?: string
           max_usuarios?: number | null
+          migration_state?: string | null
           nome?: string
           rede?: string
+          rede_prev?: string | null
           ros_version?: string | null
           script_gerado?: string | null
           script_versao?: number
