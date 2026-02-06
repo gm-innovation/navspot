@@ -5,11 +5,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.1.48: State Reconciliation with lock auto-timeout support
-const VERSION = "7.1.48"
+// v7.1.49: State Reconciliation with native uptime-as-secs lock timeout
+const VERSION = "7.1.49"
 
-// v7.1.48: Required portal profile version - only marked after telemetry confirms
-const REQUIRED_PORTAL_VERSION = "7.1.48-http-pap"
+// v7.1.49: Required portal profile version - only marked after telemetry confirms
+const REQUIRED_PORTAL_VERSION = "7.1.49-http-pap"
 
 // v7.1.23: Sanitize pipe string for safe /file set contents in RouterOS
 // Removes characters that cause truncation or parsing errors
