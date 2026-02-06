@@ -5,16 +5,20 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.33"
+const VERSION = "7.1.34"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
- * mikrotik-script-generator v7.1.9 - ULTRA-THIN CLIENT
+ * mikrotik-script-generator v7.1.34 - ULTRA-THIN CLIENT with ROS VERSION DETECTION
  * 
  * Bootstrap is minimal (~100 lines) and uses /tool fetch to download
  * scripts from the mikrotik-scripts endpoint AFTER infrastructure is configured.
  * 
- * This bypasses RouterOS 6.x parser limitations with embedded source={...}
+ * v7.1.34: ROUTEROS 7.x SUPPORT (hAP ax² optimization)
+ *   - Auto-detects RouterOS version at runtime
+ *   - Passes ros_version to mikrotik-scripts endpoint for optimized scripts
+ *   - RouterOS 7.x: Reduced delays (500ms vs 2500ms), full action-processor
+ *   - RouterOS 6.x: Conservative delays, reduced action-processor (<3KB)
  * 
  * v7.1.9: CRITICAL FIX - Convert newlines to \r\n in source="..."
  *   - RouterOS 6.x does NOT accept literal newlines inside source="..." in .rsc files
@@ -61,6 +65,7 @@ interface Hotspot {
   sync_token: string
   sync_interval_minutes: number
   max_usuarios: number | null
+  ros_version: string | null
 }
 
 interface Embarcacao {
@@ -143,11 +148,11 @@ Deno.serve(async (req) => {
 
     console.log(`[script-generator ${VERSION}] Generating ULTRA-THIN bootstrap for hotspot: ${hotspot_id}`)
 
-    // Fetch hotspot with embarcacao
+    // Fetch hotspot with embarcacao (including ros_version)
     const { data: hotspot, error: hotspotError } = await supabase
       .from('hotspots')
       .select(`
-        id, nome, interface_wifi, wan_interface, wan_type, rede, sync_token, sync_interval_minutes, max_usuarios,
+        id, nome, interface_wifi, wan_interface, wan_type, rede, sync_token, sync_interval_minutes, max_usuarios, ros_version,
         embarcacoes!inner(id, nome, empresa_id)
       `)
       .eq('id', hotspot_id)

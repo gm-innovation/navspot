@@ -482,6 +482,7 @@ export type Database = {
           max_usuarios: number | null
           nome: string
           rede: string
+          ros_version: string | null
           script_gerado: string | null
           script_versao: number
           status: string
@@ -505,6 +506,7 @@ export type Database = {
           max_usuarios?: number | null
           nome: string
           rede?: string
+          ros_version?: string | null
           script_gerado?: string | null
           script_versao?: number
           status?: string
@@ -528,6 +530,7 @@ export type Database = {
           max_usuarios?: number | null
           nome?: string
           rede?: string
+          ros_version?: string | null
           script_gerado?: string | null
           script_versao?: number
           status?: string

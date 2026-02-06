@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.1.33
+ * mikrotik-scripts v7.1.34
  * 
  * Serves individual RouterOS scripts as pure RSC files.
  * This endpoint is called by the bootstrap via /tool fetch to download
@@ -17,6 +17,13 @@ const corsHeaders = {
  *           "sync-source" | "action-source" | "guardian-source" |
  *           "sync-raw" | "action-raw" | "action-aux-raw" | "guardian-raw" (default: "all")
  *   - token: sync_token for authentication
+ *   - ros_version: "6" | "7" | "auto" (default: "6") - RouterOS version for optimizations
+ * 
+ * v7.1.34: ROUTEROS 7.x SUPPORT (hAP ax² optimization)
+ *   - New ros_version parameter for version-specific optimizations
+ *   - RouterOS 7.x: Full action-processor (~4.5KB), reduced delays (500ms vs 2500ms)
+ *   - RouterOS 6.x: Reduced action-processor (<2.9KB), conservative delays
+ *   - Restored handlers for v7: add_firewall_block, add_firewall_allow
  * 
  * v7.1.33: CRITICAL SIZE REDUCTION - action-processor must be <3KB for RouterOS 6.x
  *   - RouterOS 6.x has ~3KB limit for /file get contents
@@ -25,17 +32,41 @@ const corsHeaders = {
  *   - Removed: add_firewall_block, add_firewall_allow (moved to AUX)
  *   - Target: <2900 bytes for safety margin
  * 
- * v7.1.32: CRITICAL FIX - Read full content BEFORE creating script
- *   - The :pick [contents] worked but [/file get contents] for script creation was still racing
- *   - Now we read FULL contents into $scriptContent with retry loop
- *   - Script is created from $scriptContent variable (not direct file read)
- *   - This eliminates the timing gap between validation and script creation
- * 
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.33"
+const VERSION = "7.1.34"
 const DEPLOYED_AT = new Date().toISOString()
+
+// RouterOS version-specific configuration
+interface ROSConfig {
+  delayAfterFetch: number      // ms after /tool fetch
+  delayAfterFileWrite: number  // ms after /file set contents
+  contentRetryCount: number    // max retries for content read
+  flashSyncDelay: number       // ms for flash sync
+  useFullActionProcessor: boolean // use full ~4.5KB vs reduced ~2.4KB
+}
+
+const ROS_CONFIGS: Record<string, ROSConfig> = {
+  '6': {
+    delayAfterFetch: 2500,
+    delayAfterFileWrite: 1500,
+    contentRetryCount: 3,
+    flashSyncDelay: 700,
+    useFullActionProcessor: false
+  },
+  '7': {
+    delayAfterFetch: 500,
+    delayAfterFileWrite: 300,
+    contentRetryCount: 1,
+    flashSyncDelay: 200,
+    useFullActionProcessor: true
+  }
+}
+
+function getROSConfig(rosVersion: string): ROSConfig {
+  return ROS_CONFIGS[rosVersion] || ROS_CONFIGS['6']
+}
 
 function maskToken(token: string): string {
   if (!token || token.length < 10) return '***'
@@ -105,6 +136,7 @@ Deno.serve(async (req) => {
     const url = new URL(req.url)
     const syncToken = url.searchParams.get('token')
     const scriptType = url.searchParams.get('type') || 'all'
+    const rosVersion = url.searchParams.get('ros_version') || '6'
 
     if (!syncToken) {
       console.error(`[mikrotik-scripts ${VERSION}] Missing token parameter`)
@@ -114,18 +146,18 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[mikrotik-scripts ${VERSION}] Request: type=${scriptType}, token=${maskToken(syncToken)}`)
+    console.log(`[mikrotik-scripts ${VERSION}] Request: type=${scriptType}, token=${maskToken(syncToken)}, ros=${rosVersion}`)
 
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    // Validate token and get hotspot info
+    // Validate token and get hotspot info (now includes ros_version)
     const { data: hotspot, error: hotspotError } = await supabase
       .from('hotspots')
       .select(`
-        id, nome, sync_token, sync_interval_minutes,
+        id, nome, sync_token, sync_interval_minutes, ros_version,
         embarcacoes!inner(id, nome, empresa_id)
       `)
       .eq('sync_token', syncToken)
@@ -139,7 +171,13 @@ Deno.serve(async (req) => {
       )
     }
 
-    console.log(`[mikrotik-scripts ${VERSION}] Generating scripts for: ${hotspot.nome}`)
+    // Use ros_version from hotspot config if not explicitly provided, fallback to parameter
+    const effectiveRosVersion = hotspot.ros_version === 'auto' 
+      ? rosVersion 
+      : (hotspot.ros_version || rosVersion)
+    const rosConfig = getROSConfig(effectiveRosVersion)
+
+    console.log(`[mikrotik-scripts ${VERSION}] Generating scripts for: ${hotspot.nome} (ROS=${effectiveRosVersion}, fullAP=${rosConfig.useFullActionProcessor})`)
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
     const syncUrl = `${supabaseUrl}/functions/v1/mikrotik-sync`
@@ -159,8 +197,11 @@ Deno.serve(async (req) => {
         }
         break
       case 'action-raw':
-        script = generateActionProcessorCoreSource()
-        console.log(`[mikrotik-scripts ${VERSION}] action-raw size: ${script.length} bytes`)
+        // v7.1.34: Use full or reduced action-processor based on ROS version
+        script = rosConfig.useFullActionProcessor 
+          ? generateActionProcessorFullSource()
+          : generateActionProcessorCoreSource()
+        console.log(`[mikrotik-scripts ${VERSION}] action-raw size: ${script.length} bytes (full=${rosConfig.useFullActionProcessor})`)
         break
       // v7.1.22: Auxiliary action handlers
       case 'action-aux-raw':
@@ -176,7 +217,7 @@ Deno.serve(async (req) => {
         script = generateSyncScript(syncUrl, syncToken)
         break
       case 'action-processor':
-        script = generateActionProcessorScript()
+        script = generateActionProcessorScript(rosConfig)
         break
       case 'guardian':
         script = generateGuardianScript(recoveryUrl, syncToken)
@@ -185,16 +226,16 @@ Deno.serve(async (req) => {
         script = generateSyncRSC(syncUrl, syncToken)
         break
       case 'action-source':
-        script = generateActionProcessorRSC()
+        script = generateActionProcessorRSC(rosConfig)
         break
       case 'guardian-source':
         script = generateGuardianRSC(recoveryUrl, syncToken)
         break
       
-      // v7.1.23: Updated installer with modularization + smoke test + safeguards
+      // v7.1.34: Updated installer with ROS version-specific timings
       case 'all':
       default:
-        script = generateAllScripts(supabaseUrl, syncToken, syncIntervalMinutes)
+        script = generateAllScripts(supabaseUrl, syncToken, syncIntervalMinutes, rosConfig, effectiveRosVersion)
         break
     }
 
@@ -220,10 +261,12 @@ Deno.serve(async (req) => {
 })
 
 /**
- * v7.1.23: REWRITTEN - Generate installer with COMPACTION + ENHANCED SAFEGUARDS
+ * v7.1.34: REWRITTEN - Generate installer with ROS VERSION-SPECIFIC TIMINGS
  * 
  * Key changes:
- *   - Unique temp file names with [:rndnum] for race-condition prevention
+ *   - ROS 7.x: Reduced delays (500ms vs 2500ms), full action-processor
+ *   - ROS 6.x: Conservative delays, reduced action-processor (<3KB)
+ *   - Unique temp file names with timestamp for race-condition prevention
  *   - Header detection (# NAME) to catch failed file set operations
  *   - Smoke test with $error capture for better diagnostics
  *   - Multi-line fallback with minimal escaping (~1.2KB)
@@ -231,9 +274,17 @@ Deno.serve(async (req) => {
 function generateAllScripts(
   supabaseUrl: string,
   syncToken: string,
-  syncIntervalMinutes: number
+  syncIntervalMinutes: number,
+  rosConfig: ROSConfig,
+  rosVersion: string
 ): string {
   const apiBase = `${supabaseUrl}/functions/v1`
+  
+  // Version-specific delays
+  const fetchDelay = rosConfig.delayAfterFetch
+  const writeDelay = rosConfig.delayAfterFileWrite
+  const maxRetries = rosConfig.contentRetryCount
+  const flashDelay = rosConfig.flashSyncDelay
   
   // v7.1.23: Multi-line fallback source (~1.2KB) - NO complex escaping
   // This fallback handles only create_profile and create_user
@@ -299,15 +350,16 @@ function generateAllScripts(
 
   return `# =========================================
 # NAVSPOT Scripts Installer v${VERSION}
-# AGGRESSIVE COMPACTION + ENHANCED SAFEGUARDS
+# ROS ${rosVersion} MODE - ${rosVersion === '7' ? 'OPTIMIZED' : 'COMPATIBLE'}
 # =========================================
-# _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
-:log info "NAVSPOT-INSTALL v${VERSION}: Iniciando instalacao..."
+# _build: ${VERSION} | deployed_at=${DEPLOYED_AT} | ros_version=${rosVersion}
+:log info "NAVSPOT-INSTALL v${VERSION}: Iniciando (ROS ${rosVersion} mode)..."
 
 # URLs construidas incrementalmente (limite 160 chars)
 :local apiBase "${apiBase}"
 :local ep "/mikrotik-scripts"
 :local tk "${syncToken}"
+:local rosV "${rosVersion}"
 
 # v7.1.24: Unique temp file names with timestamp (RouterOS 6.x compatible)
 # Note: :rndnum removed - only exists in RouterOS 7.x
@@ -340,11 +392,11 @@ function generateAllScripts(
 
 # ===== 1. SYNC SCRIPT (fetch raw source ~2.8KB) =====
 :log info "NAVSPOT-INSTALL: Baixando sync-raw..."
-:local syncRawUrl ($apiBase . $ep . "?type=sync-raw&token=" . $tk)
+:local syncRawUrl ($apiBase . $ep . "?type=sync-raw&token=" . $tk . "&ros_version=" . $rosV)
 :local syncTempFile ("ns-sync-" . $tsStr . ".src")
 :local syncOk false
 :local syncRetry 0
-:while (($syncRetry < 3) && ($syncOk = false)) do={
+:while (($syncRetry < ${maxRetries}) && ($syncOk = false)) do={
 :set syncRetry ($syncRetry + 1)
 :log info ("NAVSPOT-INSTALL: sync tentativa " . $syncRetry . "/3")
 :do {
@@ -356,8 +408,8 @@ function generateAllScripts(
 }
 }
 :if ($syncOk = true) do={
-# v7.1.31: Increased delay + retry loop for BOTH size AND content reading
-:delay 2500ms
+# v7.1.34: ROS version-specific delay (${fetchDelay}ms for ROS ${rosVersion})
+:delay ${fetchDelay}ms
 :local fsize 0
 :local readRetry 0
 :while (($fsize = 0) && ($readRetry < 3)) do={
@@ -374,15 +426,15 @@ function generateAllScripts(
 :log error ("NAVSPOT-INSTALL: sync arquivo muito pequeno ou vazio - " . $fsize . " bytes")
 :do { /file remove $syncTempFile } on-error={}
 } else={
-# v7.1.32: Read FULL content into variable with retry loop (eliminates timing gap)
+# v7.1.34: Read FULL content with ROS-specific delays
 :local scriptContent ""
 :local prefixRetry 0
-:while (([:len $scriptContent] < 50) && ($prefixRetry < 3)) do={
+:while (([:len $scriptContent] < 50) && ($prefixRetry < ${maxRetries})) do={
 :set prefixRetry ($prefixRetry + 1)
 :do { :set scriptContent [/file get $syncTempFile contents] } on-error={}
 :if ([:len $scriptContent] < 50) do={
-:log info ("NAVSPOT-INSTALL: sync content retry " . $prefixRetry . "/3 (" . [:len $scriptContent] . " bytes)")
-:delay 1500ms
+:log info ("NAVSPOT-INSTALL: sync content retry " . $prefixRetry . "/${maxRetries} (" . [:len $scriptContent] . " bytes)")
+:delay ${writeDelay}ms
 }
 }
 :local prefix [:pick $scriptContent 0 100]
@@ -406,15 +458,15 @@ function generateAllScripts(
 :log error "NAVSPOT-INSTALL: sync fetch falhou apos 3 tentativas"
 }
 
-# ===== 2. ACTION PROCESSOR CORE (fetch raw source ~3.1KB) =====
-:log info "NAVSPOT-INSTALL: Baixando action-raw (core)..."
-:local actionRawUrl ($apiBase . $ep . "?type=action-raw&token=" . $tk)
+# ===== 2. ACTION PROCESSOR ${rosConfig.useFullActionProcessor ? 'FULL' : 'CORE'} (ROS ${rosVersion}) =====
+:log info "NAVSPOT-INSTALL: Baixando action-raw (${rosConfig.useFullActionProcessor ? 'full ~4.5KB' : 'core ~2.4KB'})..."
+:local actionRawUrl ($apiBase . $ep . "?type=action-raw&token=" . $tk . "&ros_version=" . $rosV)
 :local actionTempFile ("ns-action-" . $tsStr . ".src")
 :local actionOk false
 :local actionRetry 0
-:while (($actionRetry < 3) && ($actionOk = false)) do={
+:while (($actionRetry < ${maxRetries}) && ($actionOk = false)) do={
 :set actionRetry ($actionRetry + 1)
-:log info ("NAVSPOT-INSTALL: action tentativa " . $actionRetry . "/3")
+:log info ("NAVSPOT-INSTALL: action tentativa " . $actionRetry . "/${maxRetries}")
 :do {
 /tool fetch url=$actionRawUrl check-certificate=no dst-path=$actionTempFile
 :set actionOk true
@@ -424,8 +476,8 @@ function generateAllScripts(
 }
 }
 :if ($actionOk = true) do={
-# v7.1.31: Increased delay + retry loop for BOTH size AND content reading
-:delay 2500ms
+# v7.1.34: ROS version-specific delay (${fetchDelay}ms for ROS ${rosVersion})
+:delay ${fetchDelay}ms
 :local fsize 0
 :local readRetry 0
 :while (($fsize = 0) && ($readRetry < 3)) do={
@@ -442,15 +494,15 @@ function generateAllScripts(
 :log error ("NAVSPOT-INSTALL: action arquivo muito pequeno ou vazio - " . $fsize . " bytes")
 :do { /file remove $actionTempFile } on-error={}
 } else={
-# v7.1.32: Read FULL content into variable with retry loop (eliminates timing gap)
+# v7.1.34: Read FULL content with ROS-specific delays
 :local scriptContent ""
 :local prefixRetry 0
-:while (([:len $scriptContent] < 50) && ($prefixRetry < 3)) do={
+:while (([:len $scriptContent] < 50) && ($prefixRetry < ${maxRetries})) do={
 :set prefixRetry ($prefixRetry + 1)
 :do { :set scriptContent [/file get $actionTempFile contents] } on-error={}
 :if ([:len $scriptContent] < 50) do={
-:log info ("NAVSPOT-INSTALL: action content retry " . $prefixRetry . "/3 (" . [:len $scriptContent] . " bytes)")
-:delay 1500ms
+:log info ("NAVSPOT-INSTALL: action content retry " . $prefixRetry . "/${maxRetries} (" . [:len $scriptContent] . " bytes)")
+:delay ${writeDelay}ms
 }
 }
 :local prefix [:pick $scriptContent 0 100]
@@ -521,13 +573,13 @@ function generateAllScripts(
 
 # ===== 3. GUARDIAN (fetch raw source ~2.5KB) =====
 :log info "NAVSPOT-INSTALL: Baixando guardian-raw..."
-:local guardRawUrl ($apiBase . $ep . "?type=guardian-raw&token=" . $tk)
+:local guardRawUrl ($apiBase . $ep . "?type=guardian-raw&token=" . $tk . "&ros_version=" . $rosV)
 :local guardTempFile ("ns-guard-" . $tsStr . ".src")
 :local guardOk false
 :local guardRetry 0
-:while (($guardRetry < 3) && ($guardOk = false)) do={
+:while (($guardRetry < ${maxRetries}) && ($guardOk = false)) do={
 :set guardRetry ($guardRetry + 1)
-:log info ("NAVSPOT-INSTALL: guardian tentativa " . $guardRetry . "/3")
+:log info ("NAVSPOT-INSTALL: guardian tentativa " . $guardRetry . "/${maxRetries}")
 :do {
 /tool fetch url=$guardRawUrl check-certificate=no dst-path=$guardTempFile
 :set guardOk true
@@ -537,8 +589,8 @@ function generateAllScripts(
 }
 }
 :if ($guardOk = true) do={
-# v7.1.31: Increased delay + retry loop for BOTH size AND content reading
-:delay 2500ms
+# v7.1.34: ROS version-specific delay (${fetchDelay}ms for ROS ${rosVersion})
+:delay ${fetchDelay}ms
 :local fsize 0
 :local readRetry 0
 :while (($fsize = 0) && ($readRetry < 3)) do={
@@ -555,15 +607,15 @@ function generateAllScripts(
 :log error ("NAVSPOT-INSTALL: guardian arquivo muito pequeno ou vazio - " . $fsize . " bytes")
 :do { /file remove $guardTempFile } on-error={}
 } else={
-# v7.1.32: Read FULL content into variable with retry loop (eliminates timing gap)
+# v7.1.34: Read FULL content with ROS-specific delays
 :local scriptContent ""
 :local prefixRetry 0
-:while (([:len $scriptContent] < 50) && ($prefixRetry < 3)) do={
+:while (([:len $scriptContent] < 50) && ($prefixRetry < ${maxRetries})) do={
 :set prefixRetry ($prefixRetry + 1)
 :do { :set scriptContent [/file get $guardTempFile contents] } on-error={}
 :if ([:len $scriptContent] < 50) do={
-:log info ("NAVSPOT-INSTALL: guardian content retry " . $prefixRetry . "/3 (" . [:len $scriptContent] . " bytes)")
-:delay 1500ms
+:log info ("NAVSPOT-INSTALL: guardian content retry " . $prefixRetry . "/${maxRetries} (" . [:len $scriptContent] . " bytes)")
+:delay ${writeDelay}ms
 }
 }
 :local prefix [:pick $scriptContent 0 100]
@@ -602,6 +654,7 @@ function generateAllScripts(
 
 :log info "=========================================="
 :log info "NAVSPOT-INSTALL v${VERSION}: INSTALACAO CONCLUIDA!"
+:log info "Mode: ROS ${rosVersion} (${rosConfig.useFullActionProcessor ? 'full action-processor' : 'reduced action-processor'})"
 :log info "Scripts: navspot-sync, navspot-action-processor, navspot-guardian"
 :log info "Schedulers: sync a cada ${syncIntervalMinutes}m, guardian a cada 10m"
 :log info "=========================================="
@@ -623,11 +676,13 @@ function generateSyncScript(syncUrl: string, syncToken: string): string {
 }
 
 /**
- * v7.1.18: LEGACY - Generate action-processor script using file-based approach
- * Kept for backwards compatibility
+ * v7.1.34: Generate action-processor script using file-based approach
+ * Uses full or reduced version based on ROS config
  */
-function generateActionProcessorScript(): string {
-  const source = generateActionProcessorCoreSource()
+function generateActionProcessorScript(rosConfig: ROSConfig): string {
+  const source = rosConfig.useFullActionProcessor 
+    ? generateActionProcessorFullSource()
+    : generateActionProcessorCoreSource()
   return generateScriptViaFile("navspot-action-processor", source)
 }
 
@@ -649,8 +704,10 @@ function generateSyncRSC(syncUrl: string, syncToken: string): string {
   return generateScriptViaFile("navspot-sync", source)
 }
 
-function generateActionProcessorRSC(): string {
-  const source = generateActionProcessorCoreSource()
+function generateActionProcessorRSC(rosConfig: ROSConfig): string {
+  const source = rosConfig.useFullActionProcessor 
+    ? generateActionProcessorFullSource()
+    : generateActionProcessorCoreSource()
   return generateScriptViaFile("navspot-action-processor", source)
 }
 
@@ -845,6 +902,152 @@ function generateActionProcessorCoreSource(): string {
 :if ([:len $dom]>0) do={
 :local wg [/ip hotspot walled-garden find dst-host~$dom]
 :if ([:len $wg]=0) do={/ip hotspot walled-garden add dst-host=("*".$dom."*") action=allow comment="navspot";:set cnt ($cnt+1)}
+}} on-error={}}
+}}}
+:set navspotLock "0"
+:log info ("NAVSPOT-ACTION v${VERSION}: OK - ".$cnt)`
+}
+
+/**
+ * v7.1.34: FULL Action Processor for RouterOS 7.x (~4.5KB)
+ * 
+ * RouterOS 7.x has NO buffer limit for /file get contents, so we can include
+ * ALL handlers including firewall rules that were removed from CORE.
+ * 
+ * Contains ALL handlers:
+ * - configure_hotspot_profile (critical for login-url)
+ * - create_profile (full: name|rate|shared)
+ * - create_user (full: name|password|profile)
+ * - add_whitelist_domain (walled garden)
+ * - add_firewall_block (restored from v7.1.32)
+ * - add_firewall_allow (restored from v7.1.32)
+ * - remove_user
+ * - disable_user / enable_user
+ * - kick_session
+ */
+function generateActionProcessorFullSource(): string {
+  return `:log info "NAVSPOT-ACTION v${VERSION}"
+:global navspotLock
+:if ($navspotLock="1") do={:return}
+:set navspotLock "1"
+:local f [/file find name="navspot-actions.txt"]
+:if ([:len $f]=0) do={:set navspotLock "0";:return}
+:local d ""
+:do {:set d [/file get $f contents]} on-error={:set navspotLock "0";:return}
+:do {/file remove $f} on-error={}
+:if ([:len $d]=0) do={:set navspotLock "0";:return}
+:local pos 0
+:local cnt 0
+:while ([:find $d ";" $pos]>=0) do={
+:local ep [:find $d ";" $pos]
+:local ln [:pick $d $pos $ep]
+:set pos ($ep+1)
+:if ([:len $ln]>0) do={
+:local p1 [:find $ln "|"]
+:if ($p1>=0) do={
+:local c [:pick $ln 0 $p1]
+:local r [:pick $ln ($p1+1) [:len $ln]]
+:if ($c="configure_hotspot_profile") do={
+:do {
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={
+:local lu [:pick $r 0 $p2]
+:local dn [:pick $r ($p2+1) [:len $r]]
+:if (([:len $lu]>0)&&([:len $dn]>0)) do={
+:local hp [/ip hotspot profile find name="hsprof-navspot"]
+:if ([:len $hp]>0) do={
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap,http-chap
+:set cnt ($cnt+1)
+}}}} on-error={}}
+:if ($c="create_profile") do={
+:do {
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={
+:local n [:pick $r 0 $p2]
+:local sub [:pick $r ($p2+1) [:len $r]]
+:local p3 [:find $sub "|"]
+:local rt ""
+:local sh "1"
+:if ($p3>=0) do={:set rt [:pick $sub 0 $p3];:set sh [:pick $sub ($p3+1) [:len $sub]]} else={:set rt $sub}
+:local ex [/ip hotspot user profile find name=$n]
+:if ([:len $ex]>0) do={
+:if ([:len $rt]>0) do={/ip hotspot user profile set $ex rate-limit=$rt}
+/ip hotspot user profile set $ex shared-users=$sh
+} else={
+:if ([:len $rt]>0) do={/ip hotspot user profile add name=$n rate-limit=$rt shared-users=$sh} else={/ip hotspot user profile add name=$n shared-users=$sh}
+}
+:set cnt ($cnt+1)
+}} on-error={}}
+:if ($c="create_user") do={
+:do {
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={
+:local un [:pick $r 0 $p2]
+:local sub [:pick $r ($p2+1) [:len $r]]
+:local p3 [:find $sub "|"]
+:local pw ""
+:local pf "default"
+:if ($p3>=0) do={:set pw [:pick $sub 0 $p3];:set pf [:pick $sub ($p3+1) [:len $sub]]} else={:set pw $sub}
+:if ([:len $pf]=0) do={:set pf "default"}
+:do {/ip hotspot user profile add name=$pf} on-error={}
+:local ex [/ip hotspot user find name=$un]
+:if ([:len $ex]>0) do={
+:if ([:len $pw]>0) do={/ip hotspot user set $ex password=$pw}
+:if ($pf!="default") do={/ip hotspot user set $ex profile=$pf}
+} else={
+:if ([:len $pw]>0) do={/ip hotspot user add name=$un password=$pw profile=$pf comment="navspot"}
+}
+:set cnt ($cnt+1)
+}} on-error={}}
+:if (($c="create_whitelist_domain")||($c="add_whitelist_domain")) do={
+:do {
+:local dom $r
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={:set dom [:pick $r ($p2+1) [:len $r]]}
+:if ([:len $dom]>0) do={
+:local wg [/ip hotspot walled-garden find dst-host~$dom]
+:if ([:len $wg]=0) do={/ip hotspot walled-garden add dst-host=("*".$dom."*") action=allow comment="navspot";:set cnt ($cnt+1)}
+}} on-error={}}
+:if ($c="add_firewall_block") do={
+:do {
+:local dom $r
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={:set dom [:pick $r ($p2+1) [:len $r]]}
+:if ([:len $dom]>0) do={
+:local cm ("NAVSPOT-BLOCK-".$dom)
+:local ex [/ip firewall filter find comment=$cm]
+:if ([:len $ex]=0) do={
+/ip firewall filter add chain=forward content=$dom action=drop comment=$cm place-before=0
+:set cnt ($cnt+1)
+}}} on-error={}}
+:if ($c="add_firewall_allow") do={
+:do {
+:local dom $r
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={:set dom [:pick $r ($p2+1) [:len $r]]}
+:if ([:len $dom]>0) do={
+:local cm ("NAVSPOT-ALLOW-".$dom)
+:local ex [/ip firewall filter find comment=$cm]
+:if ([:len $ex]=0) do={
+/ip firewall filter add chain=forward content=$dom action=accept comment=$cm place-before=0
+:set cnt ($cnt+1)
+}}} on-error={}}
+:if ($c="remove_user") do={
+:do {
+:if ([:len $r]>0) do={
+:local ex [/ip hotspot user find name=$r]
+:if ([:len $ex]>0) do={/ip hotspot user remove $ex;:set cnt ($cnt+1)}
+}} on-error={}}
+:if ($c="disable_user") do={
+:do {:if ([:len $r]>0) do={/ip hotspot user set [find name=$r] disabled=yes;:set cnt ($cnt+1)}} on-error={}}
+:if ($c="enable_user") do={
+:do {:if ([:len $r]>0) do={/ip hotspot user set [find name=$r] disabled=no;:set cnt ($cnt+1)}} on-error={}}
+:if ($c="kick_session") do={
+:do {
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={
+:local mac [:pick $r ($p2+1) [:len $r]]
+:if ([:len $mac]>0) do={/ip hotspot active remove [find mac-address=$mac];:set cnt ($cnt+1)}
 }} on-error={}}
 }}}
 :set navspotLock "0"

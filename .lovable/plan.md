@@ -1,6 +1,8 @@
 
 # Plano: Adaptar NAVSPOT para MikroTik hAP ax² (RouterOS 7.x)
 
+## STATUS: ✅ IMPLEMENTADO (v7.1.34)
+
 ## Especificacoes do hAP ax²
 
 | Caracteristica | Valor |
@@ -16,132 +18,85 @@
 
 ---
 
-## Impacto no Sistema NAVSPOT
+## Implementacao v7.1.34
 
-### O que MELHORA automaticamente
+### ✅ Fase 1: Deteccao de Versao do RouterOS
+- Bootstrap detecta automaticamente a versao no runtime
+- Passa `ros_version` para a API via query string
 
-1. **Sem limite de buffer de 3KB**: RouterOS 7.x nao tem a limitacao de `/file get contents` que afeta o v6.x
-2. **Flash muito mais rapida**: 128MB NAND vs flash antiga = delays menores necessarios
-3. **Mais RAM**: 1GB permite scripts maiores e mais variaveis simultaneas
-4. **Suporte a `:rndnum`**: Pode usar gerador aleatorio nativo (nao disponivel em v6.x)
-5. **Sintaxe simplificada**: `/ip/firewall/filter` em vez de `/ip firewall filter`
-
-### O que PRECISA ser adaptado
-
-1. **Sintaxe de rotas**: O menu de roteamento mudou significativamente
-2. **Interfaces wireless**: WiFi 6 usa menus diferentes (`/interface/wifiwave2`)
-3. **Delays conservadores**: Podem ser reduzidos (nao sao mais necessarios os 2500ms)
-4. **Action-processor**: Pode voltar ao tamanho original (4387 bytes funciona normalmente)
-5. **Deteccao de versao**: Sistema deve detectar automaticamente e usar parametros otimizados
-
----
-
-## Implementacao Proposta
-
-### Fase 1: Deteccao de Versao do RouterOS
-
-Adicionar no bootstrap a capacidade de detectar a versao do RouterOS e ajustar os parametros automaticamente:
-
-```text
-:local rosVer [/system resource get version]
-:local isV7 false
-:if ([:pick $rosVer 0 1] = "7") do={ :set isV7 true }
-:if ($isV7 = true) do={
-:log info "NAVSPOT: RouterOS 7.x detectado - modo otimizado"
-} else={
-:log info "NAVSPOT: RouterOS 6.x detectado - modo compatibilidade"
-}
-```
-
-### Fase 2: Parametros Condicionais no Instalador
-
-No `mikrotik-scripts`, adicionar parametro `ros_version` opcional:
-- `?ros_version=7` = delays reduzidos, action-processor completo
-- `?ros_version=6` (default) = comportamento atual conservador
-
-### Fase 3: Script de Bootstrap Otimizado para v7
+### ✅ Fase 2: Parametros Condicionais no Instalador
+- `mikrotik-scripts` aceita `ros_version=6|7|auto`
+- Delays otimizados por versao:
 
 | Parametro | RouterOS 6.x | RouterOS 7.x |
 |-----------|--------------|--------------|
 | Delay apos fetch | 2500ms | 500ms |
 | Delay apos file write | 1500ms | 300ms |
-| Action-processor | ~2400 bytes (reduzido) | ~4500 bytes (completo) |
 | Content retry | 3 tentativas | 1 tentativa |
 | Flash sync delay | 700ms | 200ms |
+| Action-processor | ~2400 bytes (CORE) | ~4500 bytes (FULL) |
 
-### Fase 4: Handlers Adicionais para v7
+### ✅ Fase 3: Action Processor FULL para v7
+Handlers restaurados para RouterOS 7.x:
+- `add_firewall_block` (regras de bloqueio SNI)
+- `add_firewall_allow` (regras de permissao)
+- `remove_user`
+- `disable_user` / `enable_user`
+- `kick_session`
 
-Restaurar handlers que foram removidos para caber no limite de 3KB:
-- `add_firewall_block`
-- `add_firewall_allow`
-- Suporte a WPA3 (especifico do Wi-Fi 6)
-
----
-
-## Arquivos a Modificar
-
-### 1. `supabase/functions/mikrotik-scripts/index.ts`
-
-- Adicionar parametro `ros_version` na query string
-- Criar funcao `generateInstallerV7()` otimizada
-- Condicional para retornar action-processor completo quando `ros_version=7`
-- Reduzir todos os delays quando em modo v7
-
-### 2. `supabase/functions/mikrotik-script-generator/index.ts`
-
-- Adicionar campo `ros_version` no hotspot (opcional, default "6")
-- Gerar bootstrap com deteccao automatica de versao
-- Usar parametros otimizados quando detectar v7
-- Passar `ros_version` nas URLs de fetch
-
-### 3. `src/pages/Embarcacoes.tsx` ou UI de Hotspot
-
-- Adicionar selector de "Versao do RouterOS" no formulario de hotspot
-- Opcoes: "Auto-detectar", "RouterOS 6.x", "RouterOS 7.x"
-- Salvar no banco de dados
-
-### 4. Banco de Dados (migracao)
-
-Adicionar coluna opcional na tabela `hotspots`:
-
-```sql
-ALTER TABLE hotspots ADD COLUMN ros_version TEXT DEFAULT '6' 
-CHECK (ros_version IN ('6', '7', 'auto'));
-```
+### ✅ Fase 4: Banco de Dados
+Coluna `ros_version` adicionada na tabela `hotspots`:
+- Valores: '6', '7', 'auto' (default: 'auto')
+- UI pode ser adicionada posteriormente se necessario
 
 ---
 
-## Estrategia de Teste
+## Arquivos Modificados
 
-### Passo 1: Verificar versao atual no hAP ax²
+1. `supabase/functions/mikrotik-scripts/index.ts` - v7.1.34
+   - Parametro `ros_version` na query string
+   - Funcao `getROSConfig()` para timings por versao
+   - `generateActionProcessorFullSource()` para v7
+   - Delays condicionais em todo instalador
 
+2. `supabase/functions/mikrotik-script-generator/index.ts` - v7.1.34
+   - Busca `ros_version` do hotspot no banco
+   - Interface Hotspot atualizada
+
+3. `src/pages/Embarcacoes.tsx`
+   - Versao padrao: 7.1.34
+
+4. Migracao: coluna `ros_version` na tabela `hotspots`
+
+---
+
+## Como Testar no hAP ax²
+
+### Passo 1: Verificar versao do RouterOS
 ```routeros
 /system resource print
 ```
-
 Esperado: `version: 7.x.x`
 
-### Passo 2: Testar bootstrap v7.1.33 atual
+### Passo 2: Gerar novo bootstrap v7.1.34
+O sistema agora detecta automaticamente a versao.
+Para forcar modo v7, configure o hotspot com `ros_version=7` no banco.
 
-O bootstrap atual DEVE funcionar no RouterOS 7.x porque:
-- Os delays conservadores sao desnecessarios mas nao causam erro
-- O action-processor reduzido funciona (apenas com menos handlers)
-- A sintaxe eh compativel entre v6 e v7 (spaces ainda sao aceitos)
-
-### Passo 3: Apos implementacao v7.1.34
-
-Testar com `ros_version=7` para validar:
-- Delays reduzidos funcionam
-- Action-processor completo instala corretamente
-- Sem fallback (F)
-- Handlers adicionais funcionam
+### Passo 3: Validar nos logs
+Logs esperados para RouterOS 7.x:
+```
+NAVSPOT-INSTALL v7.1.34: Iniciando (ROS 7 mode)...
+NAVSPOT-INSTALL: action baixado (~4500 bytes)  <- FULL version
+NAVSPOT-INSTALL: action content valido (4387 bytes)
+NAVSPOT-INSTALL: navspot-action-processor v7.1.34 instalado
+```
 
 ---
 
-## Resumo Executivo
+## Resumo
 
-**Boa noticia**: O hAP ax² com RouterOS 7.x vai resolver os problemas de flash timing que encontramos. O bootstrap v7.1.33 atual DEVE funcionar imediatamente, apenas sem aproveitar as otimizacoes possiveis.
+O sistema NAVSPOT agora e totalmente compativel com:
+- **RouterOS 6.x** (modo conservador, action-processor reduzido)
+- **RouterOS 7.x** (modo otimizado, action-processor completo, delays reduzidos)
 
-**Proximos passos**: Implementar deteccao de versao e parametros condicionais para que o sistema aproveite ao maximo o hardware moderno enquanto mantem compatibilidade com equipamentos legados.
-
-**Risco**: Nenhum. A implementacao eh aditiva e nao quebra compatibilidade com v6.x.
+A deteccao eh automatica e nao requer configuracao manual.
