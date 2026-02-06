@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.45"
+const VERSION = "7.1.46"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -445,8 +445,11 @@ ${migrationCommands}
 :log info "NAVSPOT: Nenhuma interface WiFi detectada"
 }
 
-# 10. HOTSPOT MINIMO v7.1 (SEM login-url - sera configurada via sync)
+# 10. HOTSPOT MINIMO v7.1.46 (SEM login-url - sera configurada via sync)
 :do { /ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} } on-error={}
+# v7.1.46: Garantir login-by correto desde o inicio
+/ip hotspot profile set [find name="hsprof-navspot"] login-by="cookie,http-pap"
+:log info "NAVSPOT v${VERSION}: login-by=cookie,http-pap aplicado"
 :do { /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no } on-error={}
 :log info "NAVSPOT v${VERSION}: Hotspot criado (aguardando config via sync)"
 

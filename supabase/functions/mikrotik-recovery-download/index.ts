@@ -16,7 +16,7 @@ const corsHeaders = {
  * Also called by authenticated users from admin panel to download recovery scripts.
  */
 
-const VERSION = "7.1.0"
+const VERSION = "7.1.46"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -239,6 +239,17 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 :do { /file remove "ns-install.rsc" } on-error={}
 :log info "NAVSPOT-RECOVERY v${VERSION}: Scripts instalados!"
 
+# 2.5. CORRIGIR LOGIN-BY IMEDIATAMENTE (v7.1.46 freio de emergencia)
+:log info "NAVSPOT-RECOVERY v${VERSION}: Aplicando login-by=cookie,http-pap..."
+:local hp ""
+:local hs [/ip hotspot find name="hs-navspot"]
+:if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
+:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
+:if ([:len $hp]>0) do={
+/ip hotspot profile set $hp login-by="cookie,http-pap"
+:log info ("NAVSPOT-RECOVERY: login-by corrigido em ".[/ip hotspot profile get $hp name])
+}
+
 # 3. EXECUTAR SYNC PARA RECEBER CONFIGURACAO
 :log info "NAVSPOT-RECOVERY v${VERSION}: Executando sync para receber config..."
 :delay 2s
@@ -248,6 +259,7 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
 :log info "Arquitetura: Fetch + Import (sem source={} embutido)"
 :log info "NOTE: initial_config_sent resetado no servidor"
+:log info "NOTE: login-by=cookie,http-pap aplicado localmente"
 :log info "NOTE: Sync ira injetar login-url + walled-garden"
 :log info "=========================================="
 `

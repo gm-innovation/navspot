@@ -5,11 +5,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.1.45: Split login-by command for robust parsing
-const VERSION = "7.1.45"
+// v7.1.46: State Reconciliation - telemetry-based confirmation
+const VERSION = "7.1.46"
 
-// v7.1.45: Required portal profile version - forces reconfigure when changed
-const REQUIRED_PORTAL_VERSION = "7.1.45-http-pap"
+// v7.1.46: Required portal profile version - only marked after telemetry confirms
+const REQUIRED_PORTAL_VERSION = "7.1.46-http-pap"
 
 // v7.1.23: Sanitize pipe string for safe /file set contents in RouterOS
 // Removes characters that cause truncation or parsing errors
@@ -1047,12 +1047,24 @@ Deno.serve(async (req) => {
       console.log(`[mikrotik-sync] v7.0: Injected initial config for ${hotspot.nome}`)
     }
 
-    // v7.1.42: Rollout mechanism - force reconfigure when portal_profile_version changes
-    const currentPortalVersion = (hotspot as any).portal_profile_version || null
-    if (currentPortalVersion !== REQUIRED_PORTAL_VERSION) {
-      console.log(`[mikrotik-sync] v7.1.42: Portal version mismatch (${currentPortalVersion} vs ${REQUIRED_PORTAL_VERSION}) - forcing reconfigure`)
+    // v7.1.46: State Reconciliation - use telemetry to confirm configuration
+    const hotspotLoginBy = (payload as any).hotspot_login_by || ''
+    const hotspotLoginUrl = (payload as any).hotspot_login_url || ''
+
+    console.log(`[mikrotik-sync] v7.1.46: Telemetry - login_by="${hotspotLoginBy}", login_url="${hotspotLoginUrl.slice(0, 50)}..."`)
+
+    // Determine if portal needs repair based on actual state
+    const hasChap = hotspotLoginBy.includes('http-chap')
+    const hasPap = hotspotLoginBy.includes('http-pap')
+    const hasValidUrl = hotspotLoginUrl.length >= 10
+
+    // v7.1.46: Repair needed if CHAP present, PAP missing, or URL missing
+    const needsPortalRepair = hasChap || !hasPap || !hasValidUrl
+
+    if (needsPortalRepair) {
+      console.log(`[mikrotik-sync] v7.1.46: Portal repair needed - hasChap=${hasChap}, hasPap=${hasPap}, hasValidUrl=${hasValidUrl}`)
       
-      // Inject configure_hotspot_profile at the TOP of actions
+      // Inject configure_hotspot_profile at TOP of actions
       const hotspotSlug = hotspot.nome.toLowerCase()
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
         .replace(/\s+/g, '-')
@@ -1066,13 +1078,28 @@ Deno.serve(async (req) => {
         payload: { login_url: loginUrl, dns_name: dnsName }
       })
       
-      // Update portal_profile_version after injecting action
-      await supabase
-        .from('hotspots')
-        .update({ portal_profile_version: REQUIRED_PORTAL_VERSION })
-        .eq('id', hotspot.id)
+      // v7.1.46: Do NOT update portal_profile_version - wait for confirmation
+      // If it was already marked, reset to force recheck next sync
+      const currentVersion = (hotspot as any).portal_profile_version
+      if (currentVersion === REQUIRED_PORTAL_VERSION) {
+        await supabase
+          .from('hotspots')
+          .update({ portal_profile_version: null })
+          .eq('id', hotspot.id)
+        console.log(`[mikrotik-sync] v7.1.46: Reset portal_profile_version to null (awaiting telemetry confirmation)`)
+      }
       
-      console.log(`[mikrotik-sync] v7.1.42: Injected rollout configure_hotspot_profile for ${hotspot.nome}`)
+      console.log(`[mikrotik-sync] v7.1.46: Injected configure_hotspot_profile for ${hotspot.nome}`)
+    } else {
+      // v7.1.46: Configuration confirmed via telemetry - mark as complete
+      const currentVersion = (hotspot as any).portal_profile_version
+      if (currentVersion !== REQUIRED_PORTAL_VERSION) {
+        await supabase
+          .from('hotspots')
+          .update({ portal_profile_version: REQUIRED_PORTAL_VERSION })
+          .eq('id', hotspot.id)
+        console.log(`[mikrotik-sync] v7.1.46: Portal configuration confirmed via telemetry - marked as ${REQUIRED_PORTAL_VERSION}`)
+      }
     }
 
     // Fetch and process firewall rules for this empresa
