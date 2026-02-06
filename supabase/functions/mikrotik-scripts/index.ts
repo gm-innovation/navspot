@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.42"
+const VERSION = "7.1.43"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -857,7 +857,7 @@ function generateActionProcessorCoreSource(): string {
 :local dn [:pick $r ($p2+1) [:len $r]]
 :if (([:len $lu]>0)&&([:len $dn]>0)) do={
 :local hp ""
-:local hs [/ip hotspot find name="navspot"]
+:local hs [/ip hotspot find name="hs-navspot"]
 :if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
@@ -965,7 +965,7 @@ function generateActionProcessorFullSource(): string {
 :local dn [:pick $r ($p2+1) [:len $r]]
 :if (([:len $lu]>0)&&([:len $dn]>0)) do={
 :local hp ""
-:local hs [/ip hotspot find name="navspot"]
+:local hs [/ip hotspot find name="hs-navspot"]
 :if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
@@ -1178,7 +1178,7 @@ function generateGuardianSource(recoveryUrl: string, syncToken: string): string 
 :if ([:len $apScript]=0) do={:set needsRepair 1;:set missing ($missing."action ")}
 :if ([:len $syncSched]=0) do={:set needsRepair 1;:set missing ($missing."sched ")}
 :local hsprof ""
-:local hs [/ip hotspot find name="navspot"]
+:local hs [/ip hotspot find name="hs-navspot"]
 :if ([:len $hs]>0) do={:set hsprof [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
 :if ([:len $hsprof]=0) do={:set hsprof [/ip hotspot profile find name="hsprof-navspot"]}
 :local loginUrl ""
