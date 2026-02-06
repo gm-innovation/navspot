@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.48"
+const VERSION = "7.1.49"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -728,26 +728,21 @@ function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
  * - Simplified retry logic
  */
 function generateSyncSource(syncUrl: string, syncToken: string): string {
-  // v7.1.48: Added auto-timeout for lock (5 min) to prevent deadlocks
+  // v7.1.49: Lock timeout using native uptime-as-secs (RouterOS 7.x)
   return `:log info "NAVSPOT-SYNC v${VERSION}"
 :global navspotSyncLock
 :global navspotSyncLockTime
 :if ([:len $navspotSyncLock]=0) do={:set navspotSyncLock "0"}
 :if ([:len $navspotSyncLockTime]=0) do={:set navspotSyncLockTime 0}
-:local ct ([/system clock get time])
-:local cs (([:pick $ct 0 2]*3600)+([:pick $ct 3 5]*60)+([:pick $ct 6 8]))
+:local us [/system resource get uptime-as-secs]
 :if ($navspotSyncLock="1") do={
-:local la ($cs - $navspotSyncLockTime)
-:if ($la < 0) do={:set la ($la + 86400)}
+:local la ($us - $navspotSyncLockTime)
 :if ($la > 300) do={
 :log warning "NAVSPOT-SYNC: lock expirado (age=".$la."s), resetando"
 :set navspotSyncLock "0"
-} else={
-:log info "NAVSPOT-SYNC: locked"
-:return
-}}
+} else={:log info "NAVSPOT-SYNC: locked";:return}}
 :set navspotSyncLock "1"
-:set navspotSyncLockTime $cs
+:set navspotSyncLockTime $us
 :local tk ""
 :do {:set tk [/file get "navspot-token.txt" contents]} on-error={}
 :if ([:len $tk]<10) do={:set tk "${syncToken}"}
