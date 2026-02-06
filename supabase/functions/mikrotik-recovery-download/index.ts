@@ -16,7 +16,7 @@ const corsHeaders = {
  * Also called by authenticated users from admin panel to download recovery scripts.
  */
 
-const VERSION = "7.1.47"
+const VERSION = "7.1.48"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
