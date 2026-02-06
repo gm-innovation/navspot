@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.45"
+const VERSION = "7.1.46"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -728,6 +728,7 @@ function generateGuardianRSC(recoveryUrl: string, syncToken: string): string {
  * - Simplified retry logic
  */
 function generateSyncSource(syncUrl: string, syncToken: string): string {
+  // v7.1.46: Added telemetry for hotspot_login_by and hotspot_login_url
   return `:log info "NAVSPOT-SYNC v${VERSION}"
 :global navspotSyncLock
 :if ([:len $navspotSyncLock]=0) do={:set navspotSyncLock "0"}
@@ -748,7 +749,18 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :foreach i in=[find where dynamic=no] do={:set r ($r.[get $i name].",")}
 /ip hotspot user profile
 :foreach x in=[find] do={:set p ($p.[get $x name].",")}
-:local b ("{".$q."sync_token".$q.":".$q.$tk.$q.",".$q."active_users_csv".$q.":".$q.$u.$q.",".$q."registered_users_csv".$q.":".$q.$r.$q.",".$q."registered_profiles_csv".$q.":".$q.$p.$q."}")
+# v7.1.46: Collect profile state for telemetry
+:local hp ""
+:local hs [/ip hotspot find name="hs-navspot"]
+:if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
+:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
+:local hlb ""
+:local hlu ""
+:if ([:len $hp]>0) do={
+:set hlb [/ip hotspot profile get $hp login-by]
+:set hlu [/ip hotspot profile get $hp login-url]
+}
+:local b ("{".$q."sync_token".$q.":".$q.$tk.$q.",".$q."active_users_csv".$q.":".$q.$u.$q.",".$q."registered_users_csv".$q.":".$q.$r.$q.",".$q."registered_profiles_csv".$q.":".$q.$p.$q.",".$q."hotspot_login_by".$q.":".$q.$hlb.$q.",".$q."hotspot_login_url".$q.":".$q.$hlu.$q."}")
 :local ok false
 # v7.1.36: Arquivo de resposta unico com timestamp
 :local ts [/system clock get time]
