@@ -1,123 +1,143 @@
 
-# Plano: v7.1.44 IMPLEMENTADO ✅
+# Plano: Correção v7.1.45 - login-by="cookie,http-pap" com Comandos Separados
 
-## Status: CONCLUÍDO
+## Problema Identificado
 
-A correção cirúrgica para escrita limpa de arquivos no RouterOS 7.x foi implementada com sucesso.
-
----
-
-## Problema Resolvido
-
-O RouterOS 7.x injetava header automático quando arquivos eram criados via `/file print`:
-
-```
-NAVSPOT-SYNC: write try=1 len=69 fc=[#] pf=[# 2026-02-06 15:07:49 by RouterOS 7.14.3
-# software id = RCRS-VEA0
-```
-
-O validador (`fc!="#"`) corretamente rejeitava, impedindo a execução das ações.
-
----
-
-## Solução Implementada
-
-### Mudança no sync-raw (mikrotik-scripts)
-
-**ANTES (linhas 780-782):**
+Analisando os logs, a ação `configure_hotspot_profile` está sendo processada, mas o comando atual:
 ```routeros
-:do {/file remove "navspot-actions.txt"} on-error={}
-/file print file=navspot-actions.txt where name="__never__"
-:delay 700ms
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap
 ```
 
-**DEPOIS:**
+Tem dois problemas:
+1. **`http-pap` sozinho não é valor completo** - RouterOS espera lista de métodos
+2. **Comando muito longo** - URL extensa pode causar problemas de parsing
+
+## Solução: Mudança Cirúrgica
+
+### Separar comandos e adicionar aspas + cookie:
+
 ```routeros
-:do {/file remove "navspot-actions.txt"} on-error={}
-:delay 200ms
-```
+# Antes (linha única, sem cookie, sem aspas):
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap
 
-**ANTES (linha 787):**
-```routeros
-:do {/file set [find name="navspot-actions.txt"] contents=$a} on-error={}
+# Depois (duas linhas, com cookie, com aspas):
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn
+/ip hotspot profile set $hp login-by="cookie,http-pap"
+:log info ("NAVSPOT: login-by=cookie,http-pap aplicado em ".[/ip hotspot profile get $hp name])
 ```
-
-**DEPOIS:**
-```routeros
-:do {:local ef [/file find name="navspot-actions.txt"];:if ([:len $ef]=0) do={/file add name="navspot-actions.txt" contents=$a} else={/file set $ef contents=$a}} on-error={}
-```
-
-**Lógica:**
-1. Remove arquivo antigo (se existir)
-2. Delay curto para sync do filesystem
-3. No loop de retry: Se arquivo não existe, usa `/file add contents=$a` (limpo). Se existe, usa `/file set`
 
 ---
 
 ## Arquivos Modificados
 
-| Arquivo | Mudança |
-|---------|---------|
-| `supabase/functions/mikrotik-scripts/index.ts` | VERSION 7.1.44 + linhas 780-787 (escrita limpa) |
-| `supabase/functions/mikrotik-sync/index.ts` | VERSION 7.1.44 + REQUIRED_PORTAL_VERSION 7.1.44-http-pap |
-| `supabase/functions/mikrotik-script-generator/index.ts` | VERSION 7.1.44 |
-| `src/pages/Embarcacoes.tsx` | VERSION 7.1.44 |
-| Migration SQL | Reset portal_profile_version = NULL (automático) |
+### 1. supabase/functions/mikrotik-scripts/index.ts
+
+| Linha | Mudança |
+|-------|---------|
+| 38 | `VERSION = "7.1.44"` → `VERSION = "7.1.45"` |
+| 851-865 | Action Processor CORE - separar comando login-by |
+| 959-973 | Action Processor FULL - separar comando login-by |
+
+**Código CORE (linhas 851-867) - DEPOIS:**
+```routeros
+:if ($c="configure_hotspot_profile") do={
+:do {
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={
+:local lu [:pick $r 0 $p2]
+:local dn [:pick $r ($p2+1) [:len $r]]
+:if (([:len $lu]>0)&&([:len $dn]>0)) do={
+:local hp ""
+:local hs [/ip hotspot find name="hs-navspot"]
+:if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
+:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
+:if ([:len $hp]>0) do={
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn
+/ip hotspot profile set $hp login-by="cookie,http-pap"
+:log info ("NAVSPOT: login-by=cookie,http-pap aplicado em ".[/ip hotspot profile get $hp name])
+:set cnt ($cnt+1)
+}}}} on-error={}}
+```
+
+**Código FULL (linhas 959-975) - Mesma estrutura**
+
+### 2. supabase/functions/mikrotik-sync/index.ts
+
+| Linha | Mudança |
+|-------|---------|
+| 8-9 | Comentário + `VERSION = "7.1.45"` |
+| 11-12 | `REQUIRED_PORTAL_VERSION = "7.1.45-http-pap"` |
+
+### 3. supabase/functions/mikrotik-script-generator/index.ts
+
+| Linha | Mudança |
+|-------|---------|
+| 8 | `VERSION = "7.1.45"` |
+
+### 4. src/pages/Embarcacoes.tsx
+
+| Linha | Mudança |
+|-------|---------|
+| 67 | `currentScriptVersion = "7.1.45"` |
+
+### 5. Migration SQL (Automática)
+
+```sql
+-- v7.1.45: Force reconfigure with cookie,http-pap
+UPDATE public.hotspots 
+SET portal_profile_version = NULL 
+WHERE portal_profile_version IS NOT NULL;
+```
 
 ---
 
-## O Que NÃO Mudou (Preservado)
+## Por que essa correção funciona?
 
-- ✅ Lógica de retry (3 tentativas)
-- ✅ Validação do conteúdo (`fc!="#"`, `[:len $sv]>=12`, `[:find $sv "|"]>=0`)
-- ✅ Logs de warning em caso de falha
-- ✅ Execução do action-processor
-- ✅ Todas as outras funções do sistema
+1. **Aspas ao redor de "cookie,http-pap"**: Garante que o RouterOS trate como argumento único
+2. **cookie + http-pap**: Permite sessões persistentes via cookie E autenticação PAP (sem CHAP)
+3. **Comandos separados**: Evita problemas de parsing quando a URL é muito longa
+4. **Log de confirmação**: Prova que o comando foi executado com sucesso
 
 ---
 
 ## Fluxo Após Deploy
 
 ```text
-1. Migration resetou portal_profile_version = NULL automaticamente
+1. Migration reseta portal_profile_version = NULL
 
-2. MikroTik faz sync
-   |-- Backend detecta: portal_profile_version = NULL
+2. MikroTik faz sync (a cada 1 minuto)
+   |-- Backend detecta: portal_profile_version != "7.1.45-http-pap"
    |-- Injeta: configure_hotspot_profile
 
-3. Sync-raw executa:
-   |-- Remove arquivo antigo
-   |-- /file add name=... contents=$a (SEM HEADER!)
-   |-- Valida: fc != "#" -> PASSA!
-   |-- Executa action-processor
+3. Action-processor executa:
+   |-- Linha 1: /ip hotspot profile set $hp login-url=$lu dns-name=$dn
+   |-- Linha 2: /ip hotspot profile set $hp login-by="cookie,http-pap"
+   |-- Log: "NAVSPOT: login-by=cookie,http-pap aplicado em hsprof-navspot"
 
-4. Action-processor configura:
-   |-- /ip hotspot profile set $hp login-by=http-pap
-
-5. Login funciona!
+4. Resultado:
+   |-- login-by: cookie,http-pap (SEM http-chap!)
+   |-- Login no portal funciona!
 ```
 
 ---
 
-## Testes Pós-Deploy
+## Verificação no MikroTik
 
-| Teste | Comando | Resultado Esperado |
-|-------|---------|-------------------|
-| Sync | `/system script run navspot-sync` | Sem warning `fc=[#]` |
-| Arquivo | `/file get navspot-actions.txt contents` | Começa com ação, não com `#` |
-| Profile | `/ip hotspot profile print detail` | `login-by: http-pap` |
-| Login | Conectar WiFi | Autenticação OK |
+Após o deploy, execute:
 
----
-
-## Rollback (Se Necessário)
-
-Reverter linha 787 para versão original:
 ```routeros
-:do {/file set [find name="navspot-actions.txt"] contents=$a} on-error={}
+/log print where message~"login-by"
+# Esperado: "NAVSPOT: login-by=cookie,http-pap aplicado em hsprof-navspot"
+
+/ip hotspot profile print detail where name="hsprof-navspot"
+# Esperado: login-by: cookie,http-pap
 ```
 
-E resetar rollout:
-```sql
-UPDATE public.hotspots SET portal_profile_version = NULL;
-```
+---
+
+## Tempo Estimado
+
+- Deploy das Edge Functions: ~30 segundos
+- Migration automática: ~1 segundo
+- Próximo sync do MikroTik: até 1 minuto
+- **Correção aplicada automaticamente em ~2 minutos após aprovar**
