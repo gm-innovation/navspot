@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.43"
+const VERSION = "7.1.44"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -778,13 +778,12 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ($j>=$i) do={:set a [:pick $raw $i ($j+1)]}
 :if ([:len $a]>0) do={
 :do {/file remove "navspot-actions.txt"} on-error={}
-/file print file=navspot-actions.txt where name="__never__"
-:delay 700ms
+:delay 200ms
 :local wok false
 :local wt 0
 :while (($wt<3)&&($wok=false)) do={
 :set wt ($wt+1)
-:do {/file set [find name="navspot-actions.txt"] contents=$a} on-error={}
+:do {:local ef [/file find name="navspot-actions.txt"];:if ([:len $ef]=0) do={/file add name="navspot-actions.txt" contents=$a} else={/file set $ef contents=$a}} on-error={}
 :delay 500ms
 :local sv ""
 :do {:set sv [/file get "navspot-actions.txt" contents]} on-error={}
