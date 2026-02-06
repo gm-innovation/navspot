@@ -148,6 +148,24 @@ export default function HotspotLogin() {
         }
       );
 
+      const contentType = response.headers.get("content-type") || "";
+
+      // v7.1.41: Handle HTML auto-post response (secure credential submission)
+      // Server returns HTML page that auto-submits credentials via POST to MikroTik
+      // This prevents credentials from appearing in URL/browser history/proxy logs
+      if (contentType.includes("text/html")) {
+        const html = await response.text();
+        setRedirecting(true);
+        
+        // Replace entire document with the auto-post page
+        // This triggers the form auto-submit to MikroTik gateway
+        document.open();
+        document.write(html);
+        document.close();
+        return;
+      }
+
+      // Handle JSON response (errors, pending_cadastro, etc)
       const data = await response.json();
 
       if (!response.ok || !data.success) {
@@ -158,7 +176,7 @@ export default function HotspotLogin() {
         throw new Error(data.error || "Falha na autenticação");
       }
 
-      // Success - redirect based on status
+      // Success with JSON - redirect based on status (pendente_cadastro)
       setRedirecting(true);
 
       if (data.redirect_url) {
