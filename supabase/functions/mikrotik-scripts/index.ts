@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.40"
+const VERSION = "7.1.41"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -858,7 +858,7 @@ function generateActionProcessorCoreSource(): string {
 :if (([:len $lu]>0)&&([:len $dn]>0)) do={
 :local hp [/ip hotspot profile find name="hsprof-navspot"]
 :if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap,http-chap
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap
 :set cnt ($cnt+1)
 }}}} on-error={}}
 :if ($c="create_profile") do={
@@ -963,7 +963,7 @@ function generateActionProcessorFullSource(): string {
 :if (([:len $lu]>0)&&([:len $dn]>0)) do={
 :local hp [/ip hotspot profile find name="hsprof-navspot"]
 :if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap,http-chap
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap
 :set cnt ($cnt+1)
 }}}} on-error={}}
 :if ($c="create_profile") do={

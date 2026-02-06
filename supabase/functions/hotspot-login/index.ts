@@ -23,6 +23,80 @@ interface LoginResponse {
   retry_after_seconds?: number;
 }
 
+// v7.1.41: HTML escape for XSS prevention in auto-post page
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
+// v7.1.41: Generate auto-submit POST page for secure credential submission
+// This avoids exposing credentials in URL (browser history, proxy logs, referer)
+function generateAutoPostHtml(
+  gateway: string,
+  username: string,
+  password: string,
+  embarcacaoNome: string
+): string {
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Conectando - ${escapeHtml(embarcacaoNome)}</title>
+  <style>
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex; 
+      justify-content: center; 
+      align-items: center; 
+      height: 100vh; 
+      margin: 0;
+      background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+    }
+    .container { 
+      text-align: center; 
+      padding: 2rem;
+      background: white;
+      border-radius: 1rem;
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+    }
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #e5e7eb;
+      border-top: 4px solid #1e3a8a;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h2 { color: #1e3a8a; margin: 0 0 0.5rem; }
+    p { color: #64748b; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="spinner"></div>
+    <h2>Conectando...</h2>
+    <p>Aguarde enquanto liberamos seu acesso</p>
+  </div>
+  <form id="loginForm" method="POST" action="http://${escapeHtml(gateway)}/login">
+    <input type="hidden" name="username" value="${escapeHtml(username)}" />
+    <input type="hidden" name="password" value="${escapeHtml(password)}" />
+  </form>
+  <script>
+    setTimeout(function() {
+      document.getElementById('loginForm').submit();
+    }, 100);
+  </script>
+</body>
+</html>`;
+}
+
 const MAX_ATTEMPTS = 5;
 const BLOCK_DURATION_MINUTES = 15;
 
@@ -278,9 +352,7 @@ Deno.serve(async (req) => {
       .eq("id", tripulante.id);
 
     // Build response based on status
-    let redirectUrl: string;
-    
-    // Extract gateway from network (e.g., "192.168.88.0/24" -> "192.168.88.1")
+    // Extract gateway from network (e.g., "10.10.10.0/24" -> "10.10.10.1")
     const networkBase = hotspot.rede.split("/")[0].replace(/\.\d+$/, "");
     const gateway = `${networkBase}.1`;
     
@@ -297,28 +369,43 @@ Deno.serve(async (req) => {
         gateway: gateway,
       });
       
-      redirectUrl = `${portalUrl}/completar-cadastro?${params.toString()}`;
+      const redirectUrl = `${portalUrl}/completar-cadastro?${params.toString()}`;
       
       console.log(`[hotspot-login] Pending registration, redirecting to: ${redirectUrl}`);
-    } else {
-      // Status is 'ativo' - redirect to MikroTik to authorize
-      // URL format: http://GATEWAY/login?username=USER&password=PASS
-      redirectUrl = `http://${gateway}/login?username=${encodeURIComponent(tripulante.login_wifi)}&password=${encodeURIComponent(tripulante.senha_wifi)}`;
-      
-      console.log(`[hotspot-login] Active user, redirecting to MikroTik: http://${gateway}/login?username=***`);
+
+      const response: LoginResponse = {
+        success: true,
+        status,
+        tripulante_id: tripulante.id,
+        redirect_url: redirectUrl,
+      };
+
+      return new Response(
+        JSON.stringify(response),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const response: LoginResponse = {
-      success: true,
-      status,
-      tripulante_id: tripulante.id,
-      redirect_url: redirectUrl,
-    };
-
-    return new Response(
-      JSON.stringify(response),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    // v7.1.41: Status is 'ativo' - return HTML auto-post page
+    // This securely submits credentials via POST instead of GET (no URL exposure)
+    // Security: credentials don't appear in browser history, proxy logs, or Referer header
+    const embarcacaoNome = hotspot.nome || "NAVSPOT";
+    const autoPostHtml = generateAutoPostHtml(
+      gateway,
+      tripulante.login_wifi,
+      tripulante.senha_wifi,
+      embarcacaoNome
     );
+    
+    console.log(`[hotspot-login] Active user ${tripulante.login_wifi}, returning auto-post HTML for gateway ${gateway}`);
+
+    return new Response(autoPostHtml, {
+      status: 200,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "text/html; charset=utf-8",
+      },
+    });
 
   } catch (error) {
     console.error("[hotspot-login] Unexpected error:", error);

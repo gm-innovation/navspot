@@ -64,7 +64,7 @@ export default function Embarcacoes() {
   const [finalizeScript, setFinalizeScript] = useState("");
   const [currentHotspotName, setCurrentHotspotName] = useState("");
   const [currentHotspotId, setCurrentHotspotId] = useState("");
-  const [currentScriptVersion, setCurrentScriptVersion] = useState("7.1.40");
+  const [currentScriptVersion, setCurrentScriptVersion] = useState("7.1.41");
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
 
