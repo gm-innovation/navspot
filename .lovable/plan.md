@@ -1,209 +1,149 @@
 
-
-# Plano: Correção Definitiva HTTP-PAP v7.1.43
+# Plano: Correcao Cirurgica v7.1.44 - Escrita Limpa de Arquivo
 
 ## Problema Confirmado
 
-O MikroTik continua com `login-by=cookie,http-chap` porque os handlers procuram o hotspot server com o nome errado:
+O RouterOS 7.x injeta header automatico quando arquivos sao criados via `/file print`:
 
-| Local | O que busca | O que existe |
-|-------|-------------|--------------|
-| Bootstrap | `add name="hs-navspot"` | Cria o servidor |
-| Handler CORE (linha 860) | `find name="navspot"` | Nao encontra! |
-| Handler FULL (linha 968) | `find name="navspot"` | Nao encontra! |
-| Guardian (linha 1181) | `find name="navspot"` | Nao encontra! |
+```
+NAVSPOT-SYNC: write try=1 len=69 fc=[#] pf=[# 2026-02-06 15:07:49 by RouterOS 7.14.3
+# software id = RCRS-VEA0
+```
 
-O fallback para `hsprof-navspot` funciona para encontrar o profile, mas sem encontrar o hotspot server, a logica robusta falha silenciosamente.
+O validador (`fc!="#"`) corretamente rejeita, mas a acao nunca executa.
 
 ---
 
-## Alerta: Tamanho do sync-raw
+## Solucao: Mudanca Cirurgica (2 linhas)
 
-O log mostrou `sync-raw exceeds 3200 bytes: 3255`. Isso esta no limite mas ainda funciona. Vamos monitorar e, se necessario, otimizar em um patch futuro.
-
----
-
-## Solucao em 5 Partes
-
-### Parte 1: Corrigir nome do hotspot em mikrotik-scripts
+### Unica Mudanca no sync-raw
 
 **Arquivo:** `supabase/functions/mikrotik-scripts/index.ts`
 
-**Mudanca 1 - Handler CORE (linha 860):**
+**Linhas 780-782 - ANTES:**
 ```routeros
-ANTES:
-:local hs [/ip hotspot find name="navspot"]
-
-DEPOIS:
-:local hs [/ip hotspot find name="hs-navspot"]
+:do {/file remove "navspot-actions.txt"} on-error={}
+/file print file=navspot-actions.txt where name="__never__"
+:delay 700ms
 ```
 
-**Mudanca 2 - Handler FULL (linha 968):**
+**Linhas 780-782 - DEPOIS:**
 ```routeros
-ANTES:
-:local hs [/ip hotspot find name="navspot"]
-
-DEPOIS:
-:local hs [/ip hotspot find name="hs-navspot"]
+:do {/file remove "navspot-actions.txt"} on-error={}
+:delay 200ms
 ```
 
-**Mudanca 3 - Guardian (linha 1181):**
+E na linha 787, mudar de:
 ```routeros
-ANTES:
-:local hs [/ip hotspot find name="navspot"]
-
-DEPOIS:
-:local hs [/ip hotspot find name="hs-navspot"]
+:do {/file set [find name="navspot-actions.txt"] contents=$a} on-error={}
 ```
 
-**Mudanca 4 - Versao (linha 38):**
-```typescript
-ANTES:
-const VERSION = "7.1.42"
-
-DEPOIS:
-const VERSION = "7.1.43"
+Para:
+```routeros
+:do {:local ef [/file find name="navspot-actions.txt"];:if ([:len $ef]=0) do={/file add name="navspot-actions.txt" contents=$a} else={/file set $ef contents=$a}} on-error={}
 ```
+
+**Logica:**
+1. Remove arquivo antigo (se existir)
+2. Delay curto para sync do filesystem
+3. No loop de retry: Se arquivo nao existe, usa `/file add contents=$a` (limpo). Se existe, usa `/file set contents=$a`
 
 ---
 
-### Parte 2: Atualizar rollout version em mikrotik-sync
+## Bump de Versao
 
-**Arquivo:** `supabase/functions/mikrotik-sync/index.ts`
-
-**Linha 9:**
-```typescript
-ANTES:
-const VERSION = "7.1.42"
-
-DEPOIS:
-const VERSION = "7.1.43"
-```
-
-**Linha 12:**
-```typescript
-ANTES:
-const REQUIRED_PORTAL_VERSION = "7.1.42-http-pap"
-
-DEPOIS:
-const REQUIRED_PORTAL_VERSION = "7.1.43-http-pap"
-```
+| Arquivo | Versao Atual | Nova Versao |
+|---------|--------------|-------------|
+| `supabase/functions/mikrotik-scripts/index.ts` linha 38 | 7.1.43 | 7.1.44 |
+| `supabase/functions/mikrotik-sync/index.ts` linhas 9 e 12 | 7.1.43 | 7.1.44 |
+| `supabase/functions/mikrotik-script-generator/index.ts` linha 8 | 7.1.43 | 7.1.44 |
+| `src/pages/Embarcacoes.tsx` linha 67 | 7.1.43 | 7.1.44 |
 
 ---
 
-### Parte 3: Atualizar versao em mikrotik-script-generator
+## Migration Automatica (Reset de Rollout)
 
-**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
-
-**Linha 8:**
-```typescript
-ANTES:
-const VERSION = "7.1.42"
-
-DEPOIS:
-const VERSION = "7.1.43"
-```
-
----
-
-### Parte 4: Atualizar default version em Embarcacoes.tsx
-
-**Arquivo:** `src/pages/Embarcacoes.tsx`
-
-**Linha 67:**
-```typescript
-ANTES:
-const [currentScriptVersion, setCurrentScriptVersion] = useState("7.1.41");
-
-DEPOIS:
-const [currentScriptVersion, setCurrentScriptVersion] = useState("7.1.43");
-```
-
----
-
-### Parte 5: Reset do rollout via SQL
-
-Para forcar re-aplicacao em todos os hotspots:
+Criar migration SQL que reseta `portal_profile_version` para forcar re-aplicacao:
 
 ```sql
-UPDATE public.hotspots SET portal_profile_version = NULL;
+-- v7.1.44: Reset portal_profile_version to force reconfigure with clean file write
+UPDATE public.hotspots 
+SET portal_profile_version = NULL 
+WHERE portal_profile_version IS NOT NULL;
+
+-- Comment explaining the change
+COMMENT ON COLUMN public.hotspots.portal_profile_version IS 
+  'v7.1.44: Tracks portal profile version for rollout. NULL triggers reconfigure.';
 ```
+
+Isso sera aplicado automaticamente quando o usuario aprovar a migration.
+
+---
+
+## O Que NAO Muda (Preservado)
+
+- Toda a logica de retry (3 tentativas)
+- Validacao do conteudo (`fc!="#"`, `[:len $sv]>=12`, `[:find $sv "|"]>=0`)
+- Logs de warning em caso de falha
+- Execucao do action-processor
+- Todas as outras funcoes do sistema
 
 ---
 
 ## Arquivos Modificados
 
-| Arquivo | Linhas | Mudanca |
-|---------|--------|---------|
-| `supabase/functions/mikrotik-scripts/index.ts` | 38, 860, 968, 1181 | VERSION + nome `hs-navspot` |
-| `supabase/functions/mikrotik-sync/index.ts` | 9, 12 | VERSION + REQUIRED_PORTAL_VERSION |
-| `supabase/functions/mikrotik-script-generator/index.ts` | 8 | VERSION |
-| `src/pages/Embarcacoes.tsx` | 67 | default version |
-| Migration SQL | - | Reset portal_profile_version |
+| Arquivo | Mudanca |
+|---------|---------|
+| `supabase/functions/mikrotik-scripts/index.ts` | VERSION + linhas 780-787 (escrita limpa) |
+| `supabase/functions/mikrotik-sync/index.ts` | VERSION + REQUIRED_PORTAL_VERSION |
+| `supabase/functions/mikrotik-script-generator/index.ts` | VERSION |
+| `src/pages/Embarcacoes.tsx` | VERSION |
+| Nova migration SQL | Reset portal_profile_version |
 
 ---
 
-## Fluxo Apos Correcao
+## Fluxo Apos Deploy
 
 ```text
-1. Deploy das Edge Functions com nome correto (hs-navspot)
-   
-2. Migration SQL reseta portal_profile_version = NULL
-   
-3. MikroTik faz sync periodico
-   |-- Backend detecta: portal_profile_version = NULL (diferente de 7.1.43-http-pap)
-   |-- Injeta: configure_hotspot_profile no pipe
-   
-4. Action-processor executa:
-   |-- :local hs [/ip hotspot find name="hs-navspot"]  ← AGORA ENCONTRA!
-   |-- Pega o profile usado: "hsprof-navspot"
-   |-- Aplica: login-by=http-pap
-   
-5. Proximo /ip hotspot profile print:
-   |-- login-by: http-pap (sem http-chap)
-   
-6. Login no portal funciona!
+1. Migration reseta portal_profile_version = NULL automaticamente
+
+2. MikroTik faz sync
+   |-- Backend detecta: portal_profile_version = NULL
+   |-- Injeta: configure_hotspot_profile
+
+3. Sync-raw executa:
+   |-- Remove arquivo antigo
+   |-- /file add name=... contents=$a (SEM HEADER!)
+   |-- Valida: fc != "#" -> PASSA!
+   |-- Executa action-processor
+
+4. Action-processor configura:
+   |-- /ip hotspot profile set $hp login-by=http-pap
+
+5. Login funciona!
 ```
 
 ---
 
 ## Testes Pos-Deploy
 
-| Teste | Comando/Acao | Resultado Esperado |
-|-------|--------------|-------------------|
-| Verificar scripts | `/system script print` | Scripts v7.1.43 |
-| Sync forcado | `/system script run navspot-sync` | Log mostra "v7.1.43" |
-| Verificar profile | `/ip hotspot profile print detail` | `login-by: http-pap` |
-| Login no portal | Conectar WiFi e logar | Autenticacao OK |
-| Guardian | `/system script run navspot-guardian` | "Sistema OK" |
-
----
-
-## Verificacao Rapida no MikroTik
-
-Apos deploy, execute:
-
-```routeros
-/ip hotspot profile print detail where login-by~"http-pap"
-```
-
-Se retornar o profile `hsprof-navspot`, o problema esta resolvido.
+| Teste | Comando | Resultado |
+|-------|---------|-----------|
+| Sync | `/system script run navspot-sync` | Sem warning `fc=[#]` |
+| Arquivo | `/file get navspot-actions.txt contents` | Comeca com acao, nao com `#` |
+| Profile | `/ip hotspot profile print detail` | `login-by: http-pap` |
+| Login | Conectar WiFi | Autenticacao OK |
 
 ---
 
 ## Rollback
 
-Se algo der errado:
-
-1. Reverter o nome para `"navspot"` (voltaria ao bug original)
-
-2. Manual no MikroTik:
+Se algo der errado, reverter a linha 787 para a versao original:
 ```routeros
-/ip hotspot profile set [find name="hsprof-navspot"] login-by=http-pap
+:do {/file set [find name="navspot-actions.txt"] contents=$a} on-error={}
 ```
 
-3. Reset de rollout:
+E resetar rollout:
 ```sql
 UPDATE public.hotspots SET portal_profile_version = NULL;
 ```
-
