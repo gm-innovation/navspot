@@ -5,11 +5,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.1.42: Rollout mechanism for login-by=http-pap fix
-const VERSION = "7.1.42"
+// v7.1.43: Rollout mechanism for login-by=http-pap fix
+const VERSION = "7.1.43"
 
-// v7.1.42: Required portal profile version - forces reconfigure when changed
-const REQUIRED_PORTAL_VERSION = "7.1.42-http-pap"
+// v7.1.43: Required portal profile version - forces reconfigure when changed
+const REQUIRED_PORTAL_VERSION = "7.1.43-http-pap"
 
 // v7.1.23: Sanitize pipe string for safe /file set contents in RouterOS
 // Removes characters that cause truncation or parsing errors
