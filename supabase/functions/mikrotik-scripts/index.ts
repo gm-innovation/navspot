@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.44"
+const VERSION = "7.1.45"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -860,7 +860,9 @@ function generateActionProcessorCoreSource(): string {
 :if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn
+/ip hotspot profile set $hp login-by="cookie,http-pap"
+:log info ("NAVSPOT: login-by=cookie,http-pap aplicado em ".[/ip hotspot profile get $hp name])
 :set cnt ($cnt+1)
 }}}} on-error={}}
 :if ($c="create_profile") do={
@@ -968,7 +970,9 @@ function generateActionProcessorFullSource(): string {
 :if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn
+/ip hotspot profile set $hp login-by="cookie,http-pap"
+:log info ("NAVSPOT: login-by=cookie,http-pap aplicado em ".[/ip hotspot profile get $hp name])
 :set cnt ($cnt+1)
 }}}} on-error={}}
 :if ($c="create_profile") do={
