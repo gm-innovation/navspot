@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.35"
+const VERSION = "7.1.36"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -403,49 +403,78 @@ ${migrationCommands}
 :log info "NAVSPOT v${VERSION}: DNS OK"
 }
 
-# 13. BAIXAR E INSTALAR SCRIPTS VIA API COM RETRY (3 tentativas)
+# 13. DETECTAR VERSAO DO ROUTEROS DE FORMA ROBUSTA (v7.1.36)
+:local rosVer [/system resource get version]
+:local dotIndex [:find $rosVer "."]
+:local rosMajor $rosVer
+:if ($dotIndex != 0) do={ :set rosMajor [:pick $rosVer 0 $dotIndex] }
+:local rosV "6"
+:if ($rosMajor = "7") do={
+:set rosV "7"
+:log info ("NAVSPOT v${VERSION}: RouterOS " . $rosVer . " detectado - modo otimizado")
+} else={
+:log info ("NAVSPOT v${VERSION}: RouterOS " . $rosVer . " detectado - modo compatibilidade")
+}
+
+# 14. BAIXAR E INSTALAR SCRIPTS VIA API COM RETRY
 :local apiBase "${scriptsUrl}"
 :local tk "${hotspot.sync_token}"
-:local scriptsUrl ($apiBase . "?type=all&token=" . $tk)
+
+# v7.1.36: Arquivo temporario unico para evitar conteudo residual
+:local ts [/system clock get time]
+:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
+:local tmpFile ("ns-install-" . $tsStr . ".rsc")
+
+# Construir URL com ros_version detectado em runtime
+:local scriptsUrl ($apiBase . "?type=all&token=" . $tk . "&ros_version=" . $rosV)
+
+# v7.1.36: Backoff variavel baseado na versao
+:local retryDelay 5s
+:if ($rosV = "7") do={ :set retryDelay 2s }
+
 :local maxRetries 3
 :local retryCount 0
 :local fetchSuccess false
 
-:log info "NAVSPOT v${VERSION}: Iniciando download dos scripts..."
+:log info ("NAVSPOT v${VERSION}: Iniciando download (tmpFile=" . $tmpFile . ")...")
 
 :while (($retryCount < $maxRetries) && ($fetchSuccess = false)) do={
 :set retryCount ($retryCount + 1)
 :log info ("NAVSPOT v${VERSION}: Tentativa " . $retryCount . "/" . $maxRetries)
 :do {
-/tool fetch url=$scriptsUrl check-certificate=no dst-path="ns-install.rsc"
+/tool fetch url=$scriptsUrl check-certificate=no dst-path=$tmpFile
 :set fetchSuccess true
 } on-error={
 :log warning ("NAVSPOT v${VERSION}: Fetch falhou na tentativa " . $retryCount)
 :if ($retryCount < $maxRetries) do={
-:log info "NAVSPOT v${VERSION}: Aguardando 5s antes de retry..."
-:delay 5s
+:delay $retryDelay
 }
 }
 }
 
 :if ($fetchSuccess = true) do={
-:log info "NAVSPOT v${VERSION}: Fetch OK! Aguardando 4s para flash..."
-:delay 4s
-:log info "NAVSPOT v${VERSION}: Importando scripts..."
-/import ns-install.rsc
+# v7.1.36: Delay pos-fetch baseado na versao (ROS 7 = 500ms, ROS 6 = 4s)
+:if ($rosV = "7") do={ :delay 500ms } else={ :delay 4s }
+:log info ("NAVSPOT v${VERSION}: Importando " . $tmpFile . "...")
+/import $tmpFile
 :delay 1s
-:do { /file remove "ns-install.rsc" } on-error={}
+:do { /file remove $tmpFile } on-error={ :log warning "NAVSPOT: nao foi possivel remover arquivo temporario" }
 :log info "NAVSPOT v${VERSION}: Scripts instalados com sucesso!"
 
-# 14. PRIMEIRO SYNC (35s delay para rede estabilizar)
-:log info "NAVSPOT v${VERSION}: Aguardando 35s para primeiro sync..."
+# 15. PRIMEIRO SYNC (delay baseado na versao)
+:if ($rosV = "7") do={
+:log info "NAVSPOT v${VERSION}: Aguardando 20s para primeiro sync (ROS 7)..."
+:delay 20s
+} else={
+:log info "NAVSPOT v${VERSION}: Aguardando 35s para primeiro sync (ROS 6)..."
 :delay 35s
+}
 /system script run navspot-sync
 :log info "NAVSPOT v${VERSION}: Primeiro sync executado!"
 
 :log info "=========================================="
 :log info "NAVSPOT v${VERSION}: BOOTSTRAP ULTRA-THIN CONCLUIDO!"
-:log info "Arquitetura: Fetch + Import (sem source={} embutido)"
+:log info ("Arquitetura: Fetch + Import (ros_version=" . $rosV . ")")
 :log info "Rede: ${networkCidr} | Gateway: ${gateway}"
 :log info "WAN: ${wanInterface} (${wanType})"
 :log info "Hotspot: hs-navspot (aguardando login-url via sync)"
@@ -454,8 +483,8 @@ ${migrationCommands}
 } else={
 :log error "NAVSPOT v${VERSION}: FALHA CRITICA - Fetch falhou apos 3 tentativas"
 :log error "NAVSPOT v${VERSION}: Verifique conectividade e execute manualmente:"
-:log error "NAVSPOT v${VERSION}: /tool fetch url=<API_URL> check-certificate=no dst-path=ns-install.rsc"
-:log error "NAVSPOT v${VERSION}: /import ns-install.rsc"
+:log error ("NAVSPOT v${VERSION}: /tool fetch url=<API_URL>&ros_version=" . $rosV)
+:log error "NAVSPOT v${VERSION}: /import ns-install-<timestamp>.rsc"
 }
 `
 }

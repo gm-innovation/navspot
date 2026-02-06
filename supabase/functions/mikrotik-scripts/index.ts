@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.35"
+const VERSION = "7.1.36"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -750,15 +750,22 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :foreach x in=[find] do={:set p ($p.[get $x name].",")}
 :local b ("{".$q."sync_token".$q.":".$q.$tk.$q.",".$q."active_users_csv".$q.":".$q.$u.$q.",".$q."registered_users_csv".$q.":".$q.$r.$q.",".$q."registered_profiles_csv".$q.":".$q.$p.$q."}")
 :local ok false
+# v7.1.36: Arquivo de resposta unico com timestamp
+:local ts [/system clock get time]
+:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
+:local respFile ("navspot-resp-" . $tsStr . ".txt")
+# Limpar arquivos de resposta antigos
+:do {:foreach oldF in=[/file find where name~"navspot-resp-"] do={/file remove $oldF}} on-error={}
+:delay 200ms
 :do {
-/tool fetch url="${syncUrl}" http-method=post http-data=$b http-header-field="Content-Type: application/json" check-certificate=no dst-path="navspot-resp.txt"
+/tool fetch url="${syncUrl}" http-method=post http-data=$b http-header-field="Content-Type: application/json" check-certificate=no dst-path=$respFile
 :set ok true
 } on-error={:set navspotSyncLock "0"}
 :if ($ok) do={
 :delay 500ms
 :local resp ""
-:do {:set resp [/file get "navspot-resp.txt" contents]} on-error={}
-:do {/file remove "navspot-resp.txt"} on-error={}
+:do {:set resp [/file get $respFile contents]} on-error={}
+:do {/file remove $respFile} on-error={}
 :local s [:find $resp "[["]
 :local e [:find $resp "]]"]
 :if (($s>=0)&&($e>$s)) do={
