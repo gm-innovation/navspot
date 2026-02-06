@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.41"
+const VERSION = "7.1.42"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -856,7 +856,10 @@ function generateActionProcessorCoreSource(): string {
 :local lu [:pick $r 0 $p2]
 :local dn [:pick $r ($p2+1) [:len $r]]
 :if (([:len $lu]>0)&&([:len $dn]>0)) do={
-:local hp [/ip hotspot profile find name="hsprof-navspot"]
+:local hp ""
+:local hs [/ip hotspot find name="navspot"]
+:if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
+:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
 /ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap
 :set cnt ($cnt+1)
@@ -961,7 +964,10 @@ function generateActionProcessorFullSource(): string {
 :local lu [:pick $r 0 $p2]
 :local dn [:pick $r ($p2+1) [:len $r]]
 :if (([:len $lu]>0)&&([:len $dn]>0)) do={
-:local hp [/ip hotspot profile find name="hsprof-navspot"]
+:local hp ""
+:local hs [/ip hotspot find name="navspot"]
+:if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
+:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
 /ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=http-pap
 :set cnt ($cnt+1)
@@ -1171,10 +1177,16 @@ function generateGuardianSource(recoveryUrl: string, syncToken: string): string 
 :if ([:len $syncScript]=0) do={:set needsRepair 1;:set missing ($missing."sync ")}
 :if ([:len $apScript]=0) do={:set needsRepair 1;:set missing ($missing."action ")}
 :if ([:len $syncSched]=0) do={:set needsRepair 1;:set missing ($missing."sched ")}
-:local hsprof [/ip hotspot profile find name="hsprof-navspot"]
+:local hsprof ""
+:local hs [/ip hotspot find name="navspot"]
+:if ([:len $hs]>0) do={:set hsprof [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
+:if ([:len $hsprof]=0) do={:set hsprof [/ip hotspot profile find name="hsprof-navspot"]}
 :local loginUrl ""
 :if ([:len $hsprof]>0) do={:set loginUrl [/ip hotspot profile get $hsprof login-url]}
 :if ([:len $loginUrl]<10) do={:set needsRepair 1;:set missing ($missing."login-url ")}
+:if ([:len $hsprof]>0) do={
+:local loginBy [/ip hotspot profile get $hsprof login-by]
+:if ([:find $loginBy "http-chap"]>=0) do={:set needsRepair 1;:set missing ($missing."login-chap ")}}
 :if (($needsRepair=0)&&([:len $apScript]>0)) do={
 :local apSrc [/system script get $apScript source]
 :if ([:find $apSrc "configure_hotspot_profile"]<0) do={
