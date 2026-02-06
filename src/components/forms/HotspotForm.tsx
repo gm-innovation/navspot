@@ -19,6 +19,22 @@ import {
 } from "@/components/ui/select";
 import { HotspotInsert, HotspotUpdate } from "@/hooks/useHotspots";
 import { useEmbarcacoes } from "@/hooks/useEmbarcacoes";
+import { toast } from "@/hooks/use-toast";
+
+/**
+ * v7.1.40: Validate network is not reserved MikroTik management range
+ */
+function validateRede(rede: string): string | null {
+  const base = rede.split('/')[0].trim()
+  const networkBase = base.replace(/\.\d+$/, '')
+  if (networkBase === '192.168.88' || base === '192.168.88.0' || base.startsWith('192.168.88.')) {
+    return 'Rede 192.168.88.x é reservada para gerência do MikroTik. Use outra (ex: 10.10.10.0/24).'
+  }
+  if (!/^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$/.test(rede)) {
+    return 'Formato de rede inválido. Ex: 10.10.10.0/24'
+  }
+  return null
+}
 
 interface HotspotFormProps {
   open: boolean;
@@ -44,7 +60,7 @@ export function HotspotForm({
     interface_wifi: "auto",
     wan_interface: "ether1",
     wan_type: "dhcp",
-    rede: "192.168.88.0/24",
+    rede: "10.10.10.0/24",
     max_usuarios: 50,
     sync_interval_minutes: 5,
     status: "offline",
@@ -58,7 +74,7 @@ export function HotspotForm({
         interface_wifi: "auto",
         wan_interface: initialData.wan_interface || "ether1",
         wan_type: (initialData as any).wan_type || "dhcp",
-        rede: initialData.rede || "192.168.88.0/24",
+        rede: initialData.rede || "10.10.10.0/24",
         max_usuarios: initialData.max_usuarios || 50,
         sync_interval_minutes: initialData.sync_interval_minutes || 5,
         status: initialData.status || "offline",
@@ -70,7 +86,7 @@ export function HotspotForm({
         interface_wifi: "auto",
         wan_interface: "ether1",
         wan_type: "dhcp",
-        rede: "192.168.88.0/24",
+        rede: "10.10.10.0/24",
         max_usuarios: 50,
         sync_interval_minutes: 5,
         status: "offline",
@@ -80,6 +96,18 @@ export function HotspotForm({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // v7.1.40: Validate network before submit
+    const redeError = validateRede(formData.rede)
+    if (redeError) {
+      toast({
+        title: "Rede inválida",
+        description: redeError,
+        variant: "destructive",
+      })
+      return
+    }
+    
     if (isEditing && initialData?.id) {
       onSubmit({ ...formData, id: initialData.id });
     } else {
@@ -190,9 +218,12 @@ export function HotspotForm({
                 value={formData.rede}
                 onChange={(e) => handleChange("rede", e.target.value)}
                 className="col-span-3"
-                placeholder="192.168.88.0/24"
+                placeholder="10.10.10.0/24"
               />
             </div>
+            <p className="text-xs text-muted-foreground col-start-2 col-span-3">
+              ⚠️ Não use 192.168.88.x (reservada para gerência MikroTik)
+            </p>
 
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="max_usuarios" className="text-right">

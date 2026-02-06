@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.38"
+const VERSION = "7.1.40"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -53,6 +53,22 @@ function validateBalance(script: string): void {
   if (openParens !== closeParens) {
     throw new Error(`Unbalanced parentheses: ${openParens} open, ${closeParens} close`);
   }
+}
+
+/**
+ * v7.1.40: Block reserved networks that conflict with MikroTik factory defaults
+ */
+function isBlockedNetwork(cidr: string): { blocked: boolean; reason: string } {
+  if (!cidr) return { blocked: false, reason: '' }
+  const net = cidr.split('/')[0].trim()
+  const base = net.replace(/\.\d+$/, '')
+  if (base === '192.168.88' || net === '192.168.88.0' || net.startsWith('192.168.88.')) {
+    return { 
+      blocked: true, 
+      reason: 'Rede 192.168.88.0/24 e reservada para gerencia do MikroTik (Winbox). Use outra rede, ex: 10.10.10.0/24.' 
+    }
+  }
+  return { blocked: false, reason: '' }
 }
 
 interface Hotspot {
@@ -163,6 +179,19 @@ Deno.serve(async (req) => {
       return new Response(
         JSON.stringify({ success: false, error: 'Hotspot not found' }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // v7.1.40: Validate network is not reserved
+    const networkValidation = isBlockedNetwork(hotspot.rede)
+    if (networkValidation.blocked) {
+      console.error(`[script-generator ${VERSION}] Blocked network: ${hotspot.rede}`)
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: networkValidation.reason 
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
 
@@ -324,10 +353,30 @@ function generateBootstrapScript(
 :log info "NAVSPOT: DNS configurado (8.8.8.8, 1.1.1.1)"
 
 # 3. CONFIGURAR WAN
+# v7.1.40: Garantir que WAN nao esta em nenhuma bridge (alguns firmwares incluem ether1 na bridge padrao)
+:do { /interface bridge port remove [find interface=${wanInterface}] } on-error={}
 ${wanConfig}
 
 # 4. IDENTIDADE
 /system identity set name="${embarcacao.nome}"
+
+# 4.5. GUARDRAIL: Verificar conflito de rede ANTES de criar bridge1 (v7.1.40)
+:local networkBase "${networkBase}"
+:local conflict false
+:foreach addr in=[/ip address find] do={
+:local addrStr [/ip address get $addr address]
+# v7.1.40: Usar operador regex para match robusto em ROS 7
+:if ($addrStr ~ ("^" . $networkBase . "\\\\.")) do={
+:set conflict true
+:log error ("NAVSPOT v${VERSION}: CONFLITO - IP " . $addrStr . " ja existe na faixa " . $networkBase . ".x!")
+}
+}
+:if ($conflict = true) do={
+:log error "NAVSPOT v${VERSION}: ABORTANDO - Rede em uso"
+:log error "NAVSPOT v${VERSION}: Altere a rede do hotspot no painel para outra faixa"
+:error "NAVSPOT_ABORT_NETWORK_CONFLICT"
+}
+:log info "NAVSPOT v${VERSION}: Guardrail OK - nenhum conflito de rede"
 
 # 5. CRIAR BRIDGE1
 :do { /interface bridge add name="bridge1" protocol-mode=rstp auto-mac=yes comment="navspot" } on-error={}
@@ -361,6 +410,40 @@ ${wanConfig}
 :log info "NAVSPOT: Migrando portas LAN..."
 ${migrationCommands}
 :log info "NAVSPOT: Portas LAN migradas"
+
+# 9.5. MIGRAR INTERFACES WIFI (v7.1.40 - hAP ax² / WifiWave2)
+:log info "NAVSPOT v${VERSION}: Verificando interfaces WiFi..."
+:local wifiCount 0
+# Tentar WifiWave2 (ROS 7.x - hAP ax²)
+:do {
+:foreach i in=[/interface wifi find] do={
+:local wName [/interface wifi get $i name]
+:log info ("NAVSPOT: Detectada interface WifiWave2: " . $wName)
+:do { /interface bridge port remove [find interface=$wName] } on-error={}
+# v7.1.40: Delay para kernel processar mudanca de estado do radio
+:delay 1s
+:do { /interface bridge port add bridge=bridge1 interface=$wName comment="navspot-lan" } on-error={}
+:set wifiCount ($wifiCount + 1)
+}
+} on-error={}
+# Fallback: Tentar wireless legacy (ROS 6.x)
+:if ($wifiCount = 0) do={
+:do {
+:foreach i in=[/interface wireless find] do={
+:local wName [/interface wireless get $i name]
+:log info ("NAVSPOT: Detectada interface wireless legacy: " . $wName)
+:do { /interface bridge port remove [find interface=$wName] } on-error={}
+:delay 1s
+:do { /interface bridge port add bridge=bridge1 interface=$wName comment="navspot-lan" } on-error={}
+:set wifiCount ($wifiCount + 1)
+}
+} on-error={}
+}
+:if ($wifiCount > 0) do={
+:log info ("NAVSPOT: " . $wifiCount . " interface(s) WiFi migrada(s) para bridge1")
+} else={
+:log info "NAVSPOT: Nenhuma interface WiFi detectada"
+}
 
 # 10. HOTSPOT MINIMO v7.1 (SEM login-url - sera configurada via sync)
 :do { /ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} } on-error={}
