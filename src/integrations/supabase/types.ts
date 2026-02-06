@@ -482,6 +482,7 @@ export type Database = {
           max_usuarios: number | null
           migration_state: string | null
           nome: string
+          portal_profile_version: string | null
           rede: string
           rede_prev: string | null
           ros_version: string | null
@@ -508,6 +509,7 @@ export type Database = {
           max_usuarios?: number | null
           migration_state?: string | null
           nome: string
+          portal_profile_version?: string | null
           rede?: string
           rede_prev?: string | null
           ros_version?: string | null
@@ -534,6 +536,7 @@ export type Database = {
           max_usuarios?: number | null
           migration_state?: string | null
           nome?: string
+          portal_profile_version?: string | null
           rede?: string
           rede_prev?: string | null
           ros_version?: string | null

@@ -138,7 +138,7 @@ export default function Embarcacoes() {
       onSuccess: (data) => {
         setBootstrapScript(data.bootstrap_script || "# Script não gerado");
         setFinalizeScript(data.finalize_script || "# Script não gerado");
-        setCurrentScriptVersion(data.version || "7.1.12");
+        setCurrentScriptVersion(data.version || "7.1.42");
         setScriptModalOpen(true);
         setGeneratingFor(null);
       },
@@ -154,7 +154,7 @@ export default function Embarcacoes() {
         onSuccess: (data) => {
           setBootstrapScript(data.bootstrap_script || "# Script não gerado");
           setFinalizeScript(data.finalize_script || "# Script não gerado");
-          setCurrentScriptVersion(data.version || "7.1.12");
+          setCurrentScriptVersion(data.version || "7.1.42");
         },
       });
     }

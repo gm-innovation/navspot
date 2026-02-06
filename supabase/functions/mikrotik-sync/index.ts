@@ -5,8 +5,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.1.25: Version identifier - File read timing fix
-const VERSION = "7.1.29"
+// v7.1.42: Rollout mechanism for login-by=http-pap fix
+const VERSION = "7.1.42"
+
+// v7.1.42: Required portal profile version - forces reconfigure when changed
+const REQUIRED_PORTAL_VERSION = "7.1.42-http-pap"
 
 // v7.1.23: Sanitize pipe string for safe /file set contents in RouterOS
 // Removes characters that cause truncation or parsing errors
@@ -529,10 +532,10 @@ Deno.serve(async (req) => {
       )
     }
 
-    // v7.0: Include initial_config_sent for first-sync detection
+// v7.1.42: Include portal_profile_version for rollout mechanism
     const { data: hotspot, error: hotspotError } = await supabase
       .from('hotspots')
-      .select('id, embarcacao_id, nome, status, synced_profiles, synced_users, firewall_rules_hash, initial_config_sent')
+      .select('id, embarcacao_id, nome, status, synced_profiles, synced_users, firewall_rules_hash, initial_config_sent, portal_profile_version')
       .eq('sync_token', payload.sync_token)
       .single()
 
@@ -1042,6 +1045,34 @@ Deno.serve(async (req) => {
         .eq('id', hotspot.id)
       
       console.log(`[mikrotik-sync] v7.0: Injected initial config for ${hotspot.nome}`)
+    }
+
+    // v7.1.42: Rollout mechanism - force reconfigure when portal_profile_version changes
+    const currentPortalVersion = (hotspot as any).portal_profile_version || null
+    if (currentPortalVersion !== REQUIRED_PORTAL_VERSION) {
+      console.log(`[mikrotik-sync] v7.1.42: Portal version mismatch (${currentPortalVersion} vs ${REQUIRED_PORTAL_VERSION}) - forcing reconfigure`)
+      
+      // Inject configure_hotspot_profile at the TOP of actions
+      const hotspotSlug = hotspot.nome.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9-]/g, '')
+      const loginUrl = `https://navspot.lovable.app/hotspot-login?h=${encodeURIComponent(hotspot.id)}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
+      const dnsName = `${hotspotSlug}.navspot.local`
+      
+      formattedActions.unshift({
+        id: 'rollout-config-profile',
+        type: 'configure_hotspot_profile',
+        payload: { login_url: loginUrl, dns_name: dnsName }
+      })
+      
+      // Update portal_profile_version after injecting action
+      await supabase
+        .from('hotspots')
+        .update({ portal_profile_version: REQUIRED_PORTAL_VERSION })
+        .eq('id', hotspot.id)
+      
+      console.log(`[mikrotik-sync] v7.1.42: Injected rollout configure_hotspot_profile for ${hotspot.nome}`)
     }
 
     // Fetch and process firewall rules for this empresa
