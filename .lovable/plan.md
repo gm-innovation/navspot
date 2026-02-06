@@ -1,120 +1,120 @@
 
-# Plano: Implementar Handler add_firewall_block no Action Processor
+
+# Plano: Corrigir Timing de Leitura do Action Processor
 
 ## Problema Identificado
 
-O sistema possui regras de acesso do tipo Blacklist (Redes Sociais, Streaming) configuradas no perfil "Tripulacao Googlemarine", porem os dominos nao estao sendo bloqueados porque:
+O instalador está falhando na validação do action-processor porque:
 
-1. O backend gera corretamente acoes do tipo `add_firewall_block|facebook.com`
-2. O action-processor no MikroTik NAO POSSUI handler para processar esse comando
-3. As acoes sao ignoradas silenciosamente
-
-As regras de firewall existentes no MikroTik (que voce ve com `/ip firewall filter print`) foram criadas manualmente durante o bootstrap ou testes - o sistema automatico de sincronizacao NAO esta criando novas regras.
-
-## Arquitetura da Correcao
+1. O arquivo é baixado corretamente (4387 bytes)
+2. O tamanho é lido com sucesso (linha 426)
+3. Mas a leitura do **conteúdo** retorna vazio (linha 439)
+4. Como `prefix=""`, a validação falha e o fallback é instalado
 
 ```text
-+------------------+     +-------------------+     +--------------------+
-| NavSpot Backend  | --> | Pipe Protocol     | --> | action-processor   |
-|                  |     | add_firewall_block|     | (NOVO HANDLER)     |
-| regras_acesso    |     | |facebook.com;    |     | /ip firewall filter|
-| tipo=blacklist   |     |                   |     | add ... content=X  |
-+------------------+     +-------------------+     +--------------------+
+Log do MikroTik:
+NAVSPOT-INSTALL: action baixado (4387 bytes)    <- OK
+NAVSPOT-INSTALL: action content INVALIDO        <- FALHA
+NAVSPOT-INSTALL: prefix=                        <- VAZIO!
 ```
 
-## Implementacao Tecnica
+### Causa Raiz
+
+No RouterOS 6.x, existe um delay entre o arquivo estar disponível para leitura de metadados (`/file get size`) e o conteúdo estar sincronizado na memória flash para leitura (`/file get contents`). O código atual tem retry apenas para o tamanho, mas faz apenas UMA tentativa de leitura do conteúdo.
+
+## Solucao Tecnica
+
+Adicionar retry loop para a leitura do conteudo, similar ao que ja existe para o tamanho:
 
 ### Arquivo: supabase/functions/mikrotik-scripts/index.ts
 
-#### 1. Adicionar handler `add_firewall_block` no generateActionProcessorCoreSource()
+### Alteracao 1: Adicionar retry na leitura do conteudo do action-processor (linhas 438-439)
 
-Inserir ANTES do fechamento do loop de parsing (linha ~844):
-
+**Codigo atual:**
 ```routeros
-:if ($c="add_firewall_block") do={
-:do {
-:local dom $r
-:if ([:len $dom]>0) do={
-:local cmt ("NAVSPOT-BLOCK-".$dom)
-:local ex [/ip firewall filter find comment~$cmt]
-:if ([:len $ex]=0) do={
-/ip firewall filter add chain=forward action=drop protocol=tcp dst-port=80,443 content=$dom comment=$cmt place-before=([find where comment="defconf: fasttrack"]-0)
-:set cnt ($cnt+1)
-}}} on-error={}
+:local prefix ""
+:do { :set prefix [:pick [/file get $actionTempFile contents] 0 100] } on-error={}
+```
+
+**Codigo novo:**
+```routeros
+:local prefix ""
+:local prefixRetry 0
+:while (([:len $prefix] = 0) && ($prefixRetry < 3)) do={
+:set prefixRetry ($prefixRetry + 1)
+:do { :set prefix [:pick [/file get $actionTempFile contents] 0 100] } on-error={}
+:if ([:len $prefix] = 0) do={
+:log info ("NAVSPOT-INSTALL: action content read retry " . $prefixRetry . "/3")
+:delay 1500ms
+}
 }
 ```
 
-#### 2. Adicionar handler `add_firewall_allow` (para modo bloquear_tudo)
+### Alteracao 2: Mesma correcao para o guardian (linhas 540-541)
 
-```routeros
-:if ($c="add_firewall_allow") do={
-:do {
-:local dom $r
-:if ([:len $dom]>0) do={
-:local cmt ("NAVSPOT-ALLOW-".$dom)
-:local ex [/ip firewall filter find comment~$cmt]
-:if ([:len $ex]=0) do={
-/ip firewall filter add chain=forward action=accept content=$dom comment=$cmt
-:set cnt ($cnt+1)
-}}} on-error={}
-}
-```
+Aplicar o mesmo padrao de retry para garantir consistencia.
 
-### Posicionamento das Regras
+### Alteracao 3: Aumentar delay inicial pos-fetch
 
-As regras de firewall devem ser inseridas ANTES do fasttrack para garantir que o trafego seja processado:
+Aumentar o delay de 1500ms para 2500ms apos o fetch, dando mais tempo para a flash sincronizar.
+
+### Alteracao 4: Atualizar docblock e VERSION
+
+- Atualizar docblock de v7.1.25 para v7.1.31
+- Documentar a nova correcao no header
+
+## Resumo das Alteracoes
 
 ```text
-Ordem das regras no MikroTik:
-1. NAVSPOT-BLOCK-* (bloqueios especificos)
-2. NAVSPOT-ALLOW-* (permissoes para modo whitelist)  
-3. NAVSPOT-ALLOW-MASTER (desabilitado no modo blacklist)
-4. defconf: fasttrack
-5. defconf: accept established
+Linha  | Alteracao
+-------|-------------------------------------------
+9      | Atualizar docblock para v7.1.31
+21-26  | Adicionar nota sobre fix de content read
+41     | VERSION = "7.1.31"
+421    | Delay de 1500ms -> 2500ms
+438-439| Adicionar retry loop para leitura prefix
+523    | Delay de 1500ms -> 2500ms  
+540-541| Adicionar retry loop para leitura prefix
 ```
 
-### Incremento de Versao
+## Diagrama do Fluxo Corrigido
 
-Atualizar VERSION de "7.1.29" para "7.1.30" para garantir que o guardian detecte script desatualizado e force reinstalacao.
-
-## Secao Tecnica: Ordem de Execucao
-
-### Por que content= e nao address-list?
-
-O MikroTik Hotspot usa NAT (masquerade), entao os IPs de destino sao resolvidos dinamicamente. O filtro por `content=` funciona em HTTPS SNI e HTTP Host header, capturando o nome do dominio na camada 7.
-
-### Idempotencia
-
-O handler verifica se ja existe regra com comment identico antes de criar, evitando duplicacao:
-```routeros
-:local ex [/ip firewall filter find comment~$cmt]
-:if ([:len $ex]=0) do={ ... }
+```text
+/tool fetch --> OK (4387 bytes)
+       |
+       v
+:delay 2500ms  (aumentado de 1500ms)
+       |
+       v
+/file get size --> Retry ate 3x --> OK (4387)
+       |
+       v
+/file get contents --> Retry ate 3x --> OK (":log info...")
+       |                    ^
+       |                    |
+       +-- se vazio, delay 1500ms e retry
+       |
+       v
+Validacao [:find ":log info"] --> PASSOU
+       |
+       v
+/system script add --> action-processor COMPLETO instalado
 ```
-
-### Forcando Resync das Regras
-
-Apos o deploy, sera necessario resetar o hash de firewall para forcar reenvio:
-
-```sql
-UPDATE hotspots 
-SET firewall_rules_hash = NULL 
-WHERE nome ILIKE '%googlemarine%';
-```
-
-## Passos de Implementacao
-
-1. Editar `supabase/functions/mikrotik-scripts/index.ts`
-2. Adicionar handlers `add_firewall_block` e `add_firewall_allow` na funcao `generateActionProcessorCoreSource()`
-3. Incrementar versao para 7.1.30
-4. Deploy automatico da edge function
-5. Executar SQL para resetar firewall_rules_hash
-6. No MikroTik, executar: `/system script run navspot-guardian` para forcar atualizacao do script
-7. Executar: `/system script run navspot-sync` para buscar novas acoes
-8. Verificar com: `/ip firewall filter print where comment~"NAVSPOT-BLOCK"`
 
 ## Resultado Esperado
 
 Apos a correcao:
-- Dominios da blacklist "Redes Sociais" (facebook.com, instagram.com, tiktok.com, etc) serao bloqueados automaticamente
-- Novas regras aparecerao no firewall filter do MikroTik
-- Atualizacoes no painel refletirao no hardware em ~30 segundos
+- O instalador tera 3 tentativas para ler o conteudo do arquivo
+- Cada tentativa espera 1500ms antes de tentar novamente
+- Isso resolve o problema de timing do RouterOS 6.x
+- O action-processor completo (com handlers de firewall) sera instalado corretamente
+- Novos bootstraps funcionarao sem necessidade de intervencao manual
+
+## Secao Tecnica: Por Que Isso Funciona
+
+O RouterOS 6.x usa um sistema de arquivos em flash que tem dois niveis de cache:
+1. **Metadata cache**: tamanho, nome, data de criacao (disponivel imediatamente)
+2. **Content cache**: conteudo do arquivo (pode demorar 1-3 segundos para sincronizar)
+
+O delay adicional e o retry garantem que esperamos tempo suficiente para ambos os caches estarem sincronizados.
+
