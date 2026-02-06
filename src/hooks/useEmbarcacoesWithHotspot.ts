@@ -36,7 +36,7 @@ export function useCreateEmbarcacaoWithHotspot() {
         nome: embarcacao.nome,
         embarcacao_id: embarcacaoData.id,
         interface_wifi: hotspot?.interface_wifi || 'wlan1',
-        rede: hotspot?.rede || '192.168.88.0/24',
+        rede: hotspot?.rede || '10.10.10.0/24',
         max_usuarios: hotspot?.max_usuarios || 50,
         sync_interval_minutes: hotspot?.sync_interval_minutes || 5,
         status: 'offline',
