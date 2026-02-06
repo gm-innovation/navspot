@@ -16,7 +16,7 @@ const corsHeaders = {
  * Also called by authenticated users from admin panel to download recovery scripts.
  */
 
-const VERSION = "7.1.46"
+const VERSION = "7.1.47"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -246,7 +246,7 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 :if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-by="cookie,http-pap"
+/ip hotspot profile set $hp login-by=cookie,http-pap
 :log info ("NAVSPOT-RECOVERY: login-by corrigido em ".[/ip hotspot profile get $hp name])
 }
 
