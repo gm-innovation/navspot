@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.37"
+const VERSION = "7.1.38"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -308,9 +308,6 @@ function generateBootstrapScript(
 :do { /interface bridge port remove [find comment="navspot-lan"] } on-error={}
 :do { /interface bridge remove [find name="bridge1"] } on-error={}
 :do { /ip dhcp-client remove [find comment="navspot-wan"] } on-error={}
-# v7.1.37: Remover ether2 de qualquer bridge para IP direto
-:do { /interface bridge port remove [find interface=ether2] } on-error={}
-:do { /ip address remove [find interface=ether2] } on-error={}
 :delay 2s
 :log info "NAVSPOT v${VERSION}: Cleanup concluido"
 
@@ -321,10 +318,6 @@ function generateBootstrapScript(
 :error "Abortando: WAN inexistente"
 }
 :log info "NAVSPOT: Interface WAN (${wanInterface}) validada"
-
-# 1.5. CONFIGURAR IP DE GERENCIA NA ETHER2 (v7.1.37)
-/ip address add address=192.168.88.254/24 interface=ether2 comment="navspot-mgmt"
-:log info "NAVSPOT: IP de gerencia 192.168.88.254 configurado na ether2"
 
 # 2. CONFIGURAR DNS (ANTES de tudo - necessario para fetch)
 /ip dns set allow-remote-requests=yes servers=8.8.8.8,1.1.1.1
