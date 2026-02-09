@@ -1,89 +1,59 @@
 
 
-# Fix v7.1.58b: Corrigir JSON duplicado no sync
+# Fix v7.1.58c: Corrigir deteccao de payload duplicado
 
-## Problema confirmado
+## Problema
 
-O RouterOS envia o JSON duplicado com `;` separador: `{...};{...}` (465 bytes = 2x 232 + 1). O `JSON.parse()` falha na posicao 231.
+O codigo atual (linha 525) verifica `rawBody.includes('}{')`, mas o payload real usa `};{` como separador. A substring `}{` nao aparece no body `...""};{"sync_token"...` porque ha um `;` entre `}` e `{`.
 
-## Mudancas
+## Mudanca
 
-### 1. mikrotik-sync/index.ts: Extracao robusta do primeiro JSON
+### mikrotik-sync/index.ts -- Abordagem parse-first + fallback
 
-Adicionar funcao `extractFirstJsonObject()` com brace-counting que respeita strings e escapes. Aplicar antes do `JSON.parse()`:
-
-```typescript
-function extractFirstJsonObject(s: string): string | null {
-  const start = s.indexOf('{');
-  if (start < 0) return null;
-  let inString = false;
-  let escape = false;
-  let depth = 0;
-  for (let i = start; i < s.length; i++) {
-    const ch = s[i];
-    if (escape) { escape = false; continue; }
-    if (ch === '\\') { escape = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (!inString) {
-      if (ch === '{') depth++;
-      else if (ch === '}') { depth--; if (depth === 0) return s.slice(start, i + 1); }
-    }
-  }
-  return null;
-}
-```
-
-No bloco de parsing (linhas 500-521), inserir sanitizacao entre `req.text()` e `JSON.parse()`:
+Substituir a logica das linhas 521-532 por uma abordagem mais robusta: tentar `JSON.parse` primeiro, e se falhar, usar `extractFirstJsonObject` como fallback:
 
 ```typescript
 let rawBody = ''
 try {
   rawBody = await req.text()
   let jsonText = rawBody
-  if (rawBody.length > 0 && rawBody.includes('}{')) {
+  
+  // v7.1.58c: Try parse first, fallback to extraction if duplicated payload
+  try {
+    payload = JSON.parse(jsonText)
+  } catch (parseErr) {
+    // Attempt robust extraction of first JSON object
     const first = extractFirstJsonObject(rawBody)
     if (first) {
-      jsonText = first
-      console.warn('[mikrotik-sync] Sanitized duplicated payload, original length:', rawBody.length, 'extracted length:', first.length)
+      console.warn('[mikrotik-sync] Sanitized payload, original length:', rawBody.length, 'extracted length:', first.length)
+      payload = JSON.parse(first)
+    } else {
+      throw parseErr // re-throw original error
     }
   }
-  payload = JSON.parse(jsonText)
 } catch (jsonError) {
-  // ... keep existing diagnostic logs + add masked preview
+  // ... keep existing diagnostic logs
 }
 ```
 
-Manter os logs diagnosticos existentes no catch, mas mascarar o token no preview (substituir valor do sync_token por `***`).
+Esta abordagem:
+- Nao depende de heuristicas de substring (`};{` ou `}{`)
+- Funciona com qualquer separador ou forma de duplicacao
+- Zero impacto em payloads validos (o primeiro `JSON.parse` sucede diretamente)
 
-### 2. mikrotik-scripts/index.ts: `http-data=($b)` (linha 808)
+### Redeploy obrigatorio
 
-Alterar:
-```text
-ANTES:  http-data=$b
-DEPOIS: http-data=($b)
-```
+Forcar redeploy de `mikrotik-sync` para garantir que o codigo atualizado entre em producao.
 
-Os parenteses forcam o RouterOS a avaliar `$b` como expressao unica, evitando duplicacao na origem.
-
-### 3. VERSION permanece 7.1.58
-
-Nenhum bump adicional necessario -- a versao ja foi incrementada.
-
-## Arquivos a modificar
+## Arquivo a modificar
 
 | Arquivo | Mudanca |
 |---------|---------|
-| `supabase/functions/mikrotik-sync/index.ts` | Funcao `extractFirstJsonObject()` + sanitizacao antes do parse |
-| `supabase/functions/mikrotik-scripts/index.ts` | Linha 808: `http-data=($b)` |
+| `supabase/functions/mikrotik-sync/index.ts` | Linhas 521-532: parse-first + fallback extraction |
 
 ## Resultado esperado
 
-Apos deploy do backend (sem reimportar bootstrap):
-- O proximo sync sera aceito (backend extrai primeiro JSON valido)
-- `ultima_sincronizacao` volta a atualizar
-- Hotspot aparece como **Online** no frontend
-
-Apos reimportar bootstrap (opcional, corrige na origem):
-- Body reduz de 465 para ~232 bytes
-- Sanitizacao no backend deixa de ser acionada
+- Proximo sync (~1 minuto): backend aceita o payload
+- `ultima_sincronizacao` atualiza
+- Hotspot volta a **Online** no frontend
 
