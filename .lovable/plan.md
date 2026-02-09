@@ -1,115 +1,78 @@
 
 
-# Fix v7.1.58d: Resolver login invalido do tripulante
+# Fix v7.1.58e: Corrigir URL do auto-repair e forcar atualizacao do AP
 
-## Resumo
+## Problema confirmado
 
-O hotspot voltou a ficar Online (fix v7.1.58c funcionou), mas o login do tripulante continua falhando. A investigacao revelou 3 problemas interligados:
+1. **URL com parametro errado** (linha 1443): `?hotspot_id=` em vez de `?h=` -- o portal ignora `hotspot_id` e mostra "Acesso Invalido"
+2. **AP desatualizado no roteador**: O action-processor instalado no hardware nao reconhece os comandos atuais (`create_user`, `configure_hotspot_profile`), executando 0 acoes silenciosamente
 
-1. **6 acoes presas no banco** (desde 03-05/fev) que nunca sao marcadas como executadas
-2. **Filtro de UUID quebrado** que impede a marcacao de QUALQUER acao como executada
-3. **Escape duplo na login-url** que corrompe os placeholders `$(mac)` do portal cativo
+A migration do v7.1.58d funcionou -- as 6 acoes presas foram marcadas como `executado`.
 
 ## Mudancas
 
-### 1. Migration SQL: Limpar 6 acoes presas
+### 1. mikrotik-sync/index.ts: Corrigir URL do auto-repair (linha 1443)
 
-Marcar as 6 acoes pendentes como `executado` para parar de reenvia-las em todo sync:
-
-```sql
-UPDATE acoes_pendentes 
-SET status = 'executado', executed_at = NOW() 
-WHERE hotspot_id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1' 
-  AND status = 'pendente';
-```
-
-### 2. mikrotik-sync/index.ts: Filtro UUID no mark-as-executed (linhas 1553-1568)
-
-O codigo atual filtra por prefixo (`auto-`, `initial-`) mas nao por formato UUID. IDs como `repair-config-profile` ou `rollout-config-profile` causam erro de tipo no PostgreSQL (`invalid input syntax for type uuid`), fazendo a query inteira falhar.
-
-**Correcao**: Filtrar por regex UUID em vez de prefixo:
+Alinhar com as linhas 1047 e 1115 que ja usam `?h=`:
 
 ```typescript
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const actionIds = expandedActions
-  .filter(a => UUID_REGEX.test(a.id))
-  .map(a => a.id)
-```
-
-### 3. mikrotik-sync/index.ts: Remover escape duplo do login URL
-
-O `$(mac)` e escapado duas vezes:
-- Linha 1442 (auto-repair): `escapeRouterOSPlaceholders()` converte `$(mac)` para `\$(mac)` no payload
-- Linha 1583 (pipe generation): `escapeRouterOSPlaceholders()` converte novamente `\$(mac)` para `\\$(mac)`
-
-O RouterOS le o pipe como texto cru do arquivo, entao ve `\\$(mac)` literalmente, quebrando o portal.
-
-**Correcao em 2 pontos**:
-
-a) **Linha 1442-1444** (auto-repair): Remover `escapeRouterOSPlaceholders()` -- guardar URL crua no payload:
-```typescript
+// ANTES:
 const loginUrl = `https://${portalHost}/hotspot-login?hotspot_id=${hotspot.id}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
+
+// DEPOIS:
+const loginUrl = `https://${portalHost}/hotspot-login?h=${encodeURIComponent(hotspot.id)}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
 ```
 
-b) **Linha 1583** (pipe generation): Manter UMA unica chamada a `escapeRouterOSPlaceholders()` aqui, que e o ponto correto (antes de escrever no pipe):
+### 2. mikrotik-recovery-download: Resetar portal_profile_version
+
+Adicionar reset de `portal_profile_version` para null alem do `initial_config_sent=false` ja existente. Isso forca o backend a reinjetar `configure_hotspot_profile` com a URL correta apos o recovery:
+
 ```typescript
-// Ja esta correto -- escapa uma vez so aqui
-const escapedLoginUrl = escapeRouterOSPlaceholders(String(p.login_url || ''))
+await supabase.from('hotspots')
+  .update({ initial_config_sent: false, portal_profile_version: null })
+  .eq('id', hotspot.id)
 ```
 
-Isso garante que o escape acontece uma unica vez, no momento certo.
+### 3. Redeploy de ambas as Edge Functions
+
+- `mikrotik-sync` -- URL corrigida
+- `mikrotik-recovery-download` -- reset mais completo
+
+### 4. Acao manual do usuario
+
+O usuario precisa baixar e importar o script de Recovery no roteador. O script de recovery ja baixa o AP mais recente via `mikrotik-scripts?type=all&token=...`, portanto basta reimportar para atualizar o AP.
 
 ## Arquivos a modificar
 
 | Arquivo | Mudanca |
 |---------|---------|
-| Migration SQL | Marcar 6 acoes presas como executado |
-| `supabase/functions/mikrotik-sync/index.ts` | Linhas 1442-1444: remover escapeRouterOSPlaceholders do auto-repair |
-| `supabase/functions/mikrotik-sync/index.ts` | Linhas 1555-1557: filtrar por UUID_REGEX |
+| `supabase/functions/mikrotik-sync/index.ts` | Linha 1443: `hotspot_id` para `h` |
+| `supabase/functions/mikrotik-recovery-download/index.ts` | Adicionar `portal_profile_version: null` no update |
 
 ## O que NAO muda
 
-- A funcao `extractFirstJsonObject` (fix v7.1.58c) permanece intacta
-- A logica de parse-first + fallback permanece intacta
-- O `http-data=($b)` no mikrotik-scripts permanece intacto
-- A logica de reconciliacao de perfis/usuarios permanece intacta
-- O pipe generation para outros tipos de acao permanece intacto
+- extractFirstJsonObject (v7.1.58c)
+- Filtro UUID (v7.1.58d)
+- mikrotik-scripts (AP ja e a versao mais recente)
+- Portal HotspotLogin.tsx
+- hotspot-login edge function
 
 ## Resultado esperado
 
-1. Migration limpa as 6 acoes presas imediatamente
-2. Proximo sync: payload reduzido (apenas acoes reais de reconciliacao)
-3. Filtro UUID garante que acoes com IDs sinteticos nao quebram a query
-4. Login URL com `\$(mac)` correto (escape unico) permite portal funcionar
-5. Tripulante consegue fazer login via portal cativo
+1. Deploy corrige URL do auto-repair para futuros syncs
+2. Usuario importa recovery script no roteador
+3. Recovery baixa e instala AP atualizado + reseta flags no servidor
+4. Proximo sync: initial_config_sent=false dispara configuracao completa com URL correta (`?h=`)
+5. AP atualizado processa `create_user` e `configure_hotspot_profile`
+6. Tripulante consegue fazer login
 
 ## Secao tecnica
 
-### Fluxo do escape (antes e depois)
+O recovery script existente ja faz tudo que precisa:
+- Remove scripts antigos (navspot-sync, navspot-action-processor, navspot-guardian)
+- Baixa versoes atualizadas via `mikrotik-scripts?type=all`
+- Importa via `/import ns-install.rsc`
+- Aplica `login-by=cookie,http-pap`
+- Executa sync inicial
 
-**ANTES (quebrado)**:
-```text
-auto-repair payload: \$(mac)     [escapeRouterOSPlaceholders aplicado]
-pipe generation:     \\$(mac)    [escapeRouterOSPlaceholders aplicado NOVAMENTE]
-RouterOS le:         \\$(mac)    [literal - portal quebrado]
-```
-
-**DEPOIS (correto)**:
-```text
-auto-repair payload: $(mac)      [sem escape - URL crua]
-pipe generation:     \$(mac)     [escapeRouterOSPlaceholders aplicado UMA vez]
-RouterOS le:         \$(mac)     [armazena como $(mac) para expansao em runtime]
-```
-
-### Cadeia de causalidade das acoes presas
-
-```text
-acoes_pendentes tem 6 rows pendente com UUIDs validos
-  -> sync monta formattedActions com essas 6 + acoes sinteticas (repair-*, auto-*)
-  -> expandedActions contem mix de UUIDs e strings
-  -> filtro por prefixo NAO remove 'repair-config-profile'
-  -> actionIds = ['uuid1', 'uuid2', ..., 'repair-config-profile']
-  -> UPDATE ... IN ('uuid1', ..., 'repair-config-profile') -> ERRO PostgreSQL
-  -> NENHUMA acao marcada como executada
-  -> Proximo sync: mesmas 6 acoes voltam -> loop infinito
-```
+A unica adição e resetar `portal_profile_version` junto com `initial_config_sent` no servidor, para garantir que o backend reinjete a configuracao completa do portal.
