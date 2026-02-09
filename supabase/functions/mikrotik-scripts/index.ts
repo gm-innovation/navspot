@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.55"
+const VERSION = "7.1.56"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -757,14 +757,20 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local r ""
 :local p ""
 :local q "\\22"
-/ip hotspot active
-:foreach a in=[find] do={
-:set u ($u.[get $a user].",".[get $a mac-address].",".[get $a bytes-in].",".[get $a bytes-out].";")
-}
-/ip hotspot user
-:foreach i in=[find where dynamic=no] do={:set r ($r.[get $i name].",")}
-/ip hotspot user profile
-:foreach x in=[find] do={:set p ($p.[get $x name].",")}
+:log info "NAVSPOT-SYNC: step=2a-active"
+:do {:foreach a in=[/ip hotspot active find] do={
+:local au [/ip hotspot active get $a user]
+:local am [/ip hotspot active get $a mac-address]
+:local abi [/ip hotspot active get $a bytes-in]
+:local abo [/ip hotspot active get $a bytes-out]
+:set u ($u.$au.",".$am.",".$abi.",".$abo.";")
+}} on-error={:log warning "NAVSPOT-SYNC: active collect failed"}
+:log info "NAVSPOT-SYNC: step=2b-users"
+:do {:foreach i in=[/ip hotspot user find where dynamic=no] do={:set r ($r.[/ip hotspot user get $i name].",")
+}} on-error={:log warning "NAVSPOT-SYNC: user collect failed"}
+:log info "NAVSPOT-SYNC: step=2c-profiles"
+:do {:foreach x in=[/ip hotspot user profile find] do={:set p ($p.[/ip hotspot user profile get $x name].",")
+}} on-error={:log warning "NAVSPOT-SYNC: profile collect failed"}
 # v7.1.46: Collect profile state for telemetry
 :local hp ""
 :local hs [/ip hotspot find name="hs-navspot"]
