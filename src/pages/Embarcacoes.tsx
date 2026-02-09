@@ -65,6 +65,7 @@ export default function Embarcacoes() {
   const [currentHotspotName, setCurrentHotspotName] = useState("");
   const [currentHotspotId, setCurrentHotspotId] = useState("");
   const [currentScriptVersion, setCurrentScriptVersion] = useState("7.1.47");
+  const [currentSyncToken, setCurrentSyncToken] = useState("");
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -133,6 +134,7 @@ export default function Embarcacoes() {
     setGeneratingFor(embarcacao.id);
     setCurrentHotspotId(hotspot.id);
     setCurrentHotspotName(embarcacao.nome);
+    setCurrentSyncToken(hotspot.sync_token || "");
     
     generateScript.mutate(hotspot.id, {
       onSuccess: (data) => {
@@ -454,6 +456,7 @@ export default function Embarcacoes() {
         hotspotName={currentHotspotName}
         hotspotId={currentHotspotId}
         scriptVersion={currentScriptVersion}
+        syncToken={currentSyncToken}
         onRegenerate={handleRegenerateScript}
         isRegenerating={generateScript.isPending}
       />

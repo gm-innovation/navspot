@@ -23,6 +23,7 @@ interface ScriptModalProps {
   scriptVersion?: string;
   onRegenerate?: () => void;
   isRegenerating?: boolean;
+  syncToken?: string;
 }
 
 export function ScriptModal({
@@ -34,8 +35,10 @@ export function ScriptModal({
   scriptVersion = "7.1.31",
   onRegenerate,
   isRegenerating,
+  syncToken,
 }: ScriptModalProps) {
   const [copied, setCopied] = useState(false);
+  const [copiedUpdate, setCopiedUpdate] = useState(false);
   const downloadRecovery = useDownloadRecoveryScript();
 
   const handleCopy = async () => {
@@ -193,8 +196,41 @@ export function ScriptModal({
                 <li>• <strong>ether2:</strong> Gerência fixa (Winbox/MNDP)</li>
                 <li>• <strong>ether3-5:</strong> Hotspot (bridge1)</li>
               </ul>
-            </div>
           </div>
+
+          {/* COMANDO DE ATUALIZAÇÃO DE SCRIPTS */}
+          {syncToken && (
+            <Alert className="bg-blue-500/10 border-blue-500/50">
+              <RefreshCw className="h-4 w-4 text-blue-600" />
+              <AlertTitle className="text-blue-700 dark:text-blue-400">
+                Atualizar Scripts (sem reinstalar)
+              </AlertTitle>
+              <AlertDescription className="text-blue-600/80 dark:text-blue-400/80">
+                <p className="mb-2 text-xs">
+                  Cole no terminal do RouterOS para atualizar apenas os scripts, sem precisar refazer a instalação completa:
+                </p>
+                <code className="block bg-blue-500/20 p-2 rounded text-xs font-mono whitespace-pre-wrap break-all">
+                  {`/tool fetch url="https://focqrhkozhdefohroqyi.supabase.co/functions/v1/mikrotik-scripts?type=all&token=${syncToken}&ros_version=7" dst-path=navspot-scripts.rsc\n/import navspot-scripts.rsc`}
+                </code>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2"
+                  onClick={async () => {
+                    const cmd = `/tool fetch url="https://focqrhkozhdefohroqyi.supabase.co/functions/v1/mikrotik-scripts?type=all&token=${syncToken}&ros_version=7" dst-path=navspot-scripts.rsc\n/import navspot-scripts.rsc`;
+                    await navigator.clipboard.writeText(cmd);
+                    setCopiedUpdate(true);
+                    toast({ title: "Comando copiado!", description: "Cole no terminal do MikroTik." });
+                    setTimeout(() => setCopiedUpdate(false), 2000);
+                  }}
+                >
+                  {copiedUpdate ? <Check className="h-3 w-3 mr-1" /> : <Copy className="h-3 w-3 mr-1" />}
+                  {copiedUpdate ? "Copiado!" : "Copiar comando"}
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
         </div>
 
         {/* Footer fixo com botões de ação */}
