@@ -1,84 +1,89 @@
 
-# Fix v7.1.58: Diagnosticar JSON invalido no sync (deploy imediato, sem reimportar bootstrap)
 
-## Problema
+# Fix v7.1.58b: Corrigir JSON duplicado no sync
 
-O sync v7.1.57 executa todos os steps sem crash, mas o backend rejeita o JSON com erro **"Unexpected non-whitespace character after JSON at position 231"** em TODAS as chamadas. Isso impede a atualizacao de `ultima_sincronizacao`, fazendo o hotspot aparecer como **Offline** no frontend.
+## Problema confirmado
 
-A posicao 231 e consistente, indicando um caractere fixo nos dados coletados que corrompe o JSON.
-
-## Estrategia: Diagnostico primeiro (sem tocar no roteador)
-
-A mudanca e 100% no backend (`mikrotik-sync`). Nao requer reimportar bootstrap. O proximo sync (1 minuto) ja mostrara o body raw nos logs.
+O RouterOS envia o JSON duplicado com `;` separador: `{...};{...}` (465 bytes = 2x 232 + 1). O `JSON.parse()` falha na posicao 231.
 
 ## Mudancas
 
-### 1. mikrotik-sync/index.ts: Log do body raw no catch de JSON
+### 1. mikrotik-sync/index.ts: Extracao robusta do primeiro JSON
 
-Trocar `req.json()` por `req.text()` + `JSON.parse()` manual para capturar o body bruto quando o parse falhar.
+Adicionar funcao `extractFirstJsonObject()` com brace-counting que respeita strings e escapes. Aplicar antes do `JSON.parse()`:
 
-**ANTES (linhas 500-512):**
 ```typescript
-let payload: SyncPayload
-try {
-  payload = await req.json()
-} catch (jsonError) {
-  console.error('[mikrotik-sync] Invalid JSON body:', jsonError)
-  return new Response(...)
+function extractFirstJsonObject(s: string): string | null {
+  const start = s.indexOf('{');
+  if (start < 0) return null;
+  let inString = false;
+  let escape = false;
+  let depth = 0;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (!inString) {
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) return s.slice(start, i + 1); }
+    }
+  }
+  return null;
 }
 ```
 
-**DEPOIS:**
+No bloco de parsing (linhas 500-521), inserir sanitizacao entre `req.text()` e `JSON.parse()`:
+
 ```typescript
-let payload: SyncPayload
 let rawBody = ''
 try {
   rawBody = await req.text()
-  payload = JSON.parse(rawBody)
-} catch (jsonError) {
-  console.error('[mikrotik-sync] Invalid JSON body:', jsonError)
-  console.error('[mikrotik-sync] Raw body (300 chars):', rawBody.substring(0, 300))
-  console.error('[mikrotik-sync] Raw body length:', rawBody.length)
-  if (rawBody.length > 225) {
-    const around = rawBody.substring(220, 250)
-    const codes = Array.from(around).map((c: string) => c.charCodeAt(0))
-    console.error('[mikrotik-sync] Chars 220-250:', JSON.stringify(around), 'codes:', codes)
+  let jsonText = rawBody
+  if (rawBody.length > 0 && rawBody.includes('}{')) {
+    const first = extractFirstJsonObject(rawBody)
+    if (first) {
+      jsonText = first
+      console.warn('[mikrotik-sync] Sanitized duplicated payload, original length:', rawBody.length, 'extracted length:', first.length)
+    }
   }
-  return new Response(...)
+  payload = JSON.parse(jsonText)
+} catch (jsonError) {
+  // ... keep existing diagnostic logs + add masked preview
 }
 ```
 
-### 2. VERSION bump para 7.1.58
+Manter os logs diagnosticos existentes no catch, mas mascarar o token no preview (substituir valor do sync_token por `***`).
 
-Em ambos:
-- `supabase/functions/mikrotik-scripts/index.ts` (linha 38)
-- `supabase/functions/mikrotik-script-generator/index.ts` (linha 8)
+### 2. mikrotik-scripts/index.ts: `http-data=($b)` (linha 808)
 
-### 3. Nenhuma mudanca no script RouterOS
+Alterar:
+```text
+ANTES:  http-data=$b
+DEPOIS: http-data=($b)
+```
 
-O bootstrap v7.1.57 continua rodando no roteador. Nao e necessario reimportar nada.
+Os parenteses forcam o RouterOS a avaliar `$b` como expressao unica, evitando duplicacao na origem.
+
+### 3. VERSION permanece 7.1.58
+
+Nenhum bump adicional necessario -- a versao ja foi incrementada.
 
 ## Arquivos a modificar
 
 | Arquivo | Mudanca |
 |---------|---------|
-| `supabase/functions/mikrotik-sync/index.ts` | `req.text()` + log raw body no catch |
-| `supabase/functions/mikrotik-scripts/index.ts` | VERSION 7.1.58 |
-| `supabase/functions/mikrotik-script-generator/index.ts` | VERSION 7.1.58 |
+| `supabase/functions/mikrotik-sync/index.ts` | Funcao `extractFirstJsonObject()` + sanitizacao antes do parse |
+| `supabase/functions/mikrotik-scripts/index.ts` | Linha 808: `http-data=($b)` |
 
-## Fluxo apos deploy
+## Resultado esperado
 
-1. Deploy das 3 Edge Functions
-2. Aguardar 1 minuto (proximo sync do roteador)
-3. Verificar logs do `mikrotik-sync` para ver o body raw
-4. Com base no diagnostico, aplicar fix cirurgico no script RouterOS
+Apos deploy do backend (sem reimportar bootstrap):
+- O proximo sync sera aceito (backend extrai primeiro JSON valido)
+- `ultima_sincronizacao` volta a atualizar
+- Hotspot aparece como **Online** no frontend
 
-## Por que diagnostico primeiro?
+Apos reimportar bootstrap (opcional, corrige na origem):
+- Body reduz de 465 para ~232 bytes
+- Sanitizacao no backend deixa de ser acionada
 
-Sem ver o body raw, qualquer fix no script seria "as cegas". A posicao 231 pode ser causada por:
-- Token do arquivo com headers RouterOS (newlines)
-- Valor de `login-by` com caracteres especiais (ex: `http-pap,http-chap` contendo virgula nao-escapada)
-- Nome de profile com aspas ou caracteres especiais
-- Carriage return (`\r`) no final de valores
-
-Somente vendo os bytes exatos podemos aplicar o fix correto.
