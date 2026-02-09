@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.53"
+const VERSION = "7.1.54"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -734,7 +734,9 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :global navspotSyncLockTime
 :if ([:len $navspotSyncLock]=0) do={:set navspotSyncLock "0"}
 :if ([:len $navspotSyncLockTime]=0) do={:set navspotSyncLockTime 0}
-:local us [/system resource get uptime-as-secs]
+:local us 0
+:do {:set us [/system resource get uptime-as-secs]} on-error={:log warning "NAVSPOT-SYNC: uptime-as-secs indisponivel";:set us 0}
+:do {
 :if ($navspotSyncLock="1") do={
 :local la ($us - $navspotSyncLockTime)
 :if ($la > 300) do={
@@ -781,7 +783,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :do {
 /tool fetch url="${syncUrl}" http-method=post http-data=$b http-header-field="Content-Type: application/json" check-certificate=no dst-path=$respFile
 :set ok true
-} on-error={:set navspotSyncLock "0"}
+} on-error={:log warning "NAVSPOT-SYNC: fetch FALHOU";:set navspotSyncLock "0"}
 :if ($ok) do={
 :delay 500ms
 :local resp ""
@@ -828,6 +830,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 }
 }
+} on-error={:log error ("NAVSPOT-SYNC: CRASH=" . [:tostr $error]);:set navspotSyncLock "0"}
 :set navspotSyncLock "0"
 :log info "NAVSPOT-SYNC v${VERSION}: OK"`
 }
