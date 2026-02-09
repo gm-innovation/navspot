@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.56"
+const VERSION = "7.1.57"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -771,17 +771,24 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :log info "NAVSPOT-SYNC: step=2c-profiles"
 :do {:foreach x in=[/ip hotspot user profile find] do={:set p ($p.[/ip hotspot user profile get $x name].",")
 }} on-error={:log warning "NAVSPOT-SYNC: profile collect failed"}
-# v7.1.46: Collect profile state for telemetry
+# v7.1.57: Telemetry with error isolation + broken chaining
+:set step "2d-telemetry"
+:log info "NAVSPOT-SYNC: step=2d-telemetry"
 :local hp ""
-:local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
-:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :local hlb ""
 :local hlu ""
+:do {
+:local hs [/ip hotspot find name="hs-navspot"]
+:if ([:len $hs]>0) do={
+:local pName [/ip hotspot get $hs profile]
+:set hp [/ip hotspot profile find name=$pName]
+}
+:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
 :set hlb [/ip hotspot profile get $hp login-by]
 :set hlu [/ip hotspot profile get $hp login-url]
 }
+} on-error={:log warning "NAVSPOT-SYNC: telemetry collect failed"}
 :set step "3-collect"
 :log info "NAVSPOT-SYNC: step=3-collect"
 :local b ("{".$q."sync_token".$q.":".$q.$tk.$q.",".$q."active_users_csv".$q.":".$q.$u.$q.",".$q."registered_users_csv".$q.":".$q.$r.$q.",".$q."registered_profiles_csv".$q.":".$q.$p.$q.",".$q."hotspot_login_by".$q.":".$q.$hlb.$q.",".$q."hotspot_login_url".$q.":".$q.$hlu.$q."}")
