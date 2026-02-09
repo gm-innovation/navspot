@@ -496,15 +496,45 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     )
 
-    // v6.9.12: Handle invalid JSON gracefully (return 400, not 500)
+    // v7.1.58b: Robust first-JSON extraction (handles duplicated payloads from RouterOS)
+    function extractFirstJsonObject(s: string): string | null {
+      const start = s.indexOf('{');
+      if (start < 0) return null;
+      let inString = false;
+      let escape = false;
+      let depth = 0;
+      for (let i = start; i < s.length; i++) {
+        const ch = s[i];
+        if (escape) { escape = false; continue; }
+        if (ch === '\\') { escape = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (!inString) {
+          if (ch === '{') depth++;
+          else if (ch === '}') { depth--; if (depth === 0) return s.slice(start, i + 1); }
+        }
+      }
+      return null;
+    }
+
     let payload: SyncPayload
     let rawBody = ''
     try {
       rawBody = await req.text()
-      payload = JSON.parse(rawBody)
+      let jsonText = rawBody
+      // v7.1.58b: Detect and sanitize duplicated JSON payloads (RouterOS sends {…};{…})
+      if (rawBody.length > 0 && rawBody.includes('}{')) {
+        const first = extractFirstJsonObject(rawBody)
+        if (first) {
+          jsonText = first
+          console.warn('[mikrotik-sync] Sanitized duplicated payload, original length:', rawBody.length, 'extracted length:', first.length)
+        }
+      }
+      payload = JSON.parse(jsonText)
     } catch (jsonError) {
       console.error('[mikrotik-sync] Invalid JSON body:', jsonError)
-      console.error('[mikrotik-sync] Raw body (300 chars):', rawBody.substring(0, 300))
+      // Mask sync_token in raw preview for security
+      const maskedPreview = rawBody.substring(0, 300).replace(/"sync_token"\s*:\s*"[^"]*"/g, '"sync_token":"***"')
+      console.error('[mikrotik-sync] Raw body preview (masked, 300 chars):', maskedPreview)
       console.error('[mikrotik-sync] Raw body length:', rawBody.length)
       if (rawBody.length > 225) {
         const around = rawBody.substring(220, 250)

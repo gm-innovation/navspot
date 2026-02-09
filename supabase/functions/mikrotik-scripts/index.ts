@@ -805,7 +805,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :log info "NAVSPOT-SYNC: step=5-fetch"
 :delay 200ms
 :do {
-/tool fetch url="${syncUrl}" http-method=post http-data=$b http-header-field="Content-Type: application/json" check-certificate=no dst-path=$respFile
+/tool fetch url="${syncUrl}" http-method=post http-data=($b) http-header-field="Content-Type: application/json" check-certificate=no dst-path=$respFile
 :set ok true
 } on-error={:log warning "NAVSPOT-SYNC: fetch FALHOU";:set navspotSyncLock "0"}
 :if ($ok) do={
