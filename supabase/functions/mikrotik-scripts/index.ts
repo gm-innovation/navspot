@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.59"
+const VERSION = "7.1.60"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -290,14 +290,24 @@ function generateAllScripts(
   // This fallback handles only create_profile and create_user
   const fallbackSource = `:log info "NAVSPOT-ACTION v${VERSION}F: Start"
 :global navspotLock
-:if ($navspotLock = "1") do={ :return }
+:global navspotLockTime
+:local us 0
+:do {:set us [/system resource get uptime-as-secs]} on-error={:set us 0}
+:if ([:len $navspotLock]=0) do={:set navspotLock "0"}
+:if ($navspotLock = "1") do={
+:local la 999
+:if (($us>0)&&([:typeof $navspotLockTime]="num")&&($navspotLockTime>0)) do={:set la ($us - $navspotLockTime)}
+:if ($la>120) do={:log warning ("NS-AP: lock expired (age=" . $la . "s)")} else={:return}
+}
 :set navspotLock "1"
+:set navspotLockTime $us
 :local fid [/file find name="navspot-actions.txt"]
 :if ([:len $fid] = 0) do={ :set navspotLock "0"; :return }
 :local raw [/file get $fid contents]
 :do { /file remove $fid } on-error={}
 :local pos 0
 :local cnt 0
+:do {
 :while ([:find $raw ";" $pos] >= 0) do={
 :local ep [:find $raw ";" $pos]
 :local ln [:pick $raw $pos $ep]
@@ -339,6 +349,7 @@ function generateAllScripts(
 :set cnt ($cnt + 1)
 }}
 }}}
+} on-error={:log error ("NS-AP: CRASH=" . [:tostr $error])}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION v${VERSION}F: OK - " . $cnt)`
 
@@ -738,11 +749,19 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :do {:set us [/system resource get uptime-as-secs]} on-error={:log warning "NAVSPOT-SYNC: uptime-as-secs indisponivel";:set us 0}
 :do {
 :if ($navspotSyncLock="1") do={
-:local la ($us - $navspotSyncLockTime)
-:if ($la > 300) do={
+:local shouldSkip true
+:if ($us=0) do={
+:log warning "NAVSPOT-SYNC: uptime unavailable, forcing lock reset"
+:set shouldSkip false
+} else={
+:local la 999
+:if (([:typeof $navspotSyncLockTime]="num")&&($navspotSyncLockTime>0)) do={:set la ($us - $navspotSyncLockTime)}
+:if ($la>300) do={
 :log warning ("NAVSPOT-SYNC: lock expirado (age=" . $la . "s), resetando")
-:set navspotSyncLock "0"
-} else={:log info "NAVSPOT-SYNC: locked";:return}}
+:set shouldSkip false
+} else={:log info ("NAVSPOT-SYNC: locked (age=" . $la . "s)")}
+}
+:if ($shouldSkip) do={:return}}
 :local step "0-init"
 :set navspotSyncLock "1"
 :set navspotSyncLockTime $us
@@ -876,8 +895,17 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 function generateActionProcessorCoreSource(): string {
   return `:log info "NAVSPOT-ACTION v${VERSION}"
 :global navspotLock
-:if ($navspotLock="1") do={:return}
+:global navspotLockTime
+:local us 0
+:do {:set us [/system resource get uptime-as-secs]} on-error={:set us 0}
+:if ([:len $navspotLock]=0) do={:set navspotLock "0"}
+:if ($navspotLock="1") do={
+:local la 999
+:if (($us>0)&&([:typeof $navspotLockTime]="num")&&($navspotLockTime>0)) do={:set la ($us - $navspotLockTime)}
+:if ($la>120) do={:log warning ("NS-AP: lock expired (age=" . $la . "s)")} else={:log info ("NS-AP: locked (age=" . $la . "s)");:return}
+}
 :set navspotLock "1"
+:set navspotLockTime $us
 :local f [/file find name="navspot-actions.txt"]
 :if ([:len $f]=0) do={:set navspotLock "0";:return}
 :local d ""
@@ -886,6 +914,7 @@ function generateActionProcessorCoreSource(): string {
 :if ([:len $d]=0) do={:set navspotLock "0";:return}
 :local pos 0
 :local cnt 0
+:do {
 :while ([:find $d ";" $pos]>=0) do={
 :local ep [:find $d ";" $pos]
 :local ln [:pick $d $pos $ep]
@@ -965,6 +994,7 @@ function generateActionProcessorCoreSource(): string {
 :if ([:len $wg]=0) do={/ip hotspot walled-garden add dst-host=("*".$dom."*") action=allow comment="navspot";:set cnt ($cnt+1)}
 }} on-error={}}
 }}}
+} on-error={:log error ("NS-AP: CRASH=" . [:tostr $error])}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION v${VERSION}: OK - ".$cnt)`
 }
@@ -989,8 +1019,17 @@ function generateActionProcessorCoreSource(): string {
 function generateActionProcessorFullSource(): string {
   return `:log info "NAVSPOT-ACTION v${VERSION}"
 :global navspotLock
-:if ($navspotLock="1") do={:return}
+:global navspotLockTime
+:local us 0
+:do {:set us [/system resource get uptime-as-secs]} on-error={:set us 0}
+:if ([:len $navspotLock]=0) do={:set navspotLock "0"}
+:if ($navspotLock="1") do={
+:local la 999
+:if (($us>0)&&([:typeof $navspotLockTime]="num")&&($navspotLockTime>0)) do={:set la ($us - $navspotLockTime)}
+:if ($la>120) do={:log warning ("NS-AP: lock expired (age=" . $la . "s)")} else={:log info ("NS-AP: locked (age=" . $la . "s)");:return}
+}
 :set navspotLock "1"
+:set navspotLockTime $us
 :local f [/file find name="navspot-actions.txt"]
 :if ([:len $f]=0) do={:set navspotLock "0";:return}
 :local d ""
@@ -999,6 +1038,7 @@ function generateActionProcessorFullSource(): string {
 :if ([:len $d]=0) do={:set navspotLock "0";:return}
 :local pos 0
 :local cnt 0
+:do {
 :while ([:find $d ";" $pos]>=0) do={
 :local ep [:find $d ";" $pos]
 :local ln [:pick $d $pos $ep]
@@ -1119,6 +1159,7 @@ function generateActionProcessorFullSource(): string {
 :if ([:len $mac]>0) do={/ip hotspot active remove [find mac-address=$mac];:set cnt ($cnt+1)}
 }} on-error={}}
 }}}
+} on-error={:log error ("NS-AP: CRASH=" . [:tostr $error])}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION v${VERSION}: OK - ".$cnt)`
 }
@@ -1136,8 +1177,17 @@ function generateActionProcessorFullSource(): string {
 function generateActionAuxSource(): string {
   return `:log info "NAVSPOT-ACTION-AUX v${VERSION}"
 :global navspotLock
-:if ($navspotLock="1") do={:return}
+:global navspotLockTime
+:local us 0
+:do {:set us [/system resource get uptime-as-secs]} on-error={:set us 0}
+:if ([:len $navspotLock]=0) do={:set navspotLock "0"}
+:if ($navspotLock="1") do={
+:local la 999
+:if (($us>0)&&([:typeof $navspotLockTime]="num")&&($navspotLockTime>0)) do={:set la ($us - $navspotLockTime)}
+:if ($la>120) do={:log warning ("NS-AP-AUX: lock expired (age=" . $la . "s)")} else={:log info ("NS-AP-AUX: locked (age=" . $la . "s)");:return}
+}
 :set navspotLock "1"
+:set navspotLockTime $us
 :local f [/file find name="navspot-actions-aux.txt"]
 :if ([:len $f]=0) do={:set navspotLock "0";:return}
 :local d ""
@@ -1146,6 +1196,7 @@ function generateActionAuxSource(): string {
 :if ([:len $d]=0) do={:set navspotLock "0";:return}
 :local pos 0
 :local cnt 0
+:do {
 :while ([:find $d ";" $pos]>=0) do={
 :local ep [:find $d ";" $pos]
 :local ln [:pick $d $pos $ep]
@@ -1219,6 +1270,7 @@ function generateActionAuxSource(): string {
 } on-error={}
 }
 }}}
+} on-error={:log error ("NS-AP-AUX: CRASH=" . [:tostr $error])}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION-AUX v${VERSION}: OK - ".$cnt)`
 }
