@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 // v7.1.51: Reverted cleanup to stable format (unquoted values)
-const VERSION = "7.1.60b"
+const VERSION = "7.1.60c"
 
 // v7.1.50: Required portal profile version - only marked after telemetry confirms
 const REQUIRED_PORTAL_VERSION = "7.1.50-http-pap"
@@ -1124,8 +1124,40 @@ Deno.serve(async (req) => {
 
       console.log(`[mikrotik-sync] v7.1.60: Skipping portal repair - telemetry unreliable (login_by="${hotspotLoginBy}", failures=${newFailures})`)
 
-      if (newFailures >= 5) {
-        console.warn(`[mikrotik-sync] v7.1.60: ALERT - hotspot ${hotspot.nome} has ${newFailures} consecutive telemetry failures. Router may need bootstrap reimport.`)
+      if (newFailures >= 10) {
+        console.warn(`[mikrotik-sync] v7.1.60c: FORCE REPAIR - ${newFailures} consecutive telemetry failures, injecting portal config to break deadlock (hotspot=${hotspot.nome})`)
+
+        const hotspotSlug = hotspot.nome.toLowerCase()
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .replace(/\s+/g, '-')
+          .replace(/[^a-z0-9-]/g, '')
+        const forceLoginUrl = `https://navspot.lovable.app/hotspot-login?h=${encodeURIComponent(hotspot.id)}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
+        const forceDnsName = `${hotspotSlug}.navspot.local`
+
+        formattedActions.unshift({
+          id: 'force-repair-whitelist',
+          type: 'create_whitelist_domain',
+          payload: { domain: new URL(Deno.env.get('SUPABASE_URL')!).hostname }
+        })
+        formattedActions.unshift({
+          id: 'force-repair-config-profile',
+          type: 'configure_hotspot_profile',
+          payload: { login_url: forceLoginUrl, dns_name: forceDnsName }
+        })
+
+        // Reset counter + portal_profile_version to wait for telemetry confirmation
+        const { error: resetError } = await supabase
+          .from('hotspots')
+          .update({ telemetry_failures: 0, portal_profile_version: null })
+          .eq('id', hotspot.id)
+
+        if (resetError) {
+          console.error(`[mikrotik-sync] v7.1.60c: Failed to reset telemetry_failures: ${resetError.message}`)
+        } else {
+          console.log(`[mikrotik-sync] v7.1.60c: Reset telemetry_failures to 0 and portal_profile_version to null after force repair`)
+        }
+      } else if (newFailures >= 5) {
+        console.warn(`[mikrotik-sync] v7.1.60c: ALERT - hotspot ${hotspot.nome} has ${newFailures} consecutive telemetry failures`)
       }
     } else {
       // Telemetry reliable -- reset counter if needed
