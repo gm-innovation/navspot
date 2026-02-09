@@ -1,108 +1,80 @@
 
 
-# Fix v7.1.55: Step logging diagnostico + fix time tostr
+# Fix v7.1.56: Coleta de hotspot com caminhos completos + sub-step logging
 
-## Problema
+## Problema confirmado
 
-O sync v7.1.54 crasha silenciosamente. Os logs mostram:
-```
-NAVSPOT-SYNC v7.1.54
-NAVSPOT-SYNC: uptime-as-secs indisponivel
-NAVSPOT-SYNC: CRASH=
-NAVSPOT-SYNC v7.1.54: OK
-```
+Os logs v7.1.55 mostram crash entre `step=2-token` e `step=3-collect`. O crash ocorre nas linhas 760-767 que usam "context mode" do RouterOS (`/ip hotspot active` seguido de `find` sem caminho completo).
 
-O `$error` vem vazio, impossibilitando saber ONDE o crash ocorre. O crash esta entre o lock (linha 740) e o fetch (linha 784).
+## Mudancas cirurgicas
 
-## Mudancas (3 pontos cirurgicos)
+### 1. Reescrever coleta de dados do hotspot (linhas 760-767)
 
-Arquivo unico: `supabase/functions/mikrotik-scripts/index.ts`, funcao `generateSyncSource`
-
-### 1. Adicionar variavel `step` + step logging (5 pontos)
-
-Inserir `:local step "0-init"` no inicio do bloco `:do {`, e atualizar `step` antes de cada operacao perigosa:
-
-| Step | Posicao | Operacao |
-|------|---------|----------|
-| `1-lock` | Apos adquirir lock (linha 747) | Lock OK, proximo e ler token |
-| `2-token` | Apos ler token (linha 750) | Token OK, proximo e coletar hotspot |
-| `3-collect` | Apos coletar dados do hotspot (linha 773) | Coleta OK, proximo e montar JSON |
-| `4-json` | Apos montar o payload JSON (linha 774) | JSON OK, proximo e parsear time |
-| `5-fetch` | Apos parsear time, antes do fetch (linha 782) | Time OK, proximo e fazer fetch |
-
-### 2. Fix preventivo: converter time para string (linha 777)
-
-**ANTES:**
-```
-:local ts [/system clock get time]
+**ANTES (context mode - causa do crash):**
+```text
+/ip hotspot active
+:foreach a in=[find] do={
+:set u ($u.[get $a user].",".[get $a mac-address].",".[get $a bytes-in].",".[get $a bytes-out].";")
+}
+/ip hotspot user
+:foreach i in=[find where dynamic=no] do={:set r ($r.[get $i name].",")}
+/ip hotspot user profile
+:foreach x in=[find] do={:set p ($p.[get $x name].",")}
 ```
 
-**DEPOIS:**
-```
-:local ts [:tostr [/system clock get time]]
-```
-
-Isso previne crash se ROS 7 retornar tipo `time` nativo em vez de string.
-
-### 3. Atualizar on-error global para incluir step (linha 833)
-
-**ANTES:**
-```
-} on-error={:log error ("NAVSPOT-SYNC: CRASH=" . [:tostr $error]);:set navspotSyncLock "0"}
-```
-
-**DEPOIS:**
-```
-} on-error={:log error ("NAVSPOT-SYNC: CRASH step=" . $step);:set navspotSyncLock "0"}
-```
-
-Usa `$step` em vez de `$error` (que vem vazio nesse ROS). Assim saberemos exatamente qual secao causou o crash.
-
-### 4. VERSION bump para 7.1.55
-
-`const VERSION = "7.1.54"` -> `"7.1.55"`
-
-Tambem atualizar em `mikrotik-script-generator/index.ts` para manter alinhado.
-
-## Resultado esperado nos logs
-
-**Se o crash e no time (hipotese principal):**
-```
-NAVSPOT-SYNC v7.1.55
-step=1-lock
-step=2-token
-step=3-collect
-step=4-json
-CRASH step=4-json      <- crash no [:pick] do time
+**DEPOIS (inline mode com sub-step logging e error handling):**
+```text
+:log info "NAVSPOT-SYNC: step=2a-active"
+:do {:foreach a in=[/ip hotspot active find] do={
+:local au [/ip hotspot active get $a user]
+:local am [/ip hotspot active get $a mac-address]
+:local abi [/ip hotspot active get $a bytes-in]
+:local abo [/ip hotspot active get $a bytes-out]
+:set u ($u.$au.",".$am.",".$abi.",".$abo.";")
+}} on-error={:log warning "NAVSPOT-SYNC: active collect failed"}
+:log info "NAVSPOT-SYNC: step=2b-users"
+:do {:foreach i in=[/ip hotspot user find where dynamic=no] do={:set r ($r.[/ip hotspot user get $i name].",")
+}} on-error={:log warning "NAVSPOT-SYNC: user collect failed"}
+:log info "NAVSPOT-SYNC: step=2c-profiles"
+:do {:foreach x in=[/ip hotspot user profile find] do={:set p ($p.[/ip hotspot user profile get $x name].",")
+}} on-error={:log warning "NAVSPOT-SYNC: profile collect failed"}
 ```
 
-**Se o crash e na coleta de hotspot:**
-```
-NAVSPOT-SYNC v7.1.55
-step=1-lock
-step=2-token
-CRASH step=2-token     <- crash nos comandos /ip hotspot
-```
+### 2. VERSION bump para 7.1.56
 
-**Se tudo funcionar (fix do time resolveu):**
-```
-NAVSPOT-SYNC v7.1.55
-step=1-lock
-step=2-token
-step=3-collect
-step=4-json
-step=5-fetch
-NAVSPOT-SYNC v7.1.55: OK
-```
+Em ambos os arquivos:
+- `supabase/functions/mikrotik-scripts/index.ts`: linha 38
+- `supabase/functions/mikrotik-script-generator/index.ts`: linha 8
+
+### 3. Nenhuma outra mudanca
+
+O step logging geral (1-lock, 2-token, 3-collect, 4-json, 5-fetch) e o fix do `[:tostr]` da v7.1.55 sao mantidos intactos.
 
 ## Arquivos a modificar
 
 | Arquivo | Mudanca |
 |---------|---------|
-| `supabase/functions/mikrotik-scripts/index.ts` | Step logging, fix time tostr, on-error com step, VERSION 7.1.55 |
-| `supabase/functions/mikrotik-script-generator/index.ts` | VERSION 7.1.55 |
+| `supabase/functions/mikrotik-scripts/index.ts` | Reescrever linhas 760-767 (coleta hotspot), VERSION 7.1.56 |
+| `supabase/functions/mikrotik-script-generator/index.ts` | VERSION 7.1.56 |
+
+## Resultado esperado nos logs
+
+```text
+NAVSPOT-SYNC v7.1.56
+step=1-lock
+step=2-token
+step=2a-active
+step=2b-users
+step=2c-profiles
+step=3-collect
+step=4-json
+step=5-fetch
+NAVSPOT-SYNC v7.1.56: OK
+```
+
+Se uma coleta especifica falhar, aparecera o warning correspondente sem crashar o script.
 
 ## Deploy
 
-Redeployar `mikrotik-scripts` e `mikrotik-script-generator`. Reimportar bootstrap no roteador.
+Redeployar `mikrotik-scripts` e `mikrotik-script-generator`. Reimportar bootstrap v7.1.56 no roteador.
 
