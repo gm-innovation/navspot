@@ -1,96 +1,84 @@
 
-
-# Fix v7.1.57: Proteger bloco de telemetria com on-error e quebrar encadeamento
+# Fix v7.1.58: Diagnosticar JSON invalido no sync (deploy imediato, sem reimportar bootstrap)
 
 ## Problema
 
-Logs v7.1.56 confirmam crash entre `step=2c-profiles` e `step=3-collect`. O bloco de telemetria (linhas 774-784) nao tem protecao `on-error` e usa encadeamento perigoso na linha 777:
+O sync v7.1.57 executa todos os steps sem crash, mas o backend rejeita o JSON com erro **"Unexpected non-whitespace character after JSON at position 231"** em TODAS as chamadas. Isso impede a atualizacao de `ultima_sincronizacao`, fazendo o hotspot aparecer como **Offline** no frontend.
 
-```text
-:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]
-```
+A posicao 231 e consistente, indicando um caractere fixo nos dados coletados que corrompe o JSON.
 
-No ROS 7, se o resultado interno retornar tipo inesperado, o `find` externo crasha o parser.
+## Estrategia: Diagnostico primeiro (sem tocar no roteador)
 
-## Mudancas cirurgicas
+A mudanca e 100% no backend (`mikrotik-sync`). Nao requer reimportar bootstrap. O proximo sync (1 minuto) ja mostrara o body raw nos logs.
 
-### 1. Reescrever bloco de telemetria (linhas 774-784)
+## Mudancas
 
-**ANTES:**
-```text
-# v7.1.46: Collect profile state for telemetry
-:local hp ""
-:local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
-:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
-:local hlb ""
-:local hlu ""
-:if ([:len $hp]>0) do={
-:set hlb [/ip hotspot profile get $hp login-by]
-:set hlu [/ip hotspot profile get $hp login-url]
+### 1. mikrotik-sync/index.ts: Log do body raw no catch de JSON
+
+Trocar `req.json()` por `req.text()` + `JSON.parse()` manual para capturar o body bruto quando o parse falhar.
+
+**ANTES (linhas 500-512):**
+```typescript
+let payload: SyncPayload
+try {
+  payload = await req.json()
+} catch (jsonError) {
+  console.error('[mikrotik-sync] Invalid JSON body:', jsonError)
+  return new Response(...)
 }
 ```
 
 **DEPOIS:**
-```text
-# v7.1.57: Telemetry with error isolation + broken chaining
-:set step "2d-telemetry"
-:log info "NAVSPOT-SYNC: step=2d-telemetry"
-:local hp ""
-:local hlb ""
-:local hlu ""
-:do {
-:local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs]>0) do={
-:local pName [/ip hotspot get $hs profile]
-:set hp [/ip hotspot profile find name=$pName]
+```typescript
+let payload: SyncPayload
+let rawBody = ''
+try {
+  rawBody = await req.text()
+  payload = JSON.parse(rawBody)
+} catch (jsonError) {
+  console.error('[mikrotik-sync] Invalid JSON body:', jsonError)
+  console.error('[mikrotik-sync] Raw body (300 chars):', rawBody.substring(0, 300))
+  console.error('[mikrotik-sync] Raw body length:', rawBody.length)
+  if (rawBody.length > 225) {
+    const around = rawBody.substring(220, 250)
+    const codes = Array.from(around).map((c: string) => c.charCodeAt(0))
+    console.error('[mikrotik-sync] Chars 220-250:', JSON.stringify(around), 'codes:', codes)
+  }
+  return new Response(...)
 }
-:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
-:if ([:len $hp]>0) do={
-:set hlb [/ip hotspot profile get $hp login-by]
-:set hlu [/ip hotspot profile get $hp login-url]
-}
-} on-error={:log warning "NAVSPOT-SYNC: telemetry collect failed"}
 ```
 
-Mudancas chave:
-- Variaveis `hp`, `hlb`, `hlu` declaradas FORA do `:do` (garantem existencia para o JSON)
-- Encadeamento quebrado: `[/ip hotspot get $hs profile]` salvo em `:local pName` antes de usar no `find`
-- Bloco inteiro protegido com `on-error`
-- Sub-step `2d-telemetry` adicionado para rastreabilidade
+### 2. VERSION bump para 7.1.58
 
-### 2. VERSION bump para 7.1.57
-
-Em ambos os arquivos:
+Em ambos:
 - `supabase/functions/mikrotik-scripts/index.ts` (linha 38)
 - `supabase/functions/mikrotik-script-generator/index.ts` (linha 8)
 
-### 3. Nenhuma outra mudanca
+### 3. Nenhuma mudanca no script RouterOS
 
-Todo o restante do script permanece intacto.
+O bootstrap v7.1.57 continua rodando no roteador. Nao e necessario reimportar nada.
 
 ## Arquivos a modificar
 
 | Arquivo | Mudanca |
 |---------|---------|
-| `supabase/functions/mikrotik-scripts/index.ts` | Reescrever linhas 774-784 (telemetria), VERSION 7.1.57 |
-| `supabase/functions/mikrotik-script-generator/index.ts` | VERSION 7.1.57 |
+| `supabase/functions/mikrotik-sync/index.ts` | `req.text()` + log raw body no catch |
+| `supabase/functions/mikrotik-scripts/index.ts` | VERSION 7.1.58 |
+| `supabase/functions/mikrotik-script-generator/index.ts` | VERSION 7.1.58 |
 
-## Resultado esperado nos logs
+## Fluxo apos deploy
 
-```text
-NAVSPOT-SYNC v7.1.57
-step=1-lock
-step=2-token
-step=2a-active
-step=2b-users
-step=2c-profiles
-step=2d-telemetry
-step=3-collect
-step=4-json
-step=5-fetch
-NAVSPOT-SYNC v7.1.57: OK
-```
+1. Deploy das 3 Edge Functions
+2. Aguardar 1 minuto (proximo sync do roteador)
+3. Verificar logs do `mikrotik-sync` para ver o body raw
+4. Com base no diagnostico, aplicar fix cirurgico no script RouterOS
 
-Se a telemetria falhar, aparecera `telemetry collect failed` como warning, mas `hlb` e `hlu` ficarao vazios e o sync completara normalmente.
+## Por que diagnostico primeiro?
 
+Sem ver o body raw, qualquer fix no script seria "as cegas". A posicao 231 pode ser causada por:
+- Token do arquivo com headers RouterOS (newlines)
+- Valor de `login-by` com caracteres especiais (ex: `http-pap,http-chap` contendo virgula nao-escapada)
+- Nome de profile com aspas ou caracteres especiais
+- Carriage return (`\r`) no final de valores
+
+Somente vendo os bytes exatos podemos aplicar o fix correto.
