@@ -5,8 +5,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.1.50: Refactored cleanup with foreach + anchored regex
-const VERSION = "7.1.50"
+// v7.1.51: Reverted cleanup to stable format (unquoted values)
+const VERSION = "7.1.51"
 
 // v7.1.50: Required portal profile version - only marked after telemetry confirms
 const REQUIRED_PORTAL_VERSION = "7.1.50-http-pap"
