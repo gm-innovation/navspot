@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.54"
+const VERSION = "7.1.55"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -743,11 +743,16 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :log warning ("NAVSPOT-SYNC: lock expirado (age=" . $la . "s), resetando")
 :set navspotSyncLock "0"
 } else={:log info "NAVSPOT-SYNC: locked";:return}}
+:local step "0-init"
 :set navspotSyncLock "1"
 :set navspotSyncLockTime $us
+:set step "1-lock"
+:log info "NAVSPOT-SYNC: step=1-lock"
 :local tk ""
 :do {:set tk [/file get "navspot-token.txt" contents]} on-error={}
 :if ([:len $tk]<10) do={:set tk "${syncToken}"}
+:set step "2-token"
+:log info "NAVSPOT-SYNC: step=2-token"
 :local u ""
 :local r ""
 :local p ""
@@ -771,14 +776,20 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :set hlb [/ip hotspot profile get $hp login-by]
 :set hlu [/ip hotspot profile get $hp login-url]
 }
+:set step "3-collect"
+:log info "NAVSPOT-SYNC: step=3-collect"
 :local b ("{".$q."sync_token".$q.":".$q.$tk.$q.",".$q."active_users_csv".$q.":".$q.$u.$q.",".$q."registered_users_csv".$q.":".$q.$r.$q.",".$q."registered_profiles_csv".$q.":".$q.$p.$q.",".$q."hotspot_login_by".$q.":".$q.$hlb.$q.",".$q."hotspot_login_url".$q.":".$q.$hlu.$q."}")
+:set step "4-json"
+:log info "NAVSPOT-SYNC: step=4-json"
 :local ok false
 # v7.1.36: Arquivo de resposta unico com timestamp
-:local ts [/system clock get time]
+:local ts [:tostr [/system clock get time]]
 :local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
 :local respFile ("navspot-resp-" . $tsStr . ".txt")
 # Limpar arquivos de resposta antigos
 :do {:foreach oldF in=[/file find where name~"navspot-resp-"] do={/file remove $oldF}} on-error={}
+:set step "5-fetch"
+:log info "NAVSPOT-SYNC: step=5-fetch"
 :delay 200ms
 :do {
 /tool fetch url="${syncUrl}" http-method=post http-data=$b http-header-field="Content-Type: application/json" check-certificate=no dst-path=$respFile
@@ -830,7 +841,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 }
 }
-} on-error={:log error ("NAVSPOT-SYNC: CRASH=" . [:tostr $error]);:set navspotSyncLock "0"}
+} on-error={:log error ("NAVSPOT-SYNC: CRASH step=" . $step);:set navspotSyncLock "0"}
 :set navspotSyncLock "0"
 :log info "NAVSPOT-SYNC v${VERSION}: OK"`
 }
