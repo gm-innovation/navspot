@@ -905,7 +905,7 @@ function generateActionProcessorCoreSource(): string {
 :if (([:len $lu]>0)&&([:len $dn]>0)) do={
 :local hp ""
 :local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
+:if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={:set hp ""}}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
 /ip hotspot profile set $hp login-url=$lu dns-name=$dn
@@ -1015,7 +1015,7 @@ function generateActionProcessorFullSource(): string {
 :if (([:len $lu]>0)&&([:len $dn]>0)) do={
 :local hp ""
 :local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
+:if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={:set hp ""}}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
 /ip hotspot profile set $hp login-url=$lu dns-name=$dn
@@ -1230,7 +1230,7 @@ function generateGuardianSource(recoveryUrl: string, syncToken: string): string 
 :if ([:len $syncSched]=0) do={:set needsRepair 1;:set missing ($missing."sched ")}
 :local hsprof ""
 :local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs]>0) do={:set hsprof [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
+:if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hsprof [/ip hotspot profile find name=$pN]} on-error={:set hsprof ""}}
 :if ([:len $hsprof]=0) do={:set hsprof [/ip hotspot profile find name="hsprof-navspot"]}
 :local loginUrl ""
 :if ([:len $hsprof]>0) do={:set loginUrl [/ip hotspot profile get $hsprof login-url]}

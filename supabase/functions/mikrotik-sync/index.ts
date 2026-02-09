@@ -1580,9 +1580,10 @@ Deno.serve(async (req) => {
         // v7.1.11: Escape $(mac), $(ip), etc. placeholders so RouterOS stores them as literals
         case 'configure_hotspot_profile':
           // Format: configure_hotspot_profile|login_url|dns_name
-          // Escape placeholders BEFORE sanitizing pipe characters
-          const escapedLoginUrl = escapeRouterOSPlaceholders(String(p.login_url || ''))
-          return `configure_hotspot_profile|${sanitizeForPipe(escapedLoginUrl)}|${p.dns_name || ''}`
+          // v7.1.58f: Do NOT escape placeholders - $(mac) passes through JSON as-is
+          // since $ doesn't need escaping in JSON, and RouterOS reads the raw text
+          const loginUrl = String(p.login_url || '')
+          return `configure_hotspot_profile|${sanitizeForPipe(loginUrl)}|${p.dns_name || ''}`
         case 'kick_session':
         case 'kick_device':
           return `kick_session|${p.user || ''}|${p.mac || ''}`
