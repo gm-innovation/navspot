@@ -1,0 +1,1 @@
+ALTER TABLE public.hotspots ADD COLUMN last_force_repair_at timestamptz DEFAULT NULL;

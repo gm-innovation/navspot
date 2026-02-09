@@ -479,6 +479,7 @@ export type Database = {
           id: string
           initial_config_sent: boolean | null
           interface_wifi: string
+          last_force_repair_at: string | null
           max_usuarios: number | null
           migration_state: string | null
           nome: string
@@ -507,6 +508,7 @@ export type Database = {
           id?: string
           initial_config_sent?: boolean | null
           interface_wifi?: string
+          last_force_repair_at?: string | null
           max_usuarios?: number | null
           migration_state?: string | null
           nome: string
@@ -535,6 +537,7 @@ export type Database = {
           id?: string
           initial_config_sent?: boolean | null
           interface_wifi?: string
+          last_force_repair_at?: string | null
           max_usuarios?: number | null
           migration_state?: string | null
           nome?: string
