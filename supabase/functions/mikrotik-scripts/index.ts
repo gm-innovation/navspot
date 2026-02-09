@@ -897,6 +897,7 @@ function generateActionProcessorCoreSource(): string {
 :local c [:pick $ln 0 $p1]
 :local r [:pick $ln ($p1+1) [:len $ln]]
 :if ($c="configure_hotspot_profile") do={
+:log info "NS-AP: cfg-hp"
 :do {
 :local p2 [:find $r "|"]
 :if ($p2>=0) do={
@@ -914,6 +915,7 @@ function generateActionProcessorCoreSource(): string {
 :set cnt ($cnt+1)
 }}}} on-error={}}
 :if ($c="create_profile") do={
+:log info "NS-AP: c-prof"
 :do {
 :local p2 [:find $r "|"]
 :if ($p2>=0) do={
@@ -933,6 +935,7 @@ function generateActionProcessorCoreSource(): string {
 :set cnt ($cnt+1)
 }} on-error={}}
 :if ($c="create_user") do={
+:log info "NS-AP: c-user"
 :do {
 :local p2 [:find $r "|"]
 :if ($p2>=0) do={
@@ -1007,6 +1010,7 @@ function generateActionProcessorFullSource(): string {
 :local c [:pick $ln 0 $p1]
 :local r [:pick $ln ($p1+1) [:len $ln]]
 :if ($c="configure_hotspot_profile") do={
+:log info "NS-AP: cfg-hp"
 :do {
 :local p2 [:find $r "|"]
 :if ($p2>=0) do={
@@ -1024,6 +1028,7 @@ function generateActionProcessorFullSource(): string {
 :set cnt ($cnt+1)
 }}}} on-error={}}
 :if ($c="create_profile") do={
+:log info "NS-AP: c-prof"
 :do {
 :local p2 [:find $r "|"]
 :if ($p2>=0) do={
@@ -1043,6 +1048,7 @@ function generateActionProcessorFullSource(): string {
 :set cnt ($cnt+1)
 }} on-error={}}
 :if ($c="create_user") do={
+:log info "NS-AP: c-user"
 :do {
 :local p2 [:find $r "|"]
 :if ($p2>=0) do={
