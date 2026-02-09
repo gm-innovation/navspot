@@ -16,7 +16,7 @@ const corsHeaders = {
  * Also called by authenticated users from admin panel to download recovery scripts.
  */
 
-const VERSION = "7.1.52"
+const VERSION = "7.1.59"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
@@ -223,7 +223,7 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 
 # 2. DOWNLOAD AND INSTALL SCRIPTS VIA API
 :log info "NAVSPOT-RECOVERY v${VERSION}: Baixando scripts da API..."
-:local scriptsUrl "${scriptsUrl}?type=all&token=${syncToken}"
+:local scriptsUrl "${scriptsUrl}?type=all&token=${syncToken}&ros_version=7"
 /tool fetch url=$scriptsUrl check-certificate=no dst-path="ns-install.rsc"
 :delay 3s
 
@@ -243,7 +243,7 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 :log info "NAVSPOT-RECOVERY v${VERSION}: Aplicando login-by=cookie,http-pap..."
 :local hp ""
 :local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
+:if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={:set hp ""}}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
 /ip hotspot profile set $hp login-by=cookie,http-pap

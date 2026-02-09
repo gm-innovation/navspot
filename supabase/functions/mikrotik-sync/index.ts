@@ -1656,8 +1656,10 @@ Deno.serve(async (req) => {
 
     // v7.1.15: pending_actions_pipe FIRST in JSON for RouterOS truncation resilience
     // RouterOS may truncate large responses; putting pipe first ensures markers are found
-    return new Response(
-      JSON.stringify({
+    // v7.1.59: Sanitize \u0026 → & in JSON output
+    // Deno's JSON.stringify encodes & as \u0026, but RouterOS reads file contents as raw text
+    // This would corrupt login-url: ?h=UUID\u0026mac=$(mac) instead of ?h=UUID&mac=$(mac)
+    const jsonBody = JSON.stringify({
         pending_actions_pipe: formattedPipe,  // FIRST - RouterOS scans for [[
         success: true,
         server_time: new Date().toISOString(),
@@ -1666,7 +1668,10 @@ Deno.serve(async (req) => {
         firewall_rules: firewallRules,
         device_violations: deviceViolations,
         blocked_devices: blockedDevices
-      }),
+      }).replace(/\\u0026/g, '&')
+
+    return new Response(
+      jsonBody,
       { 
         status: 200, 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
