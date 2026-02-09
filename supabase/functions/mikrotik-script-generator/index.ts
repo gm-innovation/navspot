@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.50"
+const VERSION = "7.1.51"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -313,49 +313,30 @@ function generateBootstrapScript(
 # _build: ${VERSION} | deployed_at=${DEPLOYED_AT}
 :log info "NAVSPOT v${VERSION}: Iniciando bootstrap ULTRA-THIN..."
 
-# 0. CLEANUP (safe - foreach + regex ancorado v7.1.50)
+# 0. CLEANUP
 :log info "NAVSPOT v${VERSION}: Limpando instalacoes anteriores..."
-
-# 1. Arquivos (regex ancorado ^navspot-)
-:foreach f in=[/file find where name~"^navspot-"] do={
-:log info ("CLEANUP: removendo arquivo ".[/file get \$f name])
-/file remove \$f
-}
-:foreach f in=[/file find where name~"^ns-install"] do={/file remove \$f}
-
-# 2. Scripts e Schedulers (antes de infraestrutura)
-:foreach f in=[/system script find where name~"^navspot-"] do={
-:log info ("CLEANUP: removendo script ".[/system script get \$f name])
-/system script remove \$f
-}
-:foreach f in=[/system scheduler find where name~"^navspot-"] do={/system scheduler remove \$f}
-:foreach f in=[/tool netwatch find where comment~"navspot"] do={/tool netwatch remove \$f}
-
-# 3. Hotspot (antes de pool/network)
-:foreach f in=[/ip hotspot find where name~"^hs-navspot\$"] do={/ip hotspot remove \$f}
-:foreach f in=[/ip hotspot profile find where name~"^hsprof-navspot\$"] do={/ip hotspot profile remove \$f}
-
-# 4. DHCP e Pool
-:foreach f in=[/ip dhcp-server find where name~"^dhcp-navspot\$"] do={/ip dhcp-server remove \$f}
-:foreach f in=[/ip dhcp-server network find where comment~"navspot"] do={/ip dhcp-server network remove \$f}
-:foreach f in=[/ip pool find where name~"^hs-pool-navspot\$"] do={/ip pool remove \$f}
-
-# 5. Enderecos e NAT
-:foreach f in=[/ip address find where comment~"navspot"] do={/ip address remove \$f}
-:foreach f in=[/ip firewall nat find where comment~"navspot"] do={/ip firewall nat remove \$f}
-
-# 6. Walled Garden
-:foreach f in=[/ip hotspot walled-garden find where comment~"navspot"] do={/ip hotspot walled-garden remove \$f}
-:foreach f in=[/ip hotspot walled-garden ip find where comment~"navspot"] do={/ip hotspot walled-garden ip remove \$f}
-
-# 7. Bridge ports (ANTES de remover bridge)
-:foreach f in=[/interface bridge port find where comment~"navspot"] do={/interface bridge port remove \$f}
-# Bridge: so remove se comment contem navspot (protege bridges de usuario)
-:foreach f in=[/interface bridge find where comment~"navspot"] do={/interface bridge remove \$f}
-
-# 8. DHCP Client WAN
-:foreach f in=[/ip dhcp-client find where comment~"navspot"] do={/ip dhcp-client remove \$f}
-
+:do { /file remove [find where name=navspot-token.txt] } on-error={}
+:do { /file remove [find where name=navspot-resp.txt] } on-error={}
+:do { /file remove [find where name=navspot-recovery.rsc] } on-error={}
+:do { /file remove [find where name=ns-install.rsc] } on-error={}
+:do { /system script remove [find where name=navspot-sync] } on-error={}
+:do { /system script remove [find where name=navspot-action-processor] } on-error={}
+:do { /system script remove [find where name=navspot-guardian] } on-error={}
+:do { /system scheduler remove [find where name=navspot-sync-scheduler] } on-error={}
+:do { /system scheduler remove [find where name=navspot-guardian-scheduler] } on-error={}
+:do { /tool netwatch remove [find where comment=navspot-netwatch] } on-error={}
+:do { /ip hotspot remove [find name=hs-navspot] } on-error={}
+:do { /ip hotspot profile remove [find name=hsprof-navspot] } on-error={}
+:do { /ip dhcp-server remove [find name=dhcp-navspot] } on-error={}
+:do { /ip dhcp-server network remove [find comment=navspot] } on-error={}
+:do { /ip pool remove [find name=hs-pool-navspot] } on-error={}
+:do { /ip address remove [find comment=navspot] } on-error={}
+:do { /ip firewall nat remove [find comment=navspot-nat] } on-error={}
+:do { /ip hotspot walled-garden remove [find comment=navspot-initial] } on-error={}
+:do { /ip hotspot walled-garden ip remove [find comment=navspot-initial] } on-error={}
+:do { /interface bridge port remove [find comment=navspot-lan] } on-error={}
+:do { /interface bridge remove [find name=bridge1] } on-error={}
+:do { /ip dhcp-client remove [find comment=navspot-wan] } on-error={}
 :delay 2s
 :log info "NAVSPOT v${VERSION}: Cleanup concluido"
 
