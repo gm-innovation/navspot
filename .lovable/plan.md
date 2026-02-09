@@ -1,86 +1,81 @@
 
-# Fix v7.1.53: Parsing de 4 parametros no create_profile + sync resiliente
 
-## Diagnostico
+# Fix v7.1.54: Diagnostico e resiliencia do sync
 
-O FALLBACK action-processor (linha 317-320) ja parseia corretamente 4 parametros -- faz o segundo split para isolar `shared-users` do `limitBytes`. Porem o CORE (linha 898) e o FULL (linha 1008) NAO fazem isso, resultando em `shared-users="1|0"` que o RouterOS rejeita.
+## Problema
 
-Alem disso, o primeiro sync e chamado sem protecao em dois pontos (instalador linha 665 e bootstrap linha 567), fazendo com que qualquer erro do sync aborte o `/import` inteiro.
+O script `navspot-sync` roda a cada minuto no MikroTik (log "NAVSPOT-SYNC v7.1.53") mas NUNCA chega ao final ("OK"). Nenhuma chamada POST chega ao servidor. A `ultima_sincronizacao` esta parada em 6 de fevereiro.
+
+O script esta crashando silenciosamente em algum ponto entre a primeira linha de log e o final, sem nenhum registro de erro.
 
 ## Mudancas (4 pontos cirurgicos)
 
-### 1. CORE action-processor -- linha 898
+Arquivo unico: `supabase/functions/mikrotik-scripts/index.ts` (funcao `generateSyncSource`)
 
-**Arquivo:** `supabase/functions/mikrotik-scripts/index.ts`
+### 1. Proteger `uptime-as-secs` com fallback (linha 737)
 
 **ANTES:**
-```
-:if ($p3>=0) do={:set rt [:pick $sub 0 $p3];:set sh [:pick $sub ($p3+1) [:len $sub]]} else={:set rt $sub}
+```text
+:local us [/system resource get uptime-as-secs]
 ```
 
 **DEPOIS:**
+```text
+:local us 0
+:do {:set us [/system resource get uptime-as-secs]} on-error={:log warning "NAVSPOT-SYNC: uptime-as-secs indisponivel";:set us 0}
 ```
-:if ($p3>=0) do={:set rt [:pick $sub 0 $p3];:local sub2 [:pick $sub ($p3+1) [:len $sub]];:local p4 [:find $sub2 "|"];:if ($p4>=0) do={:set sh [:pick $sub2 0 $p4]} else={:set sh $sub2}} else={:set rt $sub}
-```
 
-Logica: apos extrair `$rt`, faz um segundo split no restante para isolar `$sh` de qualquer parametro adicional (como `limitBytes`).
+Se `uptime-as-secs` nao existir nessa build de ROS 7, o script nao crasha -- apenas desabilita o timeout do lock (us=0).
 
-### 2. FULL action-processor -- linha 1008
-
-**Arquivo:** `supabase/functions/mikrotik-scripts/index.ts`
-
-Mesmo fix identico ao item 1.
-
-### 3. Wrap do primeiro sync no instalador -- linha 665
-
-**Arquivo:** `supabase/functions/mikrotik-scripts/index.ts`
+### 2. Adicionar logging ao on-error do fetch (linha 784)
 
 **ANTES:**
-```
-/system script run navspot-sync
+```text
+} on-error={:set navspotSyncLock "0"}
 ```
 
 **DEPOIS:**
-```
-:do {/system script run navspot-sync} on-error={:log warning "NAVSPOT-INSTALL: sync inicial falhou (nao-fatal)"}
-```
-
-### 4. Wrap do primeiro sync no bootstrap -- linha 567
-
-**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
-
-**ANTES:**
-```
-/system script run navspot-sync
+```text
+} on-error={:log warning "NAVSPOT-SYNC: fetch FALHOU";:set navspotSyncLock "0"}
 ```
 
-**DEPOIS:**
-```
-:do {/system script run navspot-sync} on-error={:log warning ("NAVSPOT v\${VERSION}: sync inicial falhou (nao-fatal)")}
+### 3. Wrap global do corpo do sync
+
+Envolver todo o corpo (da linha 733 ate a 830) em `:do { ... } on-error={...}` para capturar qualquer crash inesperado e logar a mensagem de erro.
+
+**Estrutura resultante:**
+```text
+:log info "NAVSPOT-SYNC v7.1.54"
+:do {
+  [... todo o corpo existente: lock, coleta, fetch, processamento ...]
+} on-error={:log error ("NAVSPOT-SYNC: CRASH=" . [:tostr $error]);:set navspotSyncLock "0"}
+:set navspotSyncLock "0"
+:log info "NAVSPOT-SYNC v7.1.54: OK"
 ```
 
-### 5. VERSION bump
+Isso garante:
+- Qualquer crash sera logado com a mensagem de erro exata
+- O lock sera liberado em todos os caminhos
+- O "OK" aparecera sempre, permitindo distinguir "sync completou" de "sync crashou"
 
-- `mikrotik-scripts/index.ts`: VERSION de "7.1.52" para "7.1.53"
-- `mikrotik-script-generator/index.ts`: VERSION de "7.1.52" para "7.1.53"
+### 4. VERSION bump para 7.1.54
+
+Alterar `const VERSION = "7.1.53"` para `"7.1.54"`.
 
 ## O que NAO muda
 
-- FALLBACK (linhas 310-324) -- ja esta correto, nao tocar
-- Nenhuma outra logica do bootstrap, sync, guardian ou instalador
-- Nenhuma mudanca em handlers que nao sejam `create_profile`
+- Nenhuma outra logica do sync (coleta de dados, parsing de resposta, execucao do action-processor)
+- Nenhum outro arquivo (mikrotik-script-generator, mikrotik-sync, etc)
+- Nenhum handler do action-processor
 
-## Nota sobre o FALLBACK
+## Resultado esperado
 
-O FALLBACK (linhas 317-320) ja implementa o parsing correto de 4 parametros:
-```
-:local sub2 [:pick $sub ($p3 + 1) [:len $sub]]
-:local p4 [:find $sub2 "|"]
-:if ($p4 >= 0) do={ :set ps [:pick $sub2 0 $p4] } else={ :set ps $sub2 }
-```
-
-Os handlers CORE e FULL devem seguir exatamente essa mesma logica, adaptada ao estilo compactado em linha unica.
+Apos reinstalacao do sync no roteador:
+- Se `uptime-as-secs` era o problema: sync passara a funcionar com fallback
+- Se era outro problema: logs mostrarao `NAVSPOT-SYNC: CRASH=mensagem` com a causa exata
+- Em todos os casos: `NAVSPOT-SYNC v7.1.54: OK` aparecera no log
 
 ## Deploy
 
-Redeployar `mikrotik-script-generator` e `mikrotik-scripts` apos as mudancas.
+Redeployar apenas `mikrotik-scripts`. O usuario precisara reimportar o bootstrap ou aguardar o guardian reparar o script.
+
