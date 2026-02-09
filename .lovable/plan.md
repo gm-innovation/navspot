@@ -1,30 +1,18 @@
 
-# Plano v7.1.52: Correcao cirurgica do ponto (.) em nomes de arquivo
+# Hotfix v7.1.52: Limpeza de arquivos temporarios + fix de sintaxe do sync
 
-## Problema
+## Resumo
 
-O RouterOS interpreta `.` em `navspot-token.txt` como operador de concatenacao quando o nome nao esta entre aspas. Isso causa "expected end of command (line 10 column 49)".
+Tres correcoes cirurgicas para resolver o acumulo de arquivos e o erro "line 10 column 49":
 
-## Mudanca
+## Mudancas
 
-**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
+### 1. `mikrotik-script-generator/index.ts` - Cleanup (linhas 318-325)
 
-### 1) VERSION: linha 8
-`"7.1.51"` -> `"7.1.52"`
-
-### 2) CLEANUP: linhas 318-321
-Substituir as 4 linhas de remoção de arquivos (que contêm `.` no nome) por variáveis locais:
+Substituir a remocao fixa de `ns-install.rsc` por um loop com regex, adicionar `navspot-actions.txt`, e resetar globals de lock.
 
 **ANTES:**
-```routeros
-:do { /file remove [find where name=navspot-token.txt] } on-error={}
-:do { /file remove [find where name=navspot-resp.txt] } on-error={}
-:do { /file remove [find where name=navspot-recovery.rsc] } on-error={}
-:do { /file remove [find where name=ns-install.rsc] } on-error={}
-```
-
-**DEPOIS:**
-```routeros
+```text
 :local fn1 "navspot-token.txt"
 :local fn2 "navspot-resp.txt"
 :local fn3 "navspot-recovery.rsc"
@@ -35,11 +23,37 @@ Substituir as 4 linhas de remoção de arquivos (que contêm `.` no nome) por va
 :do { /file remove [find where name=$fn4] } on-error={}
 ```
 
-### 3) VERSION bump nos outros 3 arquivos
-- `mikrotik-scripts/index.ts`: `"7.1.51"` -> `"7.1.52"`
-- `mikrotik-sync/index.ts`: `"7.1.51"` -> `"7.1.52"`
-- `mikrotik-recovery-download/index.ts`: `"7.1.51"` -> `"7.1.52"`
+**DEPOIS:**
+```text
+:local fn1 "navspot-token.txt"
+:local fn2 "navspot-resp.txt"
+:local fn3 "navspot-recovery.rsc"
+:local fn5 "navspot-actions.txt"
+:do { /file remove [find where name=$fn1] } on-error={}
+:do { /file remove [find where name=$fn2] } on-error={}
+:do { /file remove [find where name=$fn3] } on-error={}
+:do { /file remove [find where name=$fn5] } on-error={}
+:foreach f in=[/file find where name~"^ns-install"] do={
+:do { /file remove $f } on-error={}
+}
+:global navspotSyncLock; :set navspotSyncLock "0"
+:global navspotSyncLockTime; :set navspotSyncLockTime 0
+```
 
-## Nada mais muda
+### 2. `mikrotik-scripts/index.ts` - Sync lock warning (linha 741)
 
-Linhas 322-340 (scripts, schedulers, hotspot, bridge, etc.) permanecem identicas -- nao contem ponto no nome, funcionam sem aspas.
+Adicionar parenteses na concatenacao do `:log warning`.
+
+**ANTES:**
+```text
+:log warning "NAVSPOT-SYNC: lock expirado (age=".$la."s), resetando"
+```
+
+**DEPOIS:**
+```text
+:log warning ("NAVSPOT-SYNC: lock expirado (age=" . $la . "s), resetando")
+```
+
+### 3. Deploy
+
+Redeployar `mikrotik-script-generator` e `mikrotik-scripts`. VERSION permanece 7.1.52.
