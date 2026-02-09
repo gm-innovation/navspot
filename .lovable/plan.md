@@ -1,78 +1,76 @@
 
 
-# Fix v7.1.58e: Corrigir URL do auto-repair e forcar atualizacao do AP
-
-## Problema confirmado
-
-1. **URL com parametro errado** (linha 1443): `?hotspot_id=` em vez de `?h=` -- o portal ignora `hotspot_id` e mostra "Acesso Invalido"
-2. **AP desatualizado no roteador**: O action-processor instalado no hardware nao reconhece os comandos atuais (`create_user`, `configure_hotspot_profile`), executando 0 acoes silenciosamente
-
-A migration do v7.1.58d funcionou -- as 6 acoes presas foram marcadas como `executado`.
+# Fix v7.1.58f: Corrigir double-escape e nested commands (ROS 7.x)
 
 ## Mudancas
 
-### 1. mikrotik-sync/index.ts: Corrigir URL do auto-repair (linha 1443)
+### 1. mikrotik-sync/index.ts -- Remover double-escape (linha 1584)
 
-Alinhar com as linhas 1047 e 1115 que ja usam `?h=`:
+Remover chamada a `escapeRouterOSPlaceholders()`. O `$(mac)` no JS passa como `$(mac)` no JSON (pois `$` nao precisa escape em JSON) e chega ao RouterOS corretamente.
 
 ```typescript
 // ANTES:
-const loginUrl = `https://${portalHost}/hotspot-login?hotspot_id=${hotspot.id}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
+const escapedLoginUrl = escapeRouterOSPlaceholders(String(p.login_url || ''))
+return `configure_hotspot_profile|${sanitizeForPipe(escapedLoginUrl)}|${p.dns_name || ''}`
 
 // DEPOIS:
-const loginUrl = `https://${portalHost}/hotspot-login?h=${encodeURIComponent(hotspot.id)}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
+const loginUrl = String(p.login_url || '')
+return `configure_hotspot_profile|${sanitizeForPipe(loginUrl)}|${p.dns_name || ''}`
 ```
 
-### 2. mikrotik-recovery-download: Resetar portal_profile_version
+### 2. mikrotik-scripts/index.ts -- Corrigir nested commands em 3 locais
 
-Adicionar reset de `portal_profile_version` para null alem do `initial_config_sent=false` ja existente. Isso forca o backend a reinjetar `configure_hotspot_profile` com a URL correta apos o recovery:
+Todos os 3 pontos com `find name=[/ip hotspot get $hs profile]` serao separados em `:local` + `find`:
 
-```typescript
-await supabase.from('hotspots')
-  .update({ initial_config_sent: false, portal_profile_version: null })
-  .eq('id', hotspot.id)
+**Linha 908 (CORE AP):**
+```
+# ANTES:
+:if ([:len $hs]>0) do={:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
+
+# DEPOIS:
+:if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={:set hp ""}}
 ```
 
-### 3. Redeploy de ambas as Edge Functions
+**Linha 1018 (FULL AP):**
+Mesma correcao, mesma variavel `pN`.
 
-- `mikrotik-sync` -- URL corrigida
-- `mikrotik-recovery-download` -- reset mais completo
+**Linha 1233 (Guardian):**
+```
+# ANTES:
+:if ([:len $hs]>0) do={:set hsprof [/ip hotspot profile find name=[/ip hotspot get $hs profile]]}
 
-### 4. Acao manual do usuario
+# DEPOIS:
+:if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hsprof [/ip hotspot profile find name=$pN]} on-error={:set hsprof ""}}
+```
 
-O usuario precisa baixar e importar o script de Recovery no roteador. O script de recovery ja baixa o AP mais recente via `mikrotik-scripts?type=all&token=...`, portanto basta reimportar para atualizar o AP.
+### 3. Redeploy + Reimport
+
+- Redeploy `mikrotik-sync` e `mikrotik-scripts`
+- Usuario reimporta Recovery script no roteador
 
 ## Arquivos a modificar
 
-| Arquivo | Mudanca |
-|---------|---------|
-| `supabase/functions/mikrotik-sync/index.ts` | Linha 1443: `hotspot_id` para `h` |
-| `supabase/functions/mikrotik-recovery-download/index.ts` | Adicionar `portal_profile_version: null` no update |
+| Arquivo | Linhas | Mudanca |
+|---------|--------|---------|
+| `supabase/functions/mikrotik-sync/index.ts` | 1584 | Remover escapeRouterOSPlaceholders |
+| `supabase/functions/mikrotik-scripts/index.ts` | 908 | Separar nested command (CORE AP) |
+| `supabase/functions/mikrotik-scripts/index.ts` | 1018 | Separar nested command (FULL AP) |
+| `supabase/functions/mikrotik-scripts/index.ts` | 1233 | Separar nested command (Guardian) |
 
 ## O que NAO muda
 
 - extractFirstJsonObject (v7.1.58c)
 - Filtro UUID (v7.1.58d)
-- mikrotik-scripts (AP ja e a versao mais recente)
-- Portal HotspotLogin.tsx
-- hotspot-login edge function
+- Correcao URL `?h=` (v7.1.58e)
+- Recovery download (ja reseta flags)
+- sanitizeForPipe() (mantido para seguranca)
+- Portal HotspotLogin.tsx / hotspot-login edge function
 
 ## Resultado esperado
 
-1. Deploy corrige URL do auto-repair para futuros syncs
-2. Usuario importa recovery script no roteador
-3. Recovery baixa e instala AP atualizado + reseta flags no servidor
-4. Proximo sync: initial_config_sent=false dispara configuracao completa com URL correta (`?h=`)
-5. AP atualizado processa `create_user` e `configure_hotspot_profile`
-6. Tripulante consegue fazer login
+1. Pipe contem `$(mac)` sem backslashes extras
+2. AP processa `configure_hotspot_profile` sem crash de nested command
+3. login-url armazenado corretamente, login-by = cookie,http-pap
+4. `create_profile` e `create_user` executam normalmente
+5. Tripulante consegue fazer login
 
-## Secao tecnica
-
-O recovery script existente ja faz tudo que precisa:
-- Remove scripts antigos (navspot-sync, navspot-action-processor, navspot-guardian)
-- Baixa versoes atualizadas via `mikrotik-scripts?type=all`
-- Importa via `/import ns-install.rsc`
-- Aplica `login-by=cookie,http-pap`
-- Executa sync inicial
-
-A unica adição e resetar `portal_profile_version` junto com `initial_config_sent` no servidor, para garantir que o backend reinjete a configuracao completa do portal.
