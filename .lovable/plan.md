@@ -1,81 +1,29 @@
 
 
-# Fix v7.1.54: Diagnostico e resiliencia do sync
+# Fix: Alinhar VERSION do bootstrap (mikrotik-script-generator) para 7.1.54
 
-## Problema
+## Situacao atual
 
-O script `navspot-sync` roda a cada minuto no MikroTik (log "NAVSPOT-SYNC v7.1.53") mas NUNCA chega ao final ("OK"). Nenhuma chamada POST chega ao servidor. A `ultima_sincronizacao` esta parada em 6 de fevereiro.
+- `mikrotik-scripts/index.ts` (sync): **v7.1.54** - ja deployado e funcionando
+- `mikrotik-script-generator/index.ts` (bootstrap): **v7.1.53** - desatualizado
 
-O script esta crashando silenciosamente em algum ponto entre a primeira linha de log e o final, sem nenhum registro de erro.
+O frontend gera o bootstrap via `mikrotik-script-generator`, que ainda esta em 7.1.53. Por isso o modal mostra "Script MikroTik v7.1.53".
 
-## Mudancas (4 pontos cirurgicos)
+O sync-raw ja esta em v7.1.54 (confirmado via curl).
 
-Arquivo unico: `supabase/functions/mikrotik-scripts/index.ts` (funcao `generateSyncSource`)
+## Mudanca (1 linha)
 
-### 1. Proteger `uptime-as-secs` com fallback (linha 737)
+**Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts` (linha 8)
 
-**ANTES:**
-```text
-:local us [/system resource get uptime-as-secs]
 ```
+// ANTES
+const VERSION = "7.1.53"
 
-**DEPOIS:**
-```text
-:local us 0
-:do {:set us [/system resource get uptime-as-secs]} on-error={:log warning "NAVSPOT-SYNC: uptime-as-secs indisponivel";:set us 0}
+// DEPOIS
+const VERSION = "7.1.54"
 ```
-
-Se `uptime-as-secs` nao existir nessa build de ROS 7, o script nao crasha -- apenas desabilita o timeout do lock (us=0).
-
-### 2. Adicionar logging ao on-error do fetch (linha 784)
-
-**ANTES:**
-```text
-} on-error={:set navspotSyncLock "0"}
-```
-
-**DEPOIS:**
-```text
-} on-error={:log warning "NAVSPOT-SYNC: fetch FALHOU";:set navspotSyncLock "0"}
-```
-
-### 3. Wrap global do corpo do sync
-
-Envolver todo o corpo (da linha 733 ate a 830) em `:do { ... } on-error={...}` para capturar qualquer crash inesperado e logar a mensagem de erro.
-
-**Estrutura resultante:**
-```text
-:log info "NAVSPOT-SYNC v7.1.54"
-:do {
-  [... todo o corpo existente: lock, coleta, fetch, processamento ...]
-} on-error={:log error ("NAVSPOT-SYNC: CRASH=" . [:tostr $error]);:set navspotSyncLock "0"}
-:set navspotSyncLock "0"
-:log info "NAVSPOT-SYNC v7.1.54: OK"
-```
-
-Isso garante:
-- Qualquer crash sera logado com a mensagem de erro exata
-- O lock sera liberado em todos os caminhos
-- O "OK" aparecera sempre, permitindo distinguir "sync completou" de "sync crashou"
-
-### 4. VERSION bump para 7.1.54
-
-Alterar `const VERSION = "7.1.53"` para `"7.1.54"`.
-
-## O que NAO muda
-
-- Nenhuma outra logica do sync (coleta de dados, parsing de resposta, execucao do action-processor)
-- Nenhum outro arquivo (mikrotik-script-generator, mikrotik-sync, etc)
-- Nenhum handler do action-processor
-
-## Resultado esperado
-
-Apos reinstalacao do sync no roteador:
-- Se `uptime-as-secs` era o problema: sync passara a funcionar com fallback
-- Se era outro problema: logs mostrarao `NAVSPOT-SYNC: CRASH=mensagem` com a causa exata
-- Em todos os casos: `NAVSPOT-SYNC v7.1.54: OK` aparecera no log
 
 ## Deploy
 
-Redeployar apenas `mikrotik-scripts`. O usuario precisara reimportar o bootstrap ou aguardar o guardian reparar o script.
+Redeployar `mikrotik-script-generator`. O frontend passara a mostrar v7.1.54 ao clicar em "Regenerar Script".
 
