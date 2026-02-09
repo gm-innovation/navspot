@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.51"
+const VERSION = "7.1.52"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
