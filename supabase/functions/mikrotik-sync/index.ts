@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 // v7.1.51: Reverted cleanup to stable format (unquoted values)
-const VERSION = "7.1.60c"
+const VERSION = "7.1.60d"
 
 // v7.1.50: Required portal profile version - only marked after telemetry confirms
 const REQUIRED_PORTAL_VERSION = "7.1.50-http-pap"
@@ -1145,19 +1145,19 @@ Deno.serve(async (req) => {
           payload: { login_url: forceLoginUrl, dns_name: forceDnsName }
         })
 
-        // Reset counter + portal_profile_version to wait for telemetry confirmation
+        // Reset counter + portal_profile_version + mark force-repair timestamp
         const { error: resetError } = await supabase
           .from('hotspots')
-          .update({ telemetry_failures: 0, portal_profile_version: null })
+          .update({ telemetry_failures: 0, portal_profile_version: null, last_force_repair_at: new Date().toISOString() })
           .eq('id', hotspot.id)
 
         if (resetError) {
-          console.error(`[mikrotik-sync] v7.1.60c: Failed to reset telemetry_failures: ${resetError.message}`)
+          console.error(`[mikrotik-sync] v7.1.60d: Failed to reset telemetry_failures: ${resetError.message}`)
         } else {
-          console.log(`[mikrotik-sync] v7.1.60c: Reset telemetry_failures to 0 and portal_profile_version to null after force repair`)
+          console.log(`[mikrotik-sync] v7.1.60d: Reset telemetry_failures to 0, portal_profile_version to null, last_force_repair_at set after force repair`)
         }
       } else if (newFailures >= 5) {
-        console.warn(`[mikrotik-sync] v7.1.60c: ALERT - hotspot ${hotspot.nome} has ${newFailures} consecutive telemetry failures`)
+        console.warn(`[mikrotik-sync] v7.1.60d: ALERT - hotspot ${hotspot.nome} has ${newFailures} consecutive telemetry failures`)
       }
     } else {
       // Telemetry reliable -- reset counter if needed
@@ -1204,16 +1204,30 @@ Deno.serve(async (req) => {
       }
       
       console.log(`[mikrotik-sync] v7.1.46: Injected configure_hotspot_profile for ${hotspot.nome}`)
-    } else {
-      // v7.1.46: Configuration confirmed via telemetry - mark as complete
-      const currentVersion = (hotspot as any).portal_profile_version
-      if (currentVersion !== REQUIRED_PORTAL_VERSION) {
-        await supabase
-          .from('hotspots')
-          .update({ portal_profile_version: REQUIRED_PORTAL_VERSION })
-          .eq('id', hotspot.id)
-        console.log(`[mikrotik-sync] v7.1.46: Portal configuration confirmed via telemetry - marked as ${REQUIRED_PORTAL_VERSION}`)
+    } else if (reliable) {
+      // v7.1.60d: Only confirm when telemetry is reliable AND no recent force-repair
+      const FORCE_REPAIR_COOLDOWN_MS = 120_000 // 2 minutes
+      const lastForceRepair = (hotspot as any).last_force_repair_at
+      const forceRecent = lastForceRepair &&
+        (Date.now() - new Date(lastForceRepair).getTime()) < FORCE_REPAIR_COOLDOWN_MS
+
+      if (forceRecent) {
+        console.log(`[mikrotik-sync] v7.1.60d: Skipping portal confirmation - force-repair cooldown active (hotspot=${hotspot.nome})`)
+      } else {
+        const currentVersion = (hotspot as any).portal_profile_version
+        if (currentVersion !== REQUIRED_PORTAL_VERSION) {
+          await supabase
+            .from('hotspots')
+            .update({
+              portal_profile_version: REQUIRED_PORTAL_VERSION,
+              last_force_repair_at: null
+            })
+            .eq('id', hotspot.id)
+          console.log(`[mikrotik-sync] v7.1.60d: Portal configuration confirmed via telemetry - marked as ${REQUIRED_PORTAL_VERSION}`)
+        }
       }
+    } else {
+      console.log(`[mikrotik-sync] v7.1.60d: Skipping portal confirmation - telemetry unreliable (hotspot=${hotspot.nome})`)
     }
 
     // Fetch and process firewall rules for this empresa
