@@ -738,7 +738,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ($navspotSyncLock="1") do={
 :local la ($us - $navspotSyncLockTime)
 :if ($la > 300) do={
-:log warning "NAVSPOT-SYNC: lock expirado (age=".$la."s), resetando"
+:log warning ("NAVSPOT-SYNC: lock expirado (age=" . $la . "s), resetando")
 :set navspotSyncLock "0"
 } else={:log info "NAVSPOT-SYNC: locked";:return}}
 :set navspotSyncLock "1"

@@ -318,11 +318,16 @@ function generateBootstrapScript(
 :local fn1 "navspot-token.txt"
 :local fn2 "navspot-resp.txt"
 :local fn3 "navspot-recovery.rsc"
-:local fn4 "ns-install.rsc"
+:local fn5 "navspot-actions.txt"
 :do { /file remove [find where name=$fn1] } on-error={}
 :do { /file remove [find where name=$fn2] } on-error={}
 :do { /file remove [find where name=$fn3] } on-error={}
-:do { /file remove [find where name=$fn4] } on-error={}
+:do { /file remove [find where name=$fn5] } on-error={}
+:foreach f in=[/file find where name~"^ns-install"] do={
+:do { /file remove $f } on-error={}
+}
+:global navspotSyncLock; :set navspotSyncLock "0"
+:global navspotSyncLockTime; :set navspotSyncLockTime 0
 :do { /system script remove [find where name=navspot-sync] } on-error={}
 :do { /system script remove [find where name=navspot-action-processor] } on-error={}
 :do { /system script remove [find where name=navspot-guardian] } on-error={}
