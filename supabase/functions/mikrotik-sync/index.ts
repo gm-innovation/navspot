@@ -520,16 +520,20 @@ Deno.serve(async (req) => {
     let rawBody = ''
     try {
       rawBody = await req.text()
-      let jsonText = rawBody
-      // v7.1.58b: Detect and sanitize duplicated JSON payloads (RouterOS sends {…};{…})
-      if (rawBody.length > 0 && rawBody.includes('}{')) {
+      
+      // v7.1.58c: Try parse first, fallback to extraction if duplicated payload
+      try {
+        payload = JSON.parse(rawBody)
+      } catch (parseErr) {
+        // Attempt robust extraction of first JSON object
         const first = extractFirstJsonObject(rawBody)
         if (first) {
-          jsonText = first
-          console.warn('[mikrotik-sync] Sanitized duplicated payload, original length:', rawBody.length, 'extracted length:', first.length)
+          console.warn('[mikrotik-sync] Sanitized payload, original length:', rawBody.length, 'extracted length:', first.length)
+          payload = JSON.parse(first)
+        } else {
+          throw parseErr // re-throw original error
         }
       }
-      payload = JSON.parse(jsonText)
     } catch (jsonError) {
       console.error('[mikrotik-sync] Invalid JSON body:', jsonError)
       // Mask sync_token in raw preview for security
