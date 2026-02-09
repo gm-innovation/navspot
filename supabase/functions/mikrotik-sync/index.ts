@@ -498,10 +498,19 @@ Deno.serve(async (req) => {
 
     // v6.9.12: Handle invalid JSON gracefully (return 400, not 500)
     let payload: SyncPayload
+    let rawBody = ''
     try {
-      payload = await req.json()
+      rawBody = await req.text()
+      payload = JSON.parse(rawBody)
     } catch (jsonError) {
       console.error('[mikrotik-sync] Invalid JSON body:', jsonError)
+      console.error('[mikrotik-sync] Raw body (300 chars):', rawBody.substring(0, 300))
+      console.error('[mikrotik-sync] Raw body length:', rawBody.length)
+      if (rawBody.length > 225) {
+        const around = rawBody.substring(220, 250)
+        const codes = Array.from(around).map((c: string) => c.charCodeAt(0))
+        console.error('[mikrotik-sync] Chars 220-250:', JSON.stringify(around), 'codes:', codes)
+      }
       return new Response(
         JSON.stringify({ 
           success: false, 
