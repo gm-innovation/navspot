@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.52"
+const VERSION = "7.1.53"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -662,7 +662,7 @@ function generateAllScripts(
 # ===== 6. PRIMEIRO SYNC =====
 :log info "NAVSPOT-INSTALL: Executando primeiro sync..."
 :delay 2s
-/system script run navspot-sync
+:do {/system script run navspot-sync} on-error={:log warning "NAVSPOT-INSTALL: sync inicial falhou (nao-fatal)"}
 `
 }
 
@@ -895,7 +895,7 @@ function generateActionProcessorCoreSource(): string {
 :local p3 [:find $sub "|"]
 :local rt ""
 :local sh "1"
-:if ($p3>=0) do={:set rt [:pick $sub 0 $p3];:set sh [:pick $sub ($p3+1) [:len $sub]]} else={:set rt $sub}
+:if ($p3>=0) do={:set rt [:pick $sub 0 $p3];:local sub2 [:pick $sub ($p3+1) [:len $sub]];:local p4 [:find $sub2 "|"];:if ($p4>=0) do={:set sh [:pick $sub2 0 $p4]} else={:set sh $sub2}} else={:set rt $sub}
 :local ex [/ip hotspot user profile find name=$n]
 :if ([:len $ex]>0) do={
 :if ([:len $rt]>0) do={/ip hotspot user profile set $ex rate-limit=$rt}
@@ -1005,7 +1005,7 @@ function generateActionProcessorFullSource(): string {
 :local p3 [:find $sub "|"]
 :local rt ""
 :local sh "1"
-:if ($p3>=0) do={:set rt [:pick $sub 0 $p3];:set sh [:pick $sub ($p3+1) [:len $sub]]} else={:set rt $sub}
+:if ($p3>=0) do={:set rt [:pick $sub 0 $p3];:local sub2 [:pick $sub ($p3+1) [:len $sub]];:local p4 [:find $sub2 "|"];:if ($p4>=0) do={:set sh [:pick $sub2 0 $p4]} else={:set sh $sub2}} else={:set rt $sub}
 :local ex [/ip hotspot user profile find name=$n]
 :if ([:len $ex]>0) do={
 :if ([:len $rt]>0) do={/ip hotspot user profile set $ex rate-limit=$rt}

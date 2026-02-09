@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.52"
+const VERSION = "7.1.53"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -564,8 +564,8 @@ ${migrationCommands}
 :log info "NAVSPOT v${VERSION}: Aguardando 35s para primeiro sync (ROS 6)..."
 :delay 35s
 }
-/system script run navspot-sync
-:log info "NAVSPOT v${VERSION}: Primeiro sync executado!"
+:do {/system script run navspot-sync} on-error={:log warning ("NAVSPOT v${VERSION}: sync inicial falhou (nao-fatal)")}
+:log info "NAVSPOT v${VERSION}: Primeiro sync executado (ou fallback aplicado)!"
 
 :log info "=========================================="
 :log info "NAVSPOT v${VERSION}: BOOTSTRAP ULTRA-THIN CONCLUIDO!"
