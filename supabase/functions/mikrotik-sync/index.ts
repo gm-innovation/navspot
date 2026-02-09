@@ -1439,9 +1439,8 @@ Deno.serve(async (req) => {
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
         .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
       
-      const loginUrl = escapeRouterOSPlaceholders(
-        `https://${portalHost}/hotspot-login?hotspot_id=${hotspot.id}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
-      )
+      // v7.1.58d: Store raw URL - escape happens once in pipe generation
+      const loginUrl = `https://${portalHost}/hotspot-login?hotspot_id=${hotspot.id}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
       const dnsName = `${hotspotSlug}.navspot.local`
       
       // Inject at the beginning (before profiles and users)
@@ -1552,8 +1551,10 @@ Deno.serve(async (req) => {
 
     // v6.9: Auto-mark as executed after 1 delivery (fire-and-forget pattern)
     if (expandedActions.length > 0) {
+      // v7.1.58d: Filter by UUID regex to prevent PostgreSQL type errors from synthetic IDs
+      const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
       const actionIds = expandedActions
-        .filter(a => !a.id.startsWith('auto-') && !a.id.startsWith('initial-'))
+        .filter(a => UUID_REGEX.test(a.id))
         .map(a => a.id)
       
       if (actionIds.length > 0) {
