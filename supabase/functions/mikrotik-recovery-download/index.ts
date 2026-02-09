@@ -154,7 +154,7 @@ Deno.serve(async (req) => {
     // v7.1 CRITICAL: Reset initial_config_sent to force re-configuration
     const { error: resetError } = await supabase
       .from('hotspots')
-      .update({ initial_config_sent: false })
+      .update({ initial_config_sent: false, portal_profile_version: null })
       .eq('id', hotspot.id)
 
     if (resetError) {

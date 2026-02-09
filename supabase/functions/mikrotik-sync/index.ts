@@ -1440,7 +1440,7 @@ Deno.serve(async (req) => {
         .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
       
       // v7.1.58d: Store raw URL - escape happens once in pipe generation
-      const loginUrl = `https://${portalHost}/hotspot-login?hotspot_id=${hotspot.id}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
+      const loginUrl = `https://${portalHost}/hotspot-login?h=${encodeURIComponent(hotspot.id)}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
       const dnsName = `${hotspotSlug}.navspot.local`
       
       // Inject at the beginning (before profiles and users)
