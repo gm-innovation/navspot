@@ -1,133 +1,169 @@
 
 
-# Fix v7.1.60d: Guard portal confirmation + add force-repair cooldown
+# Fix v7.1.60: AP Lock Timeout + Global Error Handler + Sync Lock Robustness
 
-## Problem
+## Problema
 
-Line 1207 has `} else {` which runs whenever `needsPortalRepair` is false -- including when `reliable` is false. This immediately overwrites `portal_profile_version` back to the required version, undoing the force-repair's reset to `null`. The router never gets a chance to apply the config before the backend "confirms" it.
+O Action Processor (AP) crasha silenciosamente durante o processamento de comandos, deixando `navspotLock="1"` permanentemente. O sync script tambem crasha quando `uptime-as-secs` retorna 0 e o lock esta ativo, pois a subtracao `0 - lockTime` falha no RouterOS.
 
-## Changes
+## Alteracoes
 
-### 1. New database column: `last_force_repair_at`
+### Arquivo: `supabase/functions/mikrotik-scripts/index.ts`
 
-Add a nullable `timestamptz` column to track when force-repair was last injected. This prevents premature confirmation even if telemetry briefly reports valid data before the router fully applies the new config.
+---
 
-```sql
-ALTER TABLE public.hotspots ADD COLUMN last_force_repair_at timestamptz DEFAULT NULL;
-```
-
-### 2. VERSION bump (line 9)
+### 1. VERSION bump (linha 38)
 
 ```
-const VERSION = "7.1.60d"
+const VERSION = "7.1.60"
 ```
 
-### 3. Update force-repair block (lines 1148-1157)
+---
 
-When injecting force-repair, also set `last_force_repair_at: new Date().toISOString()` in the update:
+### 2. `generateActionProcessorFullSource()` (linhas 989-1123)
 
-```typescript
-const { error: resetError } = await supabase
-  .from('hotspots')
-  .update({
-    telemetry_failures: 0,
-    portal_profile_version: null,
-    last_force_repair_at: new Date().toISOString()
-  })
-  .eq('id', hotspot.id)
-```
+Adicionar:
+- `:global navspotLockTime` para persistir timestamp do lock entre execucoes
+- Lock timeout de 120s com `uptime-as-secs` (tolerante a falha)
+- Quando `us=0` e lock ativo, tratar como lock expirado (log + reset)
+- Wrap do loop `:while` inteiro em `:do { ... } on-error={ :log error ("NS-AP: CRASH=" . [:tostr $error]) }`
+- Log diagnostico com tamanho dos dados e primeiros 80 chars
+- Garantir `navspotLock "0"` em todos os caminhos (erro e sucesso)
 
-### 4. Guard portal confirmation block (lines 1207-1217)
-
-Replace:
-```typescript
-} else {
-  const currentVersion = (hotspot as any).portal_profile_version
-  if (currentVersion !== REQUIRED_PORTAL_VERSION) {
-    await supabase
-      .from('hotspots')
-      .update({ portal_profile_version: REQUIRED_PORTAL_VERSION })
-      .eq('id', hotspot.id)
-    console.log(`[mikrotik-sync] v7.1.46: Portal configuration confirmed...`)
-  }
-}
-```
-
-With:
-```typescript
-} else if (reliable) {
-  // Only confirm when telemetry is reliable AND no recent force-repair
-  const FORCE_REPAIR_COOLDOWN_MS = 120_000 // 2 minutes
-  const lastForceRepair = (hotspot as any).last_force_repair_at
-  const forceRecent = lastForceRepair &&
-    (Date.now() - new Date(lastForceRepair).getTime()) < FORCE_REPAIR_COOLDOWN_MS
-
-  if (forceRecent) {
-    console.log(`[mikrotik-sync] v7.1.60d: Skipping portal confirmation - force-repair cooldown active (hotspot=${hotspot.nome})`)
-  } else {
-    const currentVersion = (hotspot as any).portal_profile_version
-    if (currentVersion !== REQUIRED_PORTAL_VERSION) {
-      await supabase
-        .from('hotspots')
-        .update({
-          portal_profile_version: REQUIRED_PORTAL_VERSION,
-          last_force_repair_at: null
-        })
-        .eq('id', hotspot.id)
-      console.log(`[mikrotik-sync] v7.1.60d: Portal configuration confirmed via telemetry - marked as ${REQUIRED_PORTAL_VERSION}`)
-    }
-  }
-} else {
-  console.log(`[mikrotik-sync] v7.1.60d: Skipping portal confirmation - telemetry unreliable (hotspot=${hotspot.nome})`)
-}
-```
-
-### 5. Update log prefixes
-
-Change all remaining `v7.1.46:` and `v7.1.60c:` log references in modified blocks to `v7.1.60d:`.
-
-## Expected behavior
+Estrutura resultante (pseudo-codigo):
 
 ```text
-Cycle with failures>=10:
-  FORCE REPAIR fires
-  Sets telemetry_failures=0, portal_profile_version=null, last_force_repair_at=now()
-  else-if(reliable) does NOT run (reliable=false)
-
-Next cycle (router hasn't applied config yet):
-  reliable=false again
-  else-if(reliable) still skipped
-  Counter increments from 0
-
-Cycle after router applies config:
-  reliable=true, but last_force_repair_at is < 2min ago
-  "Skipping portal confirmation - force-repair cooldown active"
-
-Cycle 2+ min after force-repair:
-  reliable=true, cooldown expired
-  Portal confirmed, last_force_repair_at cleared
-  Normal operation resumes (create_profile, create_user flow)
+:log info "NAVSPOT-ACTION v7.1.60"
+:global navspotLock
+:global navspotLockTime
+:local us 0
+:do {:set us [/system resource get uptime-as-secs]} on-error={:set us 0}
+:if ([:len $navspotLock]=0) do={:set navspotLock "0"}
+:if ($navspotLock="1") do={
+  :local la 999
+  :if (($us>0)&&([:typeof $navspotLockTime]="num")&&($navspotLockTime>0)) do={
+    :set la ($us - $navspotLockTime)
+  }
+  :if ($la>120) do={
+    :log warning ("NS-AP: lock expired (age=" . $la . "s)")
+  } else={
+    :log info ("NS-AP: locked (age=" . $la . "s)")
+    :return
+  }
+}
+:set navspotLock "1"
+:set navspotLockTime $us
+[... file read ...]
+:do {
+  :log info ("NS-AP: processing " . [:len $d] . "b")
+  [... while loop com todos os handlers existentes ...]
+} on-error={
+  :log error ("NS-AP: CRASH=" . [:tostr $error])
+}
+:set navspotLock "0"
+:log info ("NAVSPOT-ACTION v7.1.60: OK - " . $cnt)
 ```
 
-## Files modified
+---
 
-| File | Change |
-|------|--------|
-| Migration (new) | Add `last_force_repair_at` column to `hotspots` |
-| `supabase/functions/mikrotik-sync/index.ts` line 9 | VERSION -> "7.1.60d" |
-| `supabase/functions/mikrotik-sync/index.ts` lines 1148-1157 | Add `last_force_repair_at` to force-repair update |
-| `supabase/functions/mikrotik-sync/index.ts` lines 1207-1217 | Guard with `reliable` + cooldown check |
+### 3. `generateActionProcessorCoreSource()` (linhas 876-969)
+
+Mesmas alteracoes do Full, mas mantendo apenas os handlers existentes (configure_hotspot_profile, create_profile, create_user, add_whitelist_domain). Atencao ao limite de ~2.9KB para ROS 6.x -- o overhead do lock timeout + error handler adiciona ~300 bytes, mantendo dentro do limite.
+
+---
+
+### 4. `generateSyncSource()` (linhas 730-858)
+
+Corrigir o bloco de lock check (linhas 740-745). Atualmente:
+
+```routeros
+:if ($navspotSyncLock="1") do={
+:local la ($us - $navspotSyncLockTime)
+```
+
+Quando `us=0`, a subtracao `0 - lockTime` causa crash. Correcao:
+
+```routeros
+:if ($navspotSyncLock="1") do={
+:local shouldSkip true
+:if ($us=0) do={
+:log warning "NAVSPOT-SYNC: uptime unavailable, forcing lock reset"
+:set shouldSkip false
+} else={
+:local la 999
+:if ([:typeof $navspotSyncLockTime]="num") do={:set la ($us - $navspotSyncLockTime)}
+:if ($la>300) do={
+:log warning ("NAVSPOT-SYNC: lock expirado (age=" . $la . "s), resetando")
+:set shouldSkip false
+} else={:log info "NAVSPOT-SYNC: locked"}
+}
+:if ($shouldSkip) do={:return}
+}
+```
+
+Isso evita a aritmetica invalida e trata `us=0` como lock expirado de forma segura.
+
+---
+
+### 5. Fallback AP no instalador (linhas 291-343)
+
+O fallback inline ja e minimalista e nao tem lock timeout. Adicionar o mesmo padrao basico:
+- `:global navspotLockTime`
+- Timeout simples de 120s
+- Wrap do while em `:do { ... } on-error={}`
+
+---
+
+### 6. AUX Action Processor (`generateActionAuxSource`, linhas 1136-1223)
+
+Aplicar o mesmo padrao de lock timeout + global error handler, identico ao core/full.
+
+---
+
+## Detalhes tecnicos importantes
+
+### Compatibilidade ROS 6.x vs 7.x
+
+- `[:typeof $var]` funciona em ambas as versoes para verificar se a variavel e numerica
+- `uptime-as-secs` so existe no ROS 7.x; no 6.x o `:do {} on-error={}` captura e seta `us=0`
+- O core AP deve permanecer abaixo de 2900 bytes -- o overhead estimado e ~250-300 bytes
+
+### Prevencao de race conditions
+
+- A checagem `if ($navspotLock="1")` seguida de `:set navspotLock "1"` nao e atomica, mas e suficiente para o cenario single-threaded do RouterOS scheduler
+- O timeout de 120s para o AP (vs 300s do sync) reflete que o AP executa em <5s normalmente
+
+### Logs adicionados
+
+| Log | Significado |
+|-----|-------------|
+| `NS-AP: lock expired (age=Xs)` | Lock anterior estava travado, resetado |
+| `NS-AP: locked (age=Xs)` | Outra instancia em execucao, skip |
+| `NS-AP: processing Nb` | Inicio do processamento com tamanho |
+| `NS-AP: CRASH=...` | Erro capturado pelo handler global |
+| `NAVSPOT-SYNC: uptime unavailable, forcing lock reset` | Sync com us=0, lock resetado |
+
+## Arquivos modificados
+
+| Arquivo | Mudanca |
+|---------|---------|
+| `supabase/functions/mikrotik-scripts/index.ts` linha 38 | VERSION -> "7.1.60" |
+| `supabase/functions/mikrotik-scripts/index.ts` `generateActionProcessorFullSource()` | Lock timeout 120s + global error handler |
+| `supabase/functions/mikrotik-scripts/index.ts` `generateActionProcessorCoreSource()` | Mesmo (respeitando limite 2.9KB) |
+| `supabase/functions/mikrotik-scripts/index.ts` `generateSyncSource()` | Fix lock check quando us=0 |
+| `supabase/functions/mikrotik-scripts/index.ts` `generateAllScripts()` fallback | Lock timeout basico + error handler |
+| `supabase/functions/mikrotik-scripts/index.ts` `generateActionAuxSource()` | Lock timeout + error handler |
 
 ## Redeploy
 
-- `mikrotik-sync` only
+- `mikrotik-scripts` apenas
 
-## Verification
+## Verificacao
 
-1. Backend logs: no "Portal configuration confirmed" while telemetry is unreliable
-2. After force-repair: "Skipping portal confirmation - force-repair cooldown active" for ~2 min
-3. After cooldown + reliable telemetry: confirmation log appears
-4. `create_profile` and `create_user` flow through
-5. `/ip hotspot user print` shows `alexandre.silva`
-6. Login works
+1. Reimportar scripts no router: `/tool fetch ... dst-path=navspot-scripts.rsc` + `/import navspot-scripts.rsc`
+2. Rodar sync: `/system script run navspot-sync`
+3. Verificar logs: nenhum `NS-AP: CRASH` deve aparecer
+4. Verificar `/ip hotspot user profile print` e `/ip hotspot user print` -- perfis e usuarios criados
+5. Forcar lock travado (`:global navspotLock; :set navspotLock "1"; :global navspotLockTime; :set navspotLockTime 0`) e esperar 120s -- AP deve resetar automaticamente
+6. Verificar que `NAVSPOT-SYNC: uptime unavailable, forcing lock reset` aparece quando `uptime-as-secs` falha
 
