@@ -31,11 +31,12 @@ function sanitizeForPipe(value: string): string {
   return value.replace(/\|/g, '%7C')
 }
 
-// v7.1.11: Escape RouterOS runtime placeholders for storage in scripts
-// $(mac) -> \$(mac) so RouterOS stores it as literal $(mac) for hotspot to expand at runtime
-function escapeRouterOSPlaceholders(value: string): string {
-  // Match $(word) patterns like $(mac), $(ip), $(link-login-only)
-  return value.replace(/\$\(([^)]+)\)/g, '\\$($1)')
+// v7.1.59b: Tokenize RouterOS runtime placeholders to avoid JSON.stringify double-escaping
+// $(mac) -> __NAVSPOT_DOLLAR__mac) - neutral token that JSON.stringify won't touch
+// Post-stringify, we replace __NAVSPOT_DOLLAR__ with \$( in the raw text
+const PLACEHOLDER_TOKEN = '__NAVSPOT_DOLLAR__'
+function tokenizePlaceholders(value: string): string {
+  return value.replace(/\$\(([^)]+)\)/g, `${PLACEHOLDER_TOKEN}$1)`)
 }
 
 // v6.9.15: Simple hash function for firewall rules change detection
@@ -1580,9 +1581,8 @@ Deno.serve(async (req) => {
         // v7.1.11: Escape $(mac), $(ip), etc. placeholders so RouterOS stores them as literals
         case 'configure_hotspot_profile':
           // Format: configure_hotspot_profile|login_url|dns_name
-          // v7.1.58f: Do NOT escape placeholders - $(mac) passes through JSON as-is
-          // since $ doesn't need escaping in JSON, and RouterOS reads the raw text
-          const loginUrl = String(p.login_url || '')
+          // v7.1.59b: Tokenize placeholders (post-stringify converts tokens to \$)
+          const loginUrl = tokenizePlaceholders(String(p.login_url || ''))
           return `configure_hotspot_profile|${sanitizeForPipe(loginUrl)}|${p.dns_name || ''}`
         case 'kick_session':
         case 'kick_device':
@@ -1669,6 +1669,7 @@ Deno.serve(async (req) => {
         device_violations: deviceViolations,
         blocked_devices: blockedDevices
       }).replace(/\\u0026/g, '&')
+        .replace(/__NAVSPOT_DOLLAR__/g, '\\$(')
 
     return new Response(
       jsonBody,

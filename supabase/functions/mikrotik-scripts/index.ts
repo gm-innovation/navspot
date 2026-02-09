@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.58"
+const VERSION = "7.1.59"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -780,15 +780,14 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :do {
 :local hs [/ip hotspot find name="hs-navspot"]
 :if ([:len $hs]>0) do={
-:local pName [/ip hotspot get $hs profile]
-:set hp [/ip hotspot profile find name=$pName]
+:do {:local pN [:tostr [/ip hotspot get $hs profile]];:set hp [/ip hotspot profile find name=$pN]} on-error={:log warning "NAVSPOT-SYNC: tele-profile-find failed"}
 }
-:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
+} on-error={:log warning "NAVSPOT-SYNC: tele-hs-find failed"}
+:if ([:len $hp]=0) do={:do {:set hp [/ip hotspot profile find name="hsprof-navspot"]} on-error={}}
 :if ([:len $hp]>0) do={
-:set hlb [/ip hotspot profile get $hp login-by]
-:set hlu [/ip hotspot profile get $hp login-url]
+:do {:set hlb [:tostr [/ip hotspot profile get $hp login-by]]} on-error={:set hlb "";:log warning "NAVSPOT-SYNC: tele-lb failed"}
+:do {:set hlu [:tostr [/ip hotspot profile get $hp login-url]]} on-error={:set hlu "";:log warning "NAVSPOT-SYNC: tele-lu failed"}
 }
-} on-error={:log warning "NAVSPOT-SYNC: telemetry collect failed"}
 :set step "3-collect"
 :log info "NAVSPOT-SYNC: step=3-collect"
 :local b ("{".$q."sync_token".$q.":".$q.$tk.$q.",".$q."active_users_csv".$q.":".$q.$u.$q.",".$q."registered_users_csv".$q.":".$q.$r.$q.",".$q."registered_profiles_csv".$q.":".$q.$p.$q.",".$q."hotspot_login_by".$q.":".$q.$hlb.$q.",".$q."hotspot_login_url".$q.":".$q.$hlu.$q."}")
