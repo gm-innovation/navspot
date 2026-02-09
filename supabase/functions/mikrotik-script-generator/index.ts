@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.51"
+const VERSION = "7.1.52"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -315,10 +315,14 @@ function generateBootstrapScript(
 
 # 0. CLEANUP
 :log info "NAVSPOT v${VERSION}: Limpando instalacoes anteriores..."
-:do { /file remove [find where name=navspot-token.txt] } on-error={}
-:do { /file remove [find where name=navspot-resp.txt] } on-error={}
-:do { /file remove [find where name=navspot-recovery.rsc] } on-error={}
-:do { /file remove [find where name=ns-install.rsc] } on-error={}
+:local fn1 "navspot-token.txt"
+:local fn2 "navspot-resp.txt"
+:local fn3 "navspot-recovery.rsc"
+:local fn4 "ns-install.rsc"
+:do { /file remove [find where name=$fn1] } on-error={}
+:do { /file remove [find where name=$fn2] } on-error={}
+:do { /file remove [find where name=$fn3] } on-error={}
+:do { /file remove [find where name=$fn4] } on-error={}
 :do { /system script remove [find where name=navspot-sync] } on-error={}
 :do { /system script remove [find where name=navspot-action-processor] } on-error={}
 :do { /system script remove [find where name=navspot-guardian] } on-error={}
