@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 // v7.1.51: Reverted cleanup to stable format (unquoted values)
-const VERSION = "7.1.60"
+const VERSION = "7.1.60b"
 
 // v7.1.50: Required portal profile version - only marked after telemetry confirms
 const REQUIRED_PORTAL_VERSION = "7.1.50-http-pap"
@@ -1471,7 +1471,7 @@ Deno.serve(async (req) => {
       a.type === 'create_user' || a.type === 'add_user_profile' || a.type === 'add_user'
     )
     
-    if (!hasPendingPortalConfig && hotspot.initial_config_sent && hasUserActions) {
+    if (!hasPendingPortalConfig && hotspot.initial_config_sent && hasUserActions && reliable) {
       const supabaseUrlForRepair = Deno.env.get('SUPABASE_URL')!
       const portalHost = 'navspot.lovable.app'
       const hotspotSlug = hotspot.nome.toLowerCase()
@@ -1503,7 +1503,9 @@ Deno.serve(async (req) => {
         payload: { domain: backendHostForRepair }
       })
       
-      console.log(`[mikrotik-sync] v7.1.29: Injected portal repair config with user actions`)
+      console.log(`[mikrotik-sync] v7.1.60b: Injected portal repair config with user actions (telemetry reliable)`)
+    } else if (!reliable && hasUserActions) {
+      console.log(`[mikrotik-sync] v7.1.60b: Skipping auto-repair - telemetry unreliable (hotspot=${hotspot.nome}, pendingUserActions=${formattedActions.filter(a => a.type === 'create_user' || a.type === 'create_profile').length})`)
     }
     // PRIORITY ORDER: Firewall rules FIRST (most critical for bloquear_tudo mode)
     // to prevent buffer truncation from losing them
