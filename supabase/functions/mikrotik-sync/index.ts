@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 // v7.1.51: Reverted cleanup to stable format (unquoted values)
-const VERSION = "7.1.59b"
+const VERSION = "7.1.60"
 
 // v7.1.50: Required portal profile version - only marked after telemetry confirms
 const REQUIRED_PORTAL_VERSION = "7.1.50-http-pap"
@@ -46,6 +46,16 @@ async function hashString(str: string): Promise<string> {
   const hashBuffer = await crypto.subtle.digest('SHA-256', data)
   const hashArray = Array.from(new Uint8Array(hashBuffer))
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// v7.1.60: Check if telemetry data from the router is reliable enough to make repair decisions
+function telemetryIsReliable(loginBy: string | null, loginUrl: string | null): boolean {
+  if (!loginBy || loginBy.trim() === '') return false
+  if (!loginUrl || loginUrl.trim() === '') return false
+  const lb = loginBy.trim().toLowerCase()
+  if (lb === 'cookie') return false
+  if (lb.includes('http-pap') || lb.includes('http-chap') || lb.includes(',')) return true
+  return false
 }
 
 // v6.9.15: Normalize domain for firewall rules (remove wildcards, clean up)
@@ -579,7 +589,7 @@ Deno.serve(async (req) => {
 // v7.1.42: Include portal_profile_version for rollout mechanism
     const { data: hotspot, error: hotspotError } = await supabase
       .from('hotspots')
-      .select('id, embarcacao_id, nome, status, synced_profiles, synced_users, firewall_rules_hash, initial_config_sent, portal_profile_version')
+      .select('id, embarcacao_id, nome, status, synced_profiles, synced_users, firewall_rules_hash, initial_config_sent, portal_profile_version, telemetry_failures')
       .eq('sync_token', payload.sync_token)
       .single()
 
@@ -1091,19 +1101,47 @@ Deno.serve(async (req) => {
       console.log(`[mikrotik-sync] v7.0: Injected initial config for ${hotspot.nome}`)
     }
 
-    // v7.1.46: State Reconciliation - use telemetry to confirm configuration
+    // v7.1.60: State Reconciliation with telemetry reliability check
     const hotspotLoginBy = (payload as any).hotspot_login_by || ''
     const hotspotLoginUrl = (payload as any).hotspot_login_url || ''
 
-    console.log(`[mikrotik-sync] v7.1.46: Telemetry - login_by="${hotspotLoginBy}", login_url="${hotspotLoginUrl.slice(0, 50)}..."`)
+    console.log(`[mikrotik-sync] v7.1.60: Telemetry - login_by="${hotspotLoginBy}", login_url="${hotspotLoginUrl.slice(0, 50)}..."`)
 
-    // Determine if portal needs repair based on actual state
     const hasChap = hotspotLoginBy.includes('http-chap')
     const hasPap = hotspotLoginBy.includes('http-pap')
     const hasValidUrl = hotspotLoginUrl.length >= 10
 
-    // v7.1.46: Repair needed if CHAP present, PAP missing, or URL missing
-    const needsPortalRepair = hasChap || !hasPap || !hasValidUrl
+    const reliable = telemetryIsReliable(hotspotLoginBy, hotspotLoginUrl)
+
+    if (!reliable) {
+      // Increment failure counter
+      const currentFailures = (hotspot as any).telemetry_failures || 0
+      const newFailures = currentFailures + 1
+      await supabase
+        .from('hotspots')
+        .update({ telemetry_failures: newFailures })
+        .eq('id', hotspot.id)
+
+      console.log(`[mikrotik-sync] v7.1.60: Skipping portal repair - telemetry unreliable (login_by="${hotspotLoginBy}", failures=${newFailures})`)
+
+      if (newFailures >= 5) {
+        console.warn(`[mikrotik-sync] v7.1.60: ALERT - hotspot ${hotspot.nome} has ${newFailures} consecutive telemetry failures. Router may need bootstrap reimport.`)
+      }
+    } else {
+      // Telemetry reliable -- reset counter if needed
+      if ((hotspot as any).telemetry_failures > 0) {
+        await supabase
+          .from('hotspots')
+          .update({ telemetry_failures: 0 })
+          .eq('id', hotspot.id)
+        console.log(`[mikrotik-sync] v7.1.60: Telemetry restored for ${hotspot.nome} - reset failure counter`)
+      }
+    }
+
+    // v7.1.60: Only repair if telemetry is reliable; skip when data is missing/failed
+    const needsPortalRepair = reliable
+      ? (hasChap || !hasPap || !hasValidUrl)
+      : false
 
     if (needsPortalRepair) {
       console.log(`[mikrotik-sync] v7.1.46: Portal repair needed - hasChap=${hasChap}, hasPap=${hasPap}, hasValidUrl=${hasValidUrl}`)

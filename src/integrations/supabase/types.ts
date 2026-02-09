@@ -493,6 +493,7 @@ export type Database = {
           sync_token: string
           synced_profiles: Json | null
           synced_users: Json | null
+          telemetry_failures: number
           ultima_sincronizacao: string | null
           updated_at: string
           wan_interface: string
@@ -520,6 +521,7 @@ export type Database = {
           sync_token?: string
           synced_profiles?: Json | null
           synced_users?: Json | null
+          telemetry_failures?: number
           ultima_sincronizacao?: string | null
           updated_at?: string
           wan_interface?: string
@@ -547,6 +549,7 @@ export type Database = {
           sync_token?: string
           synced_profiles?: Json | null
           synced_users?: Json | null
+          telemetry_failures?: number
           ultima_sincronizacao?: string | null
           updated_at?: string
           wan_interface?: string
