@@ -1,117 +1,113 @@
 
-# Fix v7.1.62b: Fix Response File Read Failure on RouterOS 7
 
-## Root Cause
+# v7.1.62c: Diagnose + Fix Silent Action Processor (Safe Lock Reset)
 
-The logs confirm:
-- First sync: `resp=838b` -- worked perfectly, AP executed, actions processed
-- Second+ syncs: `file read FAILED`, `resp=0b` -- file can't be read
+## Overview
 
-The issue is in the sync script's response file handling (lines 817-833):
+The AP is present (5603b) and "runs" without errors, but produces zero log output. Three safe diagnostics will identify the root cause, using a **conditional lock reset** (age-based) instead of the originally proposed unconditional reset.
 
-1. **Timestamped filename** (`navspot-resp-HHMMSS.txt`) creates a NEW file each sync
-2. **Pre-fetch cleanup** (line 822) deletes all `navspot-resp-*` files RIGHT BEFORE `/tool fetch`
-3. RouterOS 7 file deletion is **asynchronous** -- the filesystem may not have fully purged the old file when fetch writes the new one
-4. **500ms post-fetch delay** is too short for the hAP ax2 flash storage to flush the write
-5. Result: `/file get $respFile contents` throws an error because the file is in an inconsistent state
+## Changes -- Single file: `supabase/functions/mikrotik-scripts/index.ts`
 
-The first sync worked because there were no old files to delete (clean install).
+All changes are in `generateSyncSource()`, in the AP execution block (lines 866-879).
 
-## Fix
+### Change 1: Log AP source header (lines 873-875)
 
-Replace the timestamped filename approach with a **fixed filename** and proper delays:
+After `AP src=XXXXb`, log the first 80 characters to detect corruption/BOM.
 
-### File: `supabase/functions/mikrotik-scripts/index.ts`
-
-**Change the response file handling in `generateSyncSource()`** (lines 817-833):
-
-Before:
 ```routeros
-:local ts [:tostr [/system clock get time]]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local respFile ("navspot-resp-" . $tsStr . ".txt")
-# Limpar arquivos de resposta antigos
-:do {:foreach oldF in=[/file find where name~"navspot-resp-"] do={/file remove $oldF}} on-error={}
-:set step "5-fetch"
-:log info "NAVSPOT-SYNC: step=5-fetch"
+# Current (line 873):
+:log info ("NAVSPOT-SYNC: AP src=" . $apLen . "b")
+
+# New (insert after line 873):
+:local apHead $apSrc
+:if ($apLen>80) do={:set apHead [:pick $apSrc 0 80]}
+:log info ("NAVSPOT-SYNC: AP head=" . $apHead)
+```
+
+### Change 2: Conditional lock reset before AP execution (lines 876-878)
+
+Replace the direct `/system script run` with a safe age-based lock check. Only reset `navspotLock` if it appears stale (older than 120s or lockTime missing).
+
+```routeros
+# Current (lines 876-879):
+} else={
+:local aerr ""
+:do {/system script run navspot-action-processor} on-error={:set aerr [:tostr $error]}
+:if ([:len $aerr]>0) do={:log error ("NAVSPOT-SYNC: AP ERRO=".$aerr)} else={:log info "NAVSPOT-SYNC: AP OK"}
+
+# New:
+} else={
+# v7.1.62c: Safe conditional lock reset
+:global navspotLock
+:global navspotLockTime
+:local apUs 0
+:do {:set apUs [/system resource get uptime-as-secs]} on-error={:set apUs 0}
+:if ([:type $navspotLock]="nothing") do={:set navspotLock "0"}
+:if ($navspotLock="1") do={
+:local lockAge 99999
+:if (($apUs>0)&&([:type $navspotLockTime]!="nothing")&&($navspotLockTime>0)) do={:set lockAge ($apUs - $navspotLockTime)}
+:log info ("NAVSPOT-SYNC: AP lock=1 age=" . $lockAge . "s lockTime=" . $navspotLockTime . " uptime=" . $apUs)
+:if ($lockAge>120) do={
+:log warning "NAVSPOT-SYNC: AP lock stale -> resetting"
+:set navspotLock "0"
+} else={
+:log warning "NAVSPOT-SYNC: AP lock active -> skipping AP run"
+}
+}
+:if ($navspotLock="0") do={
+:local aerr ""
+:do {/system script run navspot-action-processor} on-error={:set aerr [:tostr $error]}
+:if ([:len $aerr]>0) do={
+:log error ("NAVSPOT-SYNC: AP ERRO=" . $aerr)
+} else={
+:log info "NAVSPOT-SYNC: AP OK"
+# v7.1.62c: Check if AP consumed actions file
 :delay 200ms
-:do {
-/tool fetch ... dst-path=$respFile
-:set ok true
-} on-error={...}
-:if ($ok) do={
-:delay 500ms
-:local resp ""
-:do {:set resp [/file get $respFile contents]} on-error={...}
-:do {/file remove $respFile} on-error={}
+:local actLeft [/file find name="navspot-actions.txt"]
+:if ([:len $actLeft]>0) do={
+:local leftSize 0
+:do {:set leftSize [:len [/file get "navspot-actions.txt" contents]]} on-error={}
+:if ($leftSize>0) do={
+:log warning ("NAVSPOT-SYNC: AP did NOT consume actions (" . $leftSize . "b remain)")
+} else={
+:log info "NAVSPOT-SYNC: AP consumed actions (file empty)"
+}
+} else={
+:log info "NAVSPOT-SYNC: AP consumed actions (file removed)"
+}
+}
+} else={
+:log warning "NAVSPOT-SYNC: AP skipped (lock held)"
+}
 ```
 
-After:
-```routeros
-:local respFile "navspot-resp.txt"
-:do {/file remove $respFile} on-error={}
-:delay 1s
-:set step "5-fetch"
-:log info "NAVSPOT-SYNC: step=5-fetch"
-:do {
-/tool fetch ... dst-path=$respFile
-:set ok true
-} on-error={...}
-:if ($ok) do={
-:delay 2s
-:local resp ""
-:do {:set resp [/file get $respFile contents]} on-error={...}
-:do {/file remove $respFile} on-error={}
-```
+### Change 3: No version bump
 
-Key changes:
-1. **Fixed filename** `navspot-resp.txt` -- no timestamp, no regex cleanup, `/tool fetch` overwrites naturally
-2. **Single file removal** before fetch instead of regex-based foreach loop
-3. **1s delay after removal** to let RouterOS flush the filesystem
-4. **2s delay after fetch** (was 500ms) to ensure the flash write completes before reading
-5. Remove the 200ms pre-fetch delay (replaced by the 1s post-removal delay)
+VERSION stays `7.1.62` -- script-only update.
 
-### Also clean up old timestamped files (one-time)
+## Safety Analysis
 
-Add a cleanup at the start of the sync script (before the lock) to remove any leftover `navspot-resp-*.txt` files from previous versions:
+| Original plan | This plan | Why |
+|---|---|---|
+| Unconditional `:set navspotLock "0"` | Age-based check (>120s) | Prevents concurrent AP execution |
+| No lock state logging | Logs lock value, age, lockTime, uptime | Full visibility into lock state |
+| Simple file existence check | File existence + size check | Detects partial consumption |
 
-```routeros
-:do {:foreach oldF in=[/file find where name~"^navspot-resp-"] do={/file remove $oldF}} on-error={}
-```
+## Expected Log Outcomes
 
-This runs once per sync and cleans up legacy files without interfering with the current response file.
+| Scenario | Logs you will see |
+|---|---|
+| Source corrupted | `AP head=` shows garbage/BOM, no `NAVSPOT-ACTION` |
+| Lock was stuck | `AP lock=1 age=99999s` then `lock stale -> resetting` then normal AP logs |
+| Lock legitimately held | `AP lock active -> skipping AP run` |
+| AP runs but fails to parse | `AP OK` + `AP did NOT consume actions (XXXb remain)` |
+| AP works correctly | `AP OK` + `AP consumed actions (file removed)` + `NS-AP:` logs |
 
-## Technical Details
-
-### Why the fixed filename approach is better
-
-| Aspect | Timestamped (current) | Fixed (proposed) |
-|--------|----------------------|-------------------|
-| File creation | New file each sync | Overwrites same file |
-| Cleanup needed | Regex foreach delete | Single file remove |
-| Filesystem race | Deletion + creation race | Overwrite is atomic |
-| Flash wear | Creates new file every minute | Reuses same block |
-
-### Delay rationale
-
-- **1s post-removal**: RouterOS 7 on NAND flash (hAP ax2) needs time to fully purge a file from the filesystem journal
-- **2s post-fetch**: The response write completes when `/tool fetch` returns, but the flash controller may still be flushing to NAND. 2s provides margin for the hAP ax2's flash controller
-
-### Files modified
-
-| File | Change |
-|------|--------|
-| `supabase/functions/mikrotik-scripts/index.ts` | Fix response file handling: fixed filename, proper delays |
-
-### No version bump needed
-
-This is a script-only fix (no backend logic change). The VERSION stays `7.1.62` -- the scripts endpoint will serve the updated sync source automatically after deploy.
-
-### Deploy and Verification
+## Deploy and Verification
 
 1. Deploy `mikrotik-scripts`
-2. Re-import scripts on router via "Atualizar Scripts" command
+2. Re-import scripts on router ("Atualizar Scripts")
 3. Run `/system script run navspot-sync`
-4. Check logs -- expect `resp=XXXb` (not 0b) on every sync
-5. Wait for scheduler to run a second sync -- confirm it also shows `resp=XXXb`
-6. Verify AP executes: `NS-AP: data=XXXb` in logs
+4. Check logs for `AP head=` and `AP lock=` entries
+5. If AP runs successfully, verify `/ip hotspot user profile print` and `/ip hotspot user print`
+
