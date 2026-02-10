@@ -748,6 +748,9 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ([:len $navspotSyncLockTime]=0) do={:set navspotSyncLockTime 0}
 :local us 0
 :do {:set us [/system resource get uptime-as-secs]} on-error={:log warning "NAVSPOT-SYNC: uptime-as-secs indisponivel";:set us 0}
+:local fbLu ""
+:local fbDn ""
+:local fbHp ""
 :do {
 :if ($navspotSyncLock="1") do={
 :local shouldSkip true
@@ -778,9 +781,6 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local p ""
 :local q "\\22"
 :local lby "cookie,http-pap,http-chap"
-:local fbLu ""
-:local fbDn ""
-:local fbHp ""
 :log info "NAVSPOT-SYNC: step=2a-active"
 :do {:foreach a in=[/ip hotspot active find] do={
 :local au [/ip hotspot active get $a user]
