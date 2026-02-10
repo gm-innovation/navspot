@@ -863,99 +863,65 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :log warning ("NAVSPOT-SYNC: write try=".$wt." len=".[:len $sv]." fc=[".$fc."] pf=[".[:pick $sv 0 80]."]")
 }}
 :if ($wok) do={
-:local hasAP [:len [/system script find name="navspot-action-processor"]]
-:if ($hasAP=0) do={
-:log error "NAVSPOT-SYNC: AP NAO ENCONTRADO!"
-} else={
-:local apSrc ""
-:do {:set apSrc [/system script get [find name="navspot-action-processor"] source]} on-error={}
-:local apLen [:len $apSrc]
-:log info ("NAVSPOT-SYNC: AP src=" . $apLen . "b")
-:local apHead $apSrc
-:if ($apLen>80) do={:set apHead [:pick $apSrc 0 80]}
-:log info ("NAVSPOT-SYNC: AP head=" . $apHead)
-:if ($apLen<100) do={
-:log error ("NAVSPOT-SYNC: AP corrompido (" . $apLen . "b)")
-} else={
-# v7.1.62c: Safe conditional lock reset
-:global navspotLock
-:global navspotLockTime
-:local apUs 0
-:do {:set apUs [/system resource get uptime-as-secs]} on-error={:set apUs 0}
-:if ([:typeof $navspotLock]="nothing") do={:set navspotLock "0"}
-:if ($navspotLock="1") do={
-:local lockAge 99999
-:if (($apUs>0)&&([:typeof $navspotLockTime]!="nothing")&&($navspotLockTime>0)) do={:set lockAge ($apUs - $navspotLockTime)}
-:log info ("NAVSPOT-SYNC: AP lock=1 age=" . $lockAge . "s lockTime=" . $navspotLockTime . " uptime=" . $apUs)
-:if ($lockAge>120) do={
-:log warning "NAVSPOT-SYNC: AP lock stale -> resetting"
-:set navspotLock "0"
-} else={
-:log warning "NAVSPOT-SYNC: AP lock active -> skipping AP run"
-}
-}
-:if ($navspotLock="0") do={
+:local apScriptId [/system script find name="navspot-action-processor"]
 :local apRan false
-:do {/system script run navspot-action-processor;:set apRan true} on-error={:log error "NAVSPOT-SYNC: AP THREW error"}
-:if ($apRan) do={
-:log info "NAVSPOT-SYNC: AP ran"
-:delay 200ms
-:local actLeft [/file find name="navspot-actions.txt"]
-:if ([:len $actLeft]>0) do={
-:local leftSize 0
-:do {:set leftSize [:len [/file get "navspot-actions.txt" contents]]} on-error={}
-:if ($leftSize>0) do={
-:log warning ("NAVSPOT-SYNC: AP did NOT consume actions (" . $leftSize . "b remain)")
-} else={
-:log info "NAVSPOT-SYNC: AP consumed actions (file empty)"
-}
-} else={
-:log info "NAVSPOT-SYNC: AP consumed actions (file removed)"
-}
-} else={
-:log error "NAVSPOT-SYNC: AP FAILED (did not complete)"
-:delay 200ms
-:local fallD ""
-:do {:set fallD [/file get "navspot-actions.txt" contents]} on-error={}
-:local fallLu ""
-:local fallDn ""
-:if ([:len $fallD]>0) do={
-:log info ("NAVSPOT-SYNC: inline fallback, data=" . [:len $fallD] . "b")
-:do {/file remove "navspot-actions.txt"} on-error={}
-:local fp 0
+:if ([:len $apScriptId] > 0) do={
 :do {
-:while ([:find $fallD ";" $fp]>=0) do={
-:local fe [:find $fallD ";" $fp]
-:local fl [:pick $fallD $fp $fe]
-:set fp ($fe+1)
-:if ([:find $fl "configure_hotspot_profile|"]>=0) do={
-:local pp ([:find $fl "|"]+1)
-:local rest [:pick $fl $pp [:len $fl]]
-:local pp2 [:find $rest "|"]
-:if ($pp2>=0) do={
-:set fallLu [:pick $rest 0 $pp2]
-:set fallDn [:pick $rest ($pp2+1) [:len $rest]]
+/system script run navspot-action-processor
+:set apRan true
+} on-error={
+:log error "NAVSPOT-SYNC: AP threw runtime error"
+:set apRan false
+}
+} else={
+:log info "NAVSPOT-SYNC: AP script not found, will attempt fallback"
+}
+:delay 300ms
+:local actionsId2 [/file find name="navspot-actions.txt"]
+:local afterSize 0
+:if ([:len $actionsId2] > 0) do={:set afterSize [/file get $actionsId2 size]}
+:if ($apRan = true) do={
+:if ($afterSize = 0) do={
+:log info "NAVSPOT-SYNC: AP ran and consumed actions - sync complete"
+} else={
+:log warning ("NAVSPOT-SYNC: AP ran but did not consume actions (size=" . $afterSize . "b)")
 }
 }
-}} on-error={:log error "NAVSPOT-SYNC: fallback parse error"}
-}
-:if ([:len $fallLu]>0) do={
-:local hp ""
+:if (($apRan = false) || ($afterSize > 0)) do={
+:local full ""
+:do {:set full [/file get "navspot-actions.txt" contents]} on-error={:set full ""}
+:local marker "configure_hotspot_profile|"
+:local pos [:find $full $marker]
+:if ($pos >= 0) do={
+:local sem [:find $full ";" $pos]
+:local seg ""
+:if ([:typeof $sem]="nil") do={:set seg [:pick $full $pos [:len $full]]} else={:set seg [:pick $full $pos $sem]}
+:local prefixLen [:len $marker]
+:if ([:len $seg] > $prefixLen) do={
+:local payload [:pick $seg $prefixLen [:len $seg]]
+:local psep [:find $payload "|"]
+:if ($psep >= 0) do={
+:local lu [:pick $payload 0 $psep]
+:local dn [:pick $payload ($psep + 1) [:len $payload]]
+:local hp [/ip hotspot profile find name="hsprof-navspot"]
 :local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={}}
-:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
-:if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url=$fallLu
-/ip hotspot profile set $hp dns-name=$fallDn
+:if ([:len $hs] > 0) do={:do {:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]} on-error={}}
+:if ([:len $hp] > 0) do={
+/ip hotspot profile set $hp login-url=$lu
+/ip hotspot profile set $hp dns-name=$dn
 /ip hotspot profile set $hp login-by=cookie,http-pap
-:log info ("NAVSPOT-SYNC: FALLBACK applied login-url + login-by on " . [/ip hotspot profile get $hp name])
+:log info "NAVSPOT-SYNC: Fallback aplicado com sucesso"
+:do {/file remove "navspot-actions.txt"} on-error={}
+} else={
+:log error "NAVSPOT-SYNC: fallback - hotspot profile not found"
 }
 }
 }
 } else={
-:log warning "NAVSPOT-SYNC: AP skipped (lock held)"
+:log info "NAVSPOT-SYNC: no configure_hotspot_profile in actions"
 }
-}}
+}
+}
 } else={
 :log error "NAVSPOT-SYNC: write failed after 3 tries"
 }
