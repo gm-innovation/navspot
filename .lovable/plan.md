@@ -1,43 +1,32 @@
 
 
-# Fix: RouterOS Parser Fails on Single-Line `:do {/ip hotspot profile set ... }` 
+# Fix: Remaining `[:type]` on line 840 causing persistent parse error
 
 ## Root Cause
 
-The error `expected end of command (line 198 column 34)` points to `login-url` on TS line 941. The RouterOS parser cannot handle `/ip hotspot profile set` with key=value parameters when the closing `}` follows directly after the last value on the same line:
+Line 840 of `supabase/functions/mikrotik-scripts/index.ts` still contains the invalid `[:type $s]` syntax:
 
-```routeros
-# FAILS: parser sees $dn} as ambiguous
-:do {/ip hotspot profile set $hp login-url=$lu dns-name=$dn} on-error={...}
+```
+:if ([:type $s]="nil") do={:log warning ("NAVSPOT-SYNC: no [[ marker in " . $rl . "b resp")}
 ```
 
-The main Action Processor (lines 1031-1032) avoids this by placing the command on its own line. The fix is to match that pattern.
+RouterOS parses the ENTIRE script before execution. Even though we fixed `[:type]` on lines 885 and 888, this earlier occurrence on line 840 causes the parser to fail first. The error `line 199 column 29` points exactly to this token.
 
 ## Change -- Single file: `supabase/functions/mikrotik-scripts/index.ts`
 
-### Lines 941-942: Multi-line the `:do { }` blocks
+### Line 840: Replace `[:type]` with `[:typeof]`
 
 **Before:**
 ```
-:do {/ip hotspot profile set $hp login-url=$lu dns-name=$dn} on-error={:log error "NAVSPOT-SYNC: fallback set login-url failed"}
-:do {/ip hotspot profile set $hp login-by=cookie,http-pap} on-error={:log error "NAVSPOT-SYNC: fallback set login-by failed"}
+:if ([:type $s]="nil") do={:log warning ("NAVSPOT-SYNC: no [[ marker in " . $rl . "b resp")}
 ```
 
 **After:**
 ```
-:do {
-/ip hotspot profile set $hp login-url=$lu dns-name=$dn
-} on-error={:log error "NAVSPOT-SYNC: fallback set login-url failed"}
-:do {
-/ip hotspot profile set $hp login-by=cookie,http-pap
-} on-error={:log error "NAVSPOT-SYNC: fallback set login-by failed"}
+:if ([:typeof $s]="nil") do={:log warning ("NAVSPOT-SYNC: no [[ marker in " . $rl . "b resp")}
 ```
 
-This matches the exact pattern used by the working AP handler (lines 1031-1032) where `/ip hotspot profile set` is on its own line.
-
-## Why the Previous Fix Failed
-
-The single-line `:do {/ip hotspot profile set $hp login-url=$lu dns-name=$dn}` causes the parser to interpret `$dn}` as part of the value or variable context. Line 899 works with `:do {/system script run ...;:set apRan true}` because the semicolon + `:set` statement provides a clear separator before `}`.
+This is the LAST remaining `[:type]` usage in the sync script. All other occurrences already use the correct `[:typeof]` form.
 
 ## Verification
 
