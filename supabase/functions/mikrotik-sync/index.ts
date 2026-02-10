@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 // v7.1.51: Reverted cleanup to stable format (unquoted values)
-const VERSION = "7.1.60d"
+const VERSION = "7.1.61"
 
 // v7.1.50: Required portal profile version - only marked after telemetry confirms
 const REQUIRED_PORTAL_VERSION = "7.1.50-http-pap"
@@ -1101,6 +1101,51 @@ Deno.serve(async (req) => {
       console.log(`[mikrotik-sync] v7.0: Injected initial config for ${hotspot.nome}`)
     }
 
+    // v7.1.61: Re-inject portal config if never confirmed (breaks deadlock)
+    if (hotspot.initial_config_sent && !(hotspot as any).portal_profile_version) {
+      console.log(`[mikrotik-sync] v7.1.61: portal_profile_version=null, re-injecting portal config for ${hotspot.nome}`)
+      
+      const hotspotSlugRetry = hotspot.nome.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/[^a-z0-9-]/g, '')
+      const retryLoginUrl = `https://navspot.lovable.app/hotspot-login?h=${encodeURIComponent(hotspot.id)}&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
+      const retryDnsName = `${hotspotSlugRetry}.navspot.local`
+      
+      const alreadyHasConfig = formattedActions.some((a: any) => a.type === 'configure_hotspot_profile')
+      if (!alreadyHasConfig) {
+        formattedActions.unshift({
+          id: 'retry-config-profile',
+          type: 'configure_hotspot_profile',
+          payload: { login_url: retryLoginUrl, dns_name: retryDnsName }
+        })
+        
+        // Also inject essential CPD walled garden entries
+        const backendHost = new URL(Deno.env.get('SUPABASE_URL')!).hostname
+        const essentialDomainsRetry = [
+          'navspot.lovable.app', backendHost,
+          'connectivitycheck.gstatic.com', 'clients3.google.com',
+          'captive.apple.com', 'www.apple.com',
+          'msftconnecttest.com', 'www.msftconnecttest.com'
+        ]
+        for (const domain of essentialDomainsRetry) {
+          formattedActions.push({
+            id: `retry-wg-${domain.replace(/[^a-z0-9]/gi, '')}`,
+            type: 'add_whitelist_domain',
+            payload: { list_name: 'essential', domain }
+          })
+        }
+      }
+      
+      // Reset telemetry_failures + last_force_repair_at atomically
+      await supabase
+        .from('hotspots')
+        .update({ telemetry_failures: 0, last_force_repair_at: null })
+        .eq('id', hotspot.id)
+      
+      console.log(`[mikrotik-sync] v7.1.61: Injected ${formattedActions.length} actions for deadlock recovery`)
+    }
+
     // v7.1.60: State Reconciliation with telemetry reliability check
     const hotspotLoginBy = (payload as any).hotspot_login_by || ''
     const hotspotLoginUrl = (payload as any).hotspot_login_url || ''
@@ -1124,8 +1169,8 @@ Deno.serve(async (req) => {
 
       console.log(`[mikrotik-sync] v7.1.60: Skipping portal repair - telemetry unreliable (login_by="${hotspotLoginBy}", failures=${newFailures})`)
 
-      if (newFailures >= 10) {
-        console.warn(`[mikrotik-sync] v7.1.60c: FORCE REPAIR - ${newFailures} consecutive telemetry failures, injecting portal config to break deadlock (hotspot=${hotspot.nome})`)
+      if (newFailures >= 3) {
+        console.warn(`[mikrotik-sync] v7.1.61: FORCE REPAIR - ${newFailures} consecutive telemetry failures, injecting portal config to break deadlock (hotspot=${hotspot.nome})`)
 
         const hotspotSlug = hotspot.nome.toLowerCase()
           .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -1156,8 +1201,6 @@ Deno.serve(async (req) => {
         } else {
           console.log(`[mikrotik-sync] v7.1.60d: Reset telemetry_failures to 0, portal_profile_version to null, last_force_repair_at set after force repair`)
         }
-      } else if (newFailures >= 5) {
-        console.warn(`[mikrotik-sync] v7.1.60d: ALERT - hotspot ${hotspot.nome} has ${newFailures} consecutive telemetry failures`)
       }
     } else {
       // Telemetry reliable -- reset counter if needed
