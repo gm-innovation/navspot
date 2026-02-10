@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.62"
+const VERSION = "7.2.0"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -909,7 +909,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ([:len $hp] > 0) do={
 /ip hotspot profile set $hp login-url=$lu
 /ip hotspot profile set $hp dns-name=$dn
-/ip hotspot profile set $hp login-by=cookie,http-pap
+/ip hotspot profile set $hp login-by=cookie,http-pap,http-chap
 :log info "NAVSPOT-SYNC: Fallback aplicado com sucesso"
 :do {/file remove "navspot-actions.txt"} on-error={}
 } else={
@@ -1000,8 +1000,8 @@ function generateActionProcessorCoreSource(): string {
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
 /ip hotspot profile set $hp login-url=$lu dns-name=$dn
-/ip hotspot profile set $hp login-by=cookie,http-pap
-:log info ("NAVSPOT: login-by=cookie,http-pap aplicado em ".[/ip hotspot profile get $hp name])
+/ip hotspot profile set $hp login-by=cookie,http-pap,http-chap
+:log info ("NAVSPOT: login-by=cookie,http-pap,http-chap aplicado em ".[/ip hotspot profile get $hp name])
 :set cnt ($cnt+1)
 }}}} on-error={}}
 :if ($c="create_profile") do={
@@ -1127,8 +1127,8 @@ function generateActionProcessorFullSource(): string {
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
 /ip hotspot profile set $hp login-url=$lu dns-name=$dn
-/ip hotspot profile set $hp login-by=cookie,http-pap
-:log info ("NAVSPOT: login-by=cookie,http-pap aplicado em ".[/ip hotspot profile get $hp name])
+/ip hotspot profile set $hp login-by=cookie,http-pap,http-chap
+:log info ("NAVSPOT: login-by=cookie,http-pap,http-chap aplicado em ".[/ip hotspot profile get $hp name])
 :set cnt ($cnt+1)
 }}}} on-error={}}
 :if ($c="create_profile") do={
