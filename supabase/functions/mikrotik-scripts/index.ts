@@ -917,6 +917,8 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :delay 200ms
 :local fallD ""
 :do {:set fallD [/file get "navspot-actions.txt" contents]} on-error={}
+:local fallLu ""
+:local fallDn ""
 :if ([:len $fallD]>0) do={
 :log info ("NAVSPOT-SYNC: inline fallback, data=" . [:len $fallD] . "b")
 :do {/file remove "navspot-actions.txt"} on-error={}
@@ -931,21 +933,23 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local rest [:pick $fl $pp [:len $fl]]
 :local pp2 [:find $rest "|"]
 :if ($pp2>=0) do={
-:local lu [:pick $rest 0 $pp2]
-:local dn [:pick $rest ($pp2+1) [:len $rest]]
+:set fallLu [:pick $rest 0 $pp2]
+:set fallDn [:pick $rest ($pp2+1) [:len $rest]]
+}
+}
+}} on-error={:log error "NAVSPOT-SYNC: fallback parse error"}
+}
+:if ([:len $fallLu]>0) do={
 :local hp ""
 :local hs [/ip hotspot find name="hs-navspot"]
 :if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={}}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url=$lu
-/ip hotspot profile set $hp dns-name=$dn
+/ip hotspot profile set $hp login-url=$fallLu
+/ip hotspot profile set $hp dns-name=$fallDn
 /ip hotspot profile set $hp login-by=cookie,http-pap
 :log info ("NAVSPOT-SYNC: FALLBACK applied login-url + login-by on " . [/ip hotspot profile get $hp name])
 }
-}
-}
-}} on-error={:log error "NAVSPOT-SYNC: fallback parse error"}
 }
 }
 } else={
