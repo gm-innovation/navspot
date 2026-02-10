@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 // v7.1.51: Reverted cleanup to stable format (unquoted values)
-const VERSION = "7.1.61"
+const VERSION = "7.1.62"
 
 // v7.1.50: Required portal profile version - only marked after telemetry confirms
 const REQUIRED_PORTAL_VERSION = "7.1.50-http-pap"
@@ -1792,10 +1792,7 @@ Deno.serve(async (req) => {
         pending_actions_pipe: formattedPipe,  // FIRST - RouterOS scans for [[
         success: true,
         server_time: new Date().toISOString(),
-        // Keep other fields for debugging but move to end
-        pending_actions: expandedActions,
-        firewall_rules: firewallRules,
-        device_violations: deviceViolations,
+        actions_count: expandedActions.length,
         blocked_devices: blockedDevices
       }).replace(/\\u0026/g, '&')
         .replace(/__NAVSPOT_DOLLAR__/g, '\\$(')

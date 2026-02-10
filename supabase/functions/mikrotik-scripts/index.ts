@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.61"
+const VERSION = "7.1.62"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -830,10 +830,14 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ($ok) do={
 :delay 500ms
 :local resp ""
-:do {:set resp [/file get $respFile contents]} on-error={}
+:do {:set resp [/file get $respFile contents]} on-error={:log error "NAVSPOT-SYNC: file read FAILED"}
 :do {/file remove $respFile} on-error={}
+:local rl [:len $resp]
+:log info ("NAVSPOT-SYNC: resp=" . $rl . "b")
+:if ($rl=0) do={:log error "NAVSPOT-SYNC: response EMPTY"}
 :local s [:find $resp "[["]
 :local e [:find $resp "]]"]
+:if ([:type $s]="nil") do={:log warning ("NAVSPOT-SYNC: no [[ marker in " . $rl . "b resp")}
 :if (($s>=0)&&($e>$s)) do={
 :local raw [:pick $resp ($s+2) $e]
 :local i 0
@@ -878,7 +882,12 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :log error "NAVSPOT-SYNC: write failed after 3 tries"
 }
 }
-}
+} else={
+:if ($rl>0) do={
+:local rHead $resp
+:if ($rl>120) do={:set rHead [:pick $resp 0 120]}
+:log warning ("NAVSPOT-SYNC: no actions, head=" . $rHead)
+}}
 }
 } on-error={:log error ("NAVSPOT-SYNC: CRASH step=" . $step);:set navspotSyncLock "0"}
 :set navspotSyncLock "0"
