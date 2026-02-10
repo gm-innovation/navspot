@@ -814,21 +814,21 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :set step "4-json"
 :log info "NAVSPOT-SYNC: step=4-json"
 :local ok false
-# v7.1.36: Arquivo de resposta unico com timestamp
-:local ts [:tostr [/system clock get time]]
-:local tsStr ([:pick $ts 0 2].[:pick $ts 3 5].[:pick $ts 6 8])
-:local respFile ("navspot-resp-" . $tsStr . ".txt")
-# Limpar arquivos de resposta antigos
-:do {:foreach oldF in=[/file find where name~"navspot-resp-"] do={/file remove $oldF}} on-error={}
+# v7.1.62b: Fixed filename + proper delays for RouterOS 7
+:local respFile "navspot-resp.txt"
+# Cleanup legacy timestamped files (one-time)
+:do {:foreach oldF in=[/file find where name~"^navspot-resp-"] do={/file remove $oldF}} on-error={}
+# Remove previous response file and wait for filesystem flush
+:do {/file remove $respFile} on-error={}
+:delay 1s
 :set step "5-fetch"
 :log info "NAVSPOT-SYNC: step=5-fetch"
-:delay 200ms
 :do {
 /tool fetch url="${syncUrl}" http-method=post http-data=($b) http-header-field="Content-Type: application/json" check-certificate=no dst-path=$respFile
 :set ok true
 } on-error={:log warning "NAVSPOT-SYNC: fetch FALHOU";:set navspotSyncLock "0"}
 :if ($ok) do={
-:delay 500ms
+:delay 2s
 :local resp ""
 :do {:set resp [/file get $respFile contents]} on-error={:log error "NAVSPOT-SYNC: file read FAILED"}
 :do {/file remove $respFile} on-error={}
