@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.1.62"
+const VERSION = "7.2.0"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -457,10 +457,19 @@ ${migrationCommands}
 # 10. HOTSPOT MINIMO v7.1.46 (SEM login-url - sera configurada via sync)
 :do { /ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} } on-error={}
 # v7.1.47: Garantir login-by correto desde o inicio (sem aspas!)
-/ip hotspot profile set [find name="hsprof-navspot"] login-by=cookie,http-pap
-:log info "NAVSPOT v${VERSION}: login-by=cookie,http-pap aplicado"
+/ip hotspot profile set [find name="hsprof-navspot"] login-by=cookie,http-pap,http-chap
+/ip hotspot profile set [find name="hsprof-navspot"] http-cookie-lifetime=3d
+:log info "NAVSPOT v${VERSION}: login-by=cookie,http-pap,http-chap aplicado"
 :do { /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no } on-error={}
 :log info "NAVSPOT v${VERSION}: Hotspot criado (aguardando config via sync)"
+
+# 10.1 WALLED GARDEN INICIAL (infraestrutura + Android CNA)
+/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-initial"
+/ip hotspot walled-garden add dst-host="*.navspot.com.br" action=allow comment="navspot-initial"
+/ip hotspot walled-garden add dst-host="*.googleapis.com" action=allow comment="navspot-initial"
+/ip hotspot walled-garden add dst-host="connectivitycheck.gstatic.com" action=allow comment="navspot-initial"
+/ip hotspot walled-garden add dst-host="*.gstatic.com" action=allow comment="navspot-initial"
+:log info "NAVSPOT v${VERSION}: Walled Garden inicial configurado (5 regras)"
 
 # 11. TOKEN
 :do { /file remove "navspot-token.txt" } on-error={}
