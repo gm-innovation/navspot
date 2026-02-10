@@ -778,6 +778,9 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local p ""
 :local q "\\22"
 :local lby "cookie,http-pap,http-chap"
+:local fbLu ""
+:local fbDn ""
+:local fbHp ""
 :log info "NAVSPOT-SYNC: step=2a-active"
 :do {:foreach a in=[/ip hotspot active find] do={
 :local au [/ip hotspot active get $a user]
@@ -908,10 +911,9 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local hs [/ip hotspot find name="hs-navspot"]
 :if ([:len $hs] > 0) do={:do {:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]} on-error={}}
 :if ([:len $hp] > 0) do={
-/ip hotspot profile set $hp login-url=$lu
-/ip hotspot profile set $hp dns-name=$dn
-/ip hotspot profile set $hp login-by=$lby
-:log info "NAVSPOT-SYNC: Fallback aplicado com sucesso"
+:set fbLu $lu
+:set fbDn $dn
+:set fbHp $hp
 :do {/file remove "navspot-actions.txt"} on-error={}
 } else={
 :log error "NAVSPOT-SYNC: fallback - hotspot profile not found"
@@ -935,6 +937,12 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }}
 }
 } on-error={:log error ("NAVSPOT-SYNC: CRASH step=" . $step);:set navspotSyncLock "0"}
+:if ([:len $fbHp] > 0) do={
+/ip hotspot profile set $fbHp login-url=$fbLu
+/ip hotspot profile set $fbHp dns-name=$fbDn
+/ip hotspot profile set $fbHp login-by=$lby
+:log info "NAVSPOT-SYNC: Fallback aplicado com sucesso"
+}
 :set navspotSyncLock "0"
 :log info "NAVSPOT-SYNC v${VERSION}: OK"`
 }
@@ -1001,7 +1009,8 @@ function generateActionProcessorCoreSource(): string {
 :if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={:set hp ""}}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url=$lu dns-name=$dn
+/ip hotspot profile set $hp login-url=$lu
+/ip hotspot profile set $hp dns-name=$dn
 /ip hotspot profile set $hp login-by=$lby
 :log info ("NAVSPOT: login-by=" . $lby . " aplicado em ".[/ip hotspot profile get $hp name])
 :set cnt ($cnt+1)
@@ -1129,7 +1138,8 @@ function generateActionProcessorFullSource(): string {
 :if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={:set hp ""}}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url=$lu dns-name=$dn
+/ip hotspot profile set $hp login-url=$lu
+/ip hotspot profile set $hp dns-name=$dn
 /ip hotspot profile set $hp login-by=$lby
 :log info ("NAVSPOT: login-by=" . $lby . " aplicado em ".[/ip hotspot profile get $hp name])
 :set cnt ($cnt+1)
