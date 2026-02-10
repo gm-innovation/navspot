@@ -1,53 +1,97 @@
 
 
-# Add Android Connectivity Check Domains to Walled Garden (v7.2.0)
+# Fix v7.2.0 Sync Crash and Guardian Repair Loop (Hoisting + Logic Fix)
 
-## Context
+## Problem
 
-Android devices perform connectivity checks by reaching `connectivitycheck.gstatic.com`. If this domain is blocked by the hotspot captive portal, devices show "Internet Indisponible" and may auto-disconnect from Wi-Fi before the user ever sees the login page. Adding these domains to the initial Walled Garden rules ensures a smooth captive portal experience on all Android devices.
+1. `navspot-sync` crashes with `expected end of command (line 167)` because `login-by=cookie,http-pap,http-chap` (comma-separated literal) sits at nesting level 9+ in the fallback block.
+2. Guardian triggers false repairs every 10 minutes because it treats `http-chap` as a fault indicator, but v7.2.0 intentionally enables it.
+3. Recovery script still applies old `login-by=cookie,http-pap` (missing `http-chap`).
 
-## Reinstall Safety
+## Solution: Variable Hoisting + Guardian Logic Inversion
 
-The cleanup block (line 344) already removes all entries with `comment="navspot-initial"` before re-creating them, so running v7.2.0 over v7.1.62 will NOT cause duplicates.
+Declare `:local lby "cookie,http-pap,http-chap"` at a shallow nesting level and reference `$lby` in deep blocks, avoiding the RouterOS 7 parser crash.
 
 ## Changes
 
-### File: `supabase/functions/mikrotik-script-generator/index.ts`
+### 1. `supabase/functions/mikrotik-scripts/index.ts`
 
-**1. Version bump** (line 8): `"7.1.62"` to `"7.2.0"`
+**Sync fallback (3 edits):**
 
-**2. Update login-by** (line 460): Add `http-chap` for device compatibility:
+- **Line 779** -- Insert `lby` declaration right after the `q` variable (nesting level 2, very shallow):
 ```
-login-by=cookie,http-pap,http-chap
-```
-
-**3. Add cookie lifetime** (after line 461): New line:
-```
-/ip hotspot profile set [find name="hsprof-navspot"] http-cookie-lifetime=3d
+:local lby "cookie,http-pap,http-chap"
 ```
 
-**4. Add Walled Garden rules** (after line 463, right after "Hotspot criado" log): Insert 5 entries covering all infrastructure + Android connectivity:
-```routeros
-# 10.1 WALLED GARDEN INICIAL (infraestrutura + Android CNA)
-/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-initial"
-/ip hotspot walled-garden add dst-host="*.navspot.com.br" action=allow comment="navspot-initial"
-/ip hotspot walled-garden add dst-host="*.googleapis.com" action=allow comment="navspot-initial"
-/ip hotspot walled-garden add dst-host="connectivitycheck.gstatic.com" action=allow comment="navspot-initial"
-/ip hotspot walled-garden add dst-host="*.gstatic.com" action=allow comment="navspot-initial"
-:log info "NAVSPOT v7.2.0: Walled Garden inicial configurado (5 regras)"
+- **Line 912** -- Replace literal with variable:
+```
+/ip hotspot profile set $hp login-by=$lby
 ```
 
-### File: `supabase/functions/mikrotik-scripts/index.ts`
+**AP Core (2 edits):**
 
-**5. Version bump** (line 38): `"7.1.62"` to `"7.2.0"`
+- **Line 977** -- Insert `lby` declaration after `cnt` (nesting level 1):
+```
+:local lby "cookie,http-pap,http-chap"
+```
 
-**6. Update login-by in sync fallback, AP Core, and AP Full**: Change all occurrences of `login-by=cookie,http-pap` to `login-by=cookie,http-pap,http-chap` for consistency with the bootstrap.
+- **Line 1003** -- Replace literal with variable:
+```
+/ip hotspot profile set $hp login-by=$lby
+```
 
-## Verification
+- **Line 1004** -- Update log message to use `$lby`:
+```
+:log info ("NAVSPOT: login-by=" . $lby . " aplicado em ".[/ip hotspot profile get $hp name])
+```
 
-1. Generate a new script from the panel -- confirm header shows `v7.2.0`
-2. Search the `.rsc` file for `connectivitycheck.gstatic.com` -- must be present
-3. Confirm `login-by=cookie,http-pap,http-chap` in the hotspot profile section
-4. On router after import: `/ip hotspot walled-garden print` should show 5 `navspot-initial` entries
-5. Re-run import over existing install: `/ip hotspot walled-garden print` should still show exactly 5 entries (no duplicates)
+**AP Full (2 edits):**
+
+- **Line 1105** -- Insert `lby` declaration after `cnt` (nesting level 1):
+```
+:local lby "cookie,http-pap,http-chap"
+```
+
+- **Line 1130** -- Replace literal with variable:
+```
+/ip hotspot profile set $hp login-by=$lby
+```
+
+- **Line 1131** -- Update log message:
+```
+:log info ("NAVSPOT: login-by=" . $lby . " aplicado em ".[/ip hotspot profile get $hp name])
+```
+
+**Guardian (1 edit):**
+
+- **Line 1362** -- Invert the check to detect MISSING `http-pap` instead of flagging present `http-chap`:
+```
+:if ([:find $loginBy "http-pap"]<0) do={:set needsRepair 1;:set missing ($missing."login-pap ")}
+```
+
+### 2. `supabase/functions/mikrotik-recovery-download/index.ts`
+
+- **Line 243** -- Update log message:
+```
+:log info "NAVSPOT-RECOVERY v${VERSION}: Aplicando login-by=cookie,http-pap,http-chap..."
+```
+
+- **Line 249** -- Update the actual command:
+```
+/ip hotspot profile set $hp login-by=cookie,http-pap,http-chap
+```
+(This is at nesting level 2-3, safe without hoisting.)
+
+- **Line 262** -- Update the summary note:
+```
+:log info "NOTE: login-by=cookie,http-pap,http-chap aplicado localmente"
+```
+
+## Verification (post-deploy)
+
+1. Generate new `.rsc` from the panel -- confirm `:local lby "cookie,http-pap,http-chap"` appears in sync and AP scripts
+2. Import on router and run `/system script run navspot-sync` -- must NOT crash
+3. `/ip hotspot profile print detail where name="hsprof-navspot"` -- confirm `login-by` includes `http-chap`
+4. Run Guardian manually -- should report `Sistema OK` (no false `login-chap` trigger)
+5. Check recovery script: download and verify `login-by=cookie,http-pap,http-chap` is present
 
