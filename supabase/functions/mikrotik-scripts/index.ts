@@ -559,8 +559,8 @@ function generateAllScripts(
 :do {
 /system script run navspot-action-processor
 } on-error={
-:set smokeErr [:tostr $error]
-:log error ("NAVSPOT-INSTALL: smoke test ERRO=" . $smokeErr)
+:set smokeErr "script_error"
+:log error "NAVSPOT-INSTALL: smoke test ERRO detectado"
 }
 :if ([:len $smokeErr] > 0) do={
 :log error "NAVSPOT-INSTALL: smoke test falhou - aplicando FALLBACK INLINE"
@@ -874,6 +874,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local apRan false
 :if ([:len $apScriptId] > 0) do={
 :do {
+:delay 300ms
 /system script run navspot-action-processor
 :set apRan true
 } on-error={
@@ -938,7 +939,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :log warning ("NAVSPOT-SYNC: no actions, head=" . $rHead)
 }}
 }
-} on-error={:log error ("NAVSPOT-SYNC: CRASH step=" . $step);:set navspotSyncLock "0"}
+} on-error={:log error "NAVSPOT-SYNC: CRASH in main block";:set navspotSyncLock "0"}
 :if ([:len $fbHp] > 0) do={
 :if ([:len $fbLu] > 10) do={ /ip hotspot profile set $fbHp login-url=$fbLu }
 :if ([:len $fbDn] > 0) do={ /ip hotspot profile set $fbHp dns-name=$fbDn }
@@ -992,6 +993,9 @@ function generateActionProcessorCoreSource(): string {
 :local pos 0
 :local cnt 0
 :local lby "cookie,http-pap,http-chap"
+:local cfgHp ""
+:local cfgLu ""
+:local cfgDn ""
 :do {
 :while ([:find $d ";" $pos]>=0) do={
 :local ep [:find $d ";" $pos]
@@ -1014,13 +1018,8 @@ function generateActionProcessorCoreSource(): string {
 :local hs [/ip hotspot find name="hs-navspot"]
 :if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={:set hp ""}}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
-:if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url=$lu
-/ip hotspot profile set $hp dns-name=$dn
-/ip hotspot profile set $hp login-by=$lby
-:log info ("NAVSPOT: login-by=" . $lby . " aplicado em ".[/ip hotspot profile get $hp name])
-:set cnt ($cnt+1)
-}}}} on-error={}}
+:if ([:len $hp]>0) do={:set cfgHp $hp;:set cfgLu $lu;:set cfgDn $dn;:set cnt ($cnt+1)}
+}}} on-error={}}
 :if ($c="create_profile") do={
 :log info "NS-AP: c-prof"
 :do {
@@ -1074,6 +1073,12 @@ function generateActionProcessorCoreSource(): string {
 }} on-error={}}
 }}}
 } on-error={:log error "NS-AP: action processing error"}
+:if ([:len $cfgHp]>0) do={
+/ip hotspot profile set $cfgHp login-url=$cfgLu
+/ip hotspot profile set $cfgHp dns-name=$cfgDn
+/ip hotspot profile set $cfgHp login-by=$lby
+:log info ("NAVSPOT: cfg-hp applied on " . [/ip hotspot profile get $cfgHp name])
+}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION v${VERSION}: OK - ".$cnt)`
 }
@@ -1121,6 +1126,9 @@ function generateActionProcessorFullSource(): string {
 :local pos 0
 :local cnt 0
 :local lby "cookie,http-pap,http-chap"
+:local cfgHp ""
+:local cfgLu ""
+:local cfgDn ""
 :do {
 :while ([:find $d ";" $pos]>=0) do={
 :local ep [:find $d ";" $pos]
@@ -1143,13 +1151,8 @@ function generateActionProcessorFullSource(): string {
 :local hs [/ip hotspot find name="hs-navspot"]
 :if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={:set hp ""}}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
-:if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url=$lu
-/ip hotspot profile set $hp dns-name=$dn
-/ip hotspot profile set $hp login-by=$lby
-:log info ("NAVSPOT: login-by=" . $lby . " aplicado em ".[/ip hotspot profile get $hp name])
-:set cnt ($cnt+1)
-}}}} on-error={}}
+:if ([:len $hp]>0) do={:set cfgHp $hp;:set cfgLu $lu;:set cfgDn $dn;:set cnt ($cnt+1)}
+}}} on-error={}}
 :if ($c="create_profile") do={
 :log info "NS-AP: c-prof"
 :do {
@@ -1244,6 +1247,12 @@ function generateActionProcessorFullSource(): string {
 }} on-error={}}
 }}}
 } on-error={:log error "NS-AP: action processing error"}
+:if ([:len $cfgHp]>0) do={
+/ip hotspot profile set $cfgHp login-url=$cfgLu
+/ip hotspot profile set $cfgHp dns-name=$cfgDn
+/ip hotspot profile set $cfgHp login-by=$lby
+:log info ("NAVSPOT: cfg-hp applied on " . [/ip hotspot profile get $cfgHp name])
+}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION v${VERSION}: OK - ".$cnt)`
 }
@@ -1354,7 +1363,7 @@ function generateActionAuxSource(): string {
 } on-error={}
 }
 }}}
-} on-error={:log error ("NS-AP-AUX: CRASH=" . [:tostr $error])}
+} on-error={:log error "NS-AP-AUX: action processing error"}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION-AUX v${VERSION}: OK - ".$cnt)`
 }
