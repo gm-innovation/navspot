@@ -1,87 +1,98 @@
 
 
-# Ajustar mikrotik-script-generator para retornar plain text
+# Fix: Hoisting do Sync Fallback + Split AP Core/Full (v7.2.0)
 
-## Esclarecimento Importante
+## Problema
 
-O endpoint `mikrotik-scripts` (que gera Sync, Guardian e Action Processor) **ja retorna `text/plain`** -- o MikroTik recebe o `.rsc` corretamente via `/tool fetch`. Nenhuma mudanca necessaria nesse endpoint.
+O comando `/ip hotspot profile set` no fallback do sync (linhas 910-913) esta no nivel 10 de aninhamento, causando `expected end of command` no RouterOS 7.
 
-O unico endpoint que ainda retorna JSON e o `mikrotik-script-generator` (Bootstrap), que e consumido pelo frontend web. Esse e o alvo desta mudanca.
+## 3 Mudancas no arquivo `supabase/functions/mikrotik-scripts/index.ts`
 
-## Mudancas
+### Mudanca 1: Sync Fallback -- Hoisting (generateSyncSource)
 
-### 1. `supabase/functions/mikrotik-script-generator/index.ts` (linhas 247-261)
+**Adicionar variaveis no nivel 1** (apos linha 780, junto com `:local lby`):
 
-Alterar a resposta de sucesso de JSON para plain text com metadados nos headers:
-
-```text
-De:   JSON.stringify({ success: true, bootstrap_script: ..., version: ... })
-Para: Response body = script puro (text/plain)
-      Headers: X-Navspot-Version, X-Navspot-Hotspot, X-Navspot-Wan-Interface, X-Navspot-Wan-Type
+```routeros
+:local fbLu ""
+:local fbDn ""
+:local fbHp ""
 ```
 
-Respostas de erro permanecem em JSON (o frontend precisa da mensagem de erro estruturada).
+**Substituir bloco profundo (linhas 910-915)** -- em vez de executar `/set` no nivel 10, apenas salvar nas variaveis:
 
-### 2. `src/hooks/useHotspots.ts` -- `useGenerateHotspotScript` (linhas 164-171)
-
-Atualizar o `mutationFn` para tratar a resposta como texto, com fallback robusto:
-
-- Se `data` for string: extrair versao via regex do header do script
-- Se `data` for Blob/object: chamar `.text()` para converter
-- Se nenhum dos dois: lancar erro
-- Fallback: formato JSON antigo (compatibilidade)
-
-### 3. `src/services/mikrotikService.ts` -- `generateScript` (linhas 71-82)
-
-Mesma logica de deteccao de tipo da resposta:
-
-- `typeof data === 'string'` -> usar diretamente
-- Caso contrario -> tentar `.text()` ou usar como JSON antigo
-
-### 4. Nenhuma mudanca em `mikrotik-scripts/index.ts`
-
-Ja retorna `text/plain` com Content-Disposition correto. O MikroTik recebe o `.rsc` com newlines reais.
-
-## Detalhes Tecnicos
-
-O `supabase.functions.invoke()` da lib JS pode retornar o body ja parseado dependendo do Content-Type:
-- `application/json` -> objeto JS
-- `text/plain` -> string (na maioria das versoes)
-- Em versoes mais antigas -> pode vir como Blob
-
-Para cobrir todos os cenarios, o codigo fara:
-
-```typescript
-const { data, error } = await supabase.functions.invoke('mikrotik-script-generator', {
-  body: { hotspot_id: hotspotId },
-});
-if (error) throw error;
-
-// Detectar formato da resposta
-let scriptText: string;
-if (typeof data === 'string') {
-  scriptText = data;
-} else if (data && typeof data.text === 'function') {
-  scriptText = await data.text();
-} else if (data?.bootstrap_script) {
-  // Fallback JSON antigo
-  return data;
-} else {
-  throw new Error('Formato de resposta inesperado');
+```routeros
+:if ([:len $hp] > 0) do={
+:set fbLu $lu
+:set fbDn $dn
+:set fbHp $hp
+:do {/file remove "navspot-actions.txt"} on-error={}
+} else={
+:log error "NAVSPOT-SYNC: fallback - hotspot profile not found"
 }
-
-return {
-  bootstrap_script: scriptText,
-  finalize_script: '',
-  version: scriptText.match(/v(\d+\.\d+\.\d+)/)?.[1] || '7.2.0',
-};
 ```
 
-## Resultado Esperado
+**Adicionar bloco de aplicacao no nivel 1** (antes da linha 938 `:set navspotSyncLock "0"`):
 
-- Bootstrap `.rsc` retornado como texto puro com newlines reais
-- Frontend continua funcionando, extraindo versao via regex
-- Download direto via curl/browser retorna arquivo `.rsc` pronto
-- Compatibilidade mantida com formato JSON antigo (fallback)
-- Endpoint `mikrotik-scripts` (Sync/AP/Guardian) ja funciona corretamente -- sem mudancas
+```routeros
+:if ([:len $fbHp] > 0) do={
+/ip hotspot profile set $fbHp login-url=$fbLu
+/ip hotspot profile set $fbHp dns-name=$fbDn
+/ip hotspot profile set $fbHp login-by=$lby
+:log info "NAVSPOT-SYNC: Fallback aplicado com sucesso"
+}
+```
+
+Os comandos `/set` executam agora no nivel 2 (dentro de um unico `:if` apos o bloco `:do`).
+
+### Mudanca 2: AP Core -- Split "Um Comando, Uma Propriedade" (linha 1004)
+
+De:
+```routeros
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn
+```
+
+Para:
+```routeros
+/ip hotspot profile set $hp login-url=$lu
+/ip hotspot profile set $hp dns-name=$dn
+```
+
+Esta no nivel 9 (borderline). Separar segue a regra de ouro e reduz risco.
+
+### Mudanca 3: AP Full -- Mesmo split (linha 1132)
+
+De:
+```routeros
+/ip hotspot profile set $hp login-url=$lu dns-name=$dn
+```
+
+Para:
+```routeros
+/ip hotspot profile set $hp login-url=$lu
+/ip hotspot profile set $hp dns-name=$dn
+```
+
+## Inicializacao das variaveis
+
+Conforme a dica, todas as variaveis de fallback sao inicializadas com `""` no topo:
+- `:local fbLu ""` -- login-url (vazio ate o fallback preencher)
+- `:local fbDn ""` -- dns-name (vazio ate o fallback preencher)
+- `:local fbHp ""` -- hotspot profile ID (vazio ate o fallback preencher)
+- `:local lby "cookie,http-pap,http-chap"` -- ja existe na linha 780
+
+O bloco de aplicacao so executa se `fbHp` nao for vazio (`[:len $fbHp] > 0`), garantindo que variaveis `""` nunca sejam passadas para `/set`.
+
+## Verificacao Pos-Deploy
+
+1. `/system script run navspot-sync` -- log deve mostrar `NAVSPOT-SYNC v7.2.0: OK`
+2. Se AP ausente/falhar: log deve mostrar `NAVSPOT-SYNC: Fallback aplicado com sucesso`
+3. `/ip hotspot profile print detail` -- confirmar `login-url` e `login-by` corretos
+
+## Resumo
+
+| Local | Linhas | Problema | Fix |
+|-------|--------|----------|-----|
+| Sync fallback | 780, 910-915, antes 938 | `/set` no nivel 10 | Hoisting: extrair no 10, aplicar no 2 |
+| AP Core | 1004 | 2 props em 1 cmd no nivel 9 | Split em 2 comandos |
+| AP Full | 1132 | 2 props em 1 cmd no nivel 9 | Split em 2 comandos |
 
