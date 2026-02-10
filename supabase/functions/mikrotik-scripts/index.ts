@@ -308,6 +308,10 @@ function generateAllScripts(
 :log info ("NS-AP: " . [:len $raw] . "b")
 :local pos 0
 :local cnt 0
+:local lby "cookie,http-pap,http-chap"
+:local cfgHp ""
+:local cfgLu ""
+:local cfgDn ""
 :do {
 :while ([:find $raw ";" $pos] >= 0) do={
 :local ep [:find $raw ";" $pos]
@@ -318,6 +322,19 @@ function generateAllScripts(
 :if ($p1 >= 0) do={
 :local c [:pick $ln 0 $p1]
 :local r [:pick $ln ($p1 + 1) [:len $ln]]
+:if ($c = "configure_hotspot_profile") do={
+:do {
+:local p2 [:find $r "|"]
+:if ($p2 >= 0) do={
+:local lu [:pick $r 0 $p2]
+:local dn [:pick $r ($p2 + 1) [:len $r]]
+:if (([:len $lu] > 0) && ([:len $dn] > 0)) do={
+:local hp ""
+:local hs [/ip hotspot find name="hs-navspot"]
+:if ([:len $hs] > 0) do={:do {:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]} on-error={}}
+:if ([:len $hp] = 0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
+:if ([:len $hp] > 0) do={:set cfgHp $hp;:set cfgLu $lu;:set cfgDn $dn;:set cnt ($cnt + 1)}
+}}} on-error={}}
 :if ($c = "create_profile") do={
 :local p2 [:find $r "|"]
 :if ($p2 >= 0) do={
@@ -351,6 +368,12 @@ function generateAllScripts(
 }}
 }}}
 } on-error={:log error "NS-AP: action processing error"}
+:if ([:len $cfgHp] > 0) do={
+/ip hotspot profile set $cfgHp login-url=$cfgLu
+/ip hotspot profile set $cfgHp dns-name=$cfgDn
+/ip hotspot profile set $cfgHp login-by=$lby
+:log info ("NAVSPOT: cfg-hp applied on " . [/ip hotspot profile get $cfgHp name])
+}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION v${VERSION}F: OK - " . $cnt)`
 
