@@ -350,7 +350,7 @@ function generateAllScripts(
 :set cnt ($cnt + 1)
 }}
 }}}
-} on-error={:log error ("NS-AP: CRASH=" . [:tostr $error])}
+} on-error={:log error "NS-AP: action processing error"}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION v${VERSION}F: OK - " . $cnt)`
 
@@ -751,6 +751,8 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local fbLu ""
 :local fbDn ""
 :local fbHp ""
+:local fbActions ""
+:local lby "cookie,http-pap,http-chap"
 :do {
 :if ($navspotSyncLock="1") do={
 :local shouldSkip true
@@ -780,7 +782,6 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local r ""
 :local p ""
 :local q "\\22"
-:local lby "cookie,http-pap,http-chap"
 :log info "NAVSPOT-SYNC: step=2a-active"
 :do {:foreach a in=[/ip hotspot active find] do={
 :local au [/ip hotspot active get $a user]
@@ -851,6 +852,8 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local a ""
 :if ($j>=$i) do={:set a [:pick $raw $i ($j+1)]}
 :if ([:len $a]>0) do={
+:set fbActions $a
+:log info ("NAVSPOT-SYNC: fbActions len=" . [:len $fbActions])
 :do {/file remove "navspot-actions.txt"} on-error={}
 :delay 200ms
 :local wok false
@@ -892,8 +895,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 }
 :if (($apRan = false) || ($afterSize > 0)) do={
-:local full ""
-:do {:set full [/file get "navspot-actions.txt" contents]} on-error={:set full ""}
+:local full $fbActions
 :local marker "configure_hotspot_profile|"
 :local pos [:find $full $marker]
 :if ($pos >= 0) do={
@@ -938,10 +940,14 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 } on-error={:log error ("NAVSPOT-SYNC: CRASH step=" . $step);:set navspotSyncLock "0"}
 :if ([:len $fbHp] > 0) do={
-/ip hotspot profile set $fbHp login-url=$fbLu
-/ip hotspot profile set $fbHp dns-name=$fbDn
+:if ([:len $fbLu] > 10) do={ /ip hotspot profile set $fbHp login-url=$fbLu }
+:if ([:len $fbDn] > 0) do={ /ip hotspot profile set $fbHp dns-name=$fbDn }
 /ip hotspot profile set $fbHp login-by=$lby
-:log info "NAVSPOT-SYNC: Fallback aplicado com sucesso"
+:log info "NAVSPOT-SYNC: Fallback aplicado com sucesso (hoisted)"
+:set fbActions ""
+:set fbLu ""
+:set fbDn ""
+:set fbHp ""
 }
 :set navspotSyncLock "0"
 :log info "NAVSPOT-SYNC v${VERSION}: OK"`
@@ -1067,7 +1073,7 @@ function generateActionProcessorCoreSource(): string {
 :if ([:len $wg]=0) do={/ip hotspot walled-garden add dst-host=("*".$dom."*") action=allow comment="navspot";:set cnt ($cnt+1)}
 }} on-error={}}
 }}}
-} on-error={:log error ("NS-AP: CRASH=" . [:tostr $error])}
+} on-error={:log error "NS-AP: action processing error"}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION v${VERSION}: OK - ".$cnt)`
 }
@@ -1237,7 +1243,7 @@ function generateActionProcessorFullSource(): string {
 :if ([:len $mac]>0) do={/ip hotspot active remove [find mac-address=$mac];:set cnt ($cnt+1)}
 }} on-error={}}
 }}}
-} on-error={:log error ("NS-AP: CRASH=" . [:tostr $error])}
+} on-error={:log error "NS-AP: action processing error"}
 :set navspotLock "0"
 :log info ("NAVSPOT-ACTION v${VERSION}: OK - ".$cnt)`
 }
