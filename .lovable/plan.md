@@ -1,190 +1,171 @@
 
 
-# v7.1.61: Complete Reliability Overhaul
+# Fix v7.1.62: Add Response Diagnostics + Fix Silent Action Drop
 
-## Overview
+## Problem
 
-Three interlocking failures prevent the system from working:
-1. **AP produces zero log output** -- The AP script source may be corrupted or the `:tostr` wrapper crashes the telemetry
-2. **Telemetry deadlock** -- `:tostr` on unset `login-url` crashes telemetry, causing unreliable readings that block portal repair
-3. **`initial_config_sent` set too early** -- Config marked as sent but never confirmed (`portal_profile_version` stays null forever)
+The backend returns 10-13 actions on every sync, but the router NEVER processes them. The logs show:
 
-Current DB state confirms the deadlock: `initial_config_sent=true`, `portal_profile_version=null`, `telemetry_failures=0`.
-
-## Files Modified (3 files, 11 edits)
-
-### File 1: `supabase/functions/mikrotik-scripts/index.ts`
-
-#### Edit A -- VERSION bump (line 38)
 ```
-"7.1.60" -> "7.1.61"
+step=5-fetch
+Download from focqrhkozhdefohroqyi.supabase.co FINISHED
+NAVSPOT-SYNC v7.1.61: OK
 ```
 
-#### Edit B -- Fix telemetry crash (lines 807-808)
-Remove `:tostr` wrapper that crashes when `login-url`/`login-by` properties are unset on fresh RouterOS profiles.
+There are NO logs between the download completing and the "OK" message. This means either:
+1. The response file is empty when read back
+2. The `[[` / `]]` markers are not found in the response
+3. The extracted content is empty after trimming
 
-Before:
+The sync script has **zero diagnostic logging** in the failure paths after reading the response file (lines 832-882). When markers aren't found or content is empty, it just falls through silently to "OK".
+
+## Answer to "Do we need telemetry?"
+
+**No.** Telemetry is NOT needed for core sync. The backend already generates and returns all necessary actions (profiles, users, portal config) regardless of telemetry status. The v7.1.61 deadlock recovery block ensures actions are injected when `portal_profile_version` is null.
+
+The real blocker is that the RouterOS script can't extract actions from the HTTP response. Telemetry is a secondary concern -- once actions actually get processed, the portal will be configured, telemetry will start reporting correctly, and the cycle will self-heal.
+
+## Root Cause Theory
+
+The `/tool fetch` saves the full JSON response to a file. The response includes BOTH `pending_actions_pipe` (the compact pipe format) AND `pending_actions` (full JSON objects array). With 10+ actions, the total response is likely 5-8KB. RouterOS `/file get contents` may truncate at ~4KB on some hardware/versions, potentially corrupting the data.
+
+Even if markers are within the first 1KB, the response file read itself may fail or return partial content. We need diagnostics to confirm.
+
+## Changes
+
+### File: `supabase/functions/mikrotik-scripts/index.ts`
+
+#### 1. VERSION bump
+```
+"7.1.61" -> "7.1.62"
+```
+
+#### 2. Add diagnostic logging to sync script response processing (lines 830-882)
+
+After reading the response file, add logs for:
+- Response length: `[:len $resp]`
+- Whether markers were found
+- Extracted content length
+
+Current (no logging on failure):
 ```routeros
-:do {:set hlb [:tostr [/ip hotspot profile get $hp login-by]]} on-error={...}
-:do {:set hlu [:tostr [/ip hotspot profile get $hp login-url]]} on-error={...}
-```
-
-After:
-```routeros
-:do {:set hlb [/ip hotspot profile get $hp login-by]} on-error={...}
-:do {:set hlu [/ip hotspot profile get $hp login-url]} on-error={...}
-```
-
-#### Edit C -- AP health verification in sync script (lines 861-868)
-Before running the AP, verify the script source exists and has valid size. This immediately reveals if AP source is corrupted/empty.
-
-Before:
-```routeros
-:local hasAP [:len [/system script find name="navspot-action-processor"]]
-:if ($hasAP=0) do={
-:log error "NAVSPOT-SYNC: action-processor NAO ENCONTRADO!"
-} else={
-:local aerr ""
-:do {/system script run navspot-action-processor} on-error={...}
+:if ($ok) do={
+:delay 500ms
+:local resp ""
+:do {:set resp [/file get $respFile contents]} on-error={}
+:do {/file remove $respFile} on-error={}
+:local s [:find $resp "[["]
+:local e [:find $resp "]]"]
+:if (($s>=0)&&($e>$s)) do={
+  ... process actions ...
+}
 }
 ```
 
-After:
+New (with diagnostics):
 ```routeros
-:local hasAP [:len [/system script find name="navspot-action-processor"]]
-:if ($hasAP=0) do={
-:log error "NAVSPOT-SYNC: AP NAO ENCONTRADO!"
+:if ($ok) do={
+:delay 500ms
+:local resp ""
+:do {:set resp [/file get $respFile contents]} on-error={:log error "NAVSPOT-SYNC: file read FAILED"}
+:do {/file remove $respFile} on-error={}
+:local rl [:len $resp]
+:log info ("NAVSPOT-SYNC: resp=" . $rl . "b")
+:if ($rl=0) do={:log error "NAVSPOT-SYNC: response EMPTY"}
+:local s [:find $resp "[["]
+:local e [:find $resp "]]"]
+:if ([:type $s]="nil") do={:log warning ("NAVSPOT-SYNC: no [[ marker in " . $rl . "b resp")}
+:if (($s>=0)&&($e>$s)) do={
+  ... process actions (unchanged) ...
 } else={
-:local apSrc ""
-:do {:set apSrc [/system script get [find name="navspot-action-processor"] source]} on-error={}
-:local apLen [:len $apSrc]
-:log info ("NAVSPOT-SYNC: AP src=" . $apLen . "b")
-:if ($apLen<100) do={
-:log error ("NAVSPOT-SYNC: AP corrompido (" . $apLen . "b)")
-} else={
-:local aerr ""
-:do {/system script run navspot-action-processor} on-error={...}
+:if ($rl>0) do={
+:local rHead $resp
+:if ($rl>120) do={:set rHead [:pick $resp 0 120]}
+:log warning ("NAVSPOT-SYNC: no actions, head=" . $rHead)
 }}
-```
-
-New log entries:
-- `NAVSPOT-SYNC: AP src=5476b` -- confirms AP source is intact
-- `NAVSPOT-SYNC: AP corrompido (0b)` -- reveals corruption
-
-#### Edit D -- Core AP diagnostic logging (after line 914)
-Add size log after reading `navspot-actions.txt`:
-```routeros
-:log info ("NS-AP: " . [:len $d] . "b")
-```
-
-#### Edit E -- Full AP diagnostic logging (lines 1038-1039)
-Add data size + first 80 chars for debugging:
-```routeros
-:local dHead $d
-:if ([:len $d]>80) do={:set dHead [:pick $d 0 80]}
-:log info ("NS-AP: data=" . [:len $d] . "b head=" . $dHead)
-```
-
-#### Edit F -- Fallback AP diagnostic logging (lines 307-308)
-Add size log:
-```routeros
-:log info ("NS-AP: " . [:len $raw] . "b")
-```
-
----
-
-### File 2: `supabase/functions/mikrotik-sync/index.ts`
-
-#### Edit G -- VERSION bump (line 9)
-```
-"7.1.60d" -> "7.1.61"
-```
-
-#### Edit H -- Re-inject portal config when never confirmed (after line 1102)
-This is the key fix that breaks the deadlock. When `initial_config_sent=true` but `portal_profile_version=null`, the config was sent but never applied successfully. Re-inject it on EVERY sync until confirmed, regardless of telemetry reliability.
-
-```typescript
-// v7.1.61: Re-inject portal config if never confirmed
-if (hotspot.initial_config_sent && !(hotspot as any).portal_profile_version) {
-  console.log(`[mikrotik-sync] v7.1.61: portal_profile_version=null, re-injecting portal config`)
-  
-  const hotspotSlugRetry = hotspot.nome.toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/[^a-z0-9-]/g, '')
-  const retryLoginUrl = `https://navspot.lovable.app/hotspot-login?h=...&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
-  const retryDnsName = `${hotspotSlugRetry}.navspot.local`
-  
-  const alreadyHasConfig = formattedActions.some(a => a.type === 'configure_hotspot_profile')
-  if (!alreadyHasConfig) {
-    formattedActions.unshift({ configure_hotspot_profile action })
-    
-    // Also inject essential CPD walled garden entries
-    const essentialDomainsRetry = [
-      'navspot.lovable.app', backendHost,
-      'connectivitycheck.gstatic.com', 'clients3.google.com',
-      'captive.apple.com', 'www.apple.com',
-      'msftconnecttest.com', 'www.msftconnecttest.com'
-    ]
-    // ... push add_whitelist_domain for each
-  }
-  
-  // Reset telemetry_failures + last_force_repair_at
-  await supabase.from('hotspots')
-    .update({ telemetry_failures: 0, last_force_repair_at: null })
-    .eq('id', hotspot.id)
 }
 ```
 
-#### Edit I -- Lower force repair threshold (line 1127)
+This will reveal:
+- `resp=0b` + `response EMPTY` = file read failed
+- `resp=5000b` + `no [[ marker` = markers not in response
+- `resp=5000b` + `no actions, head=...` = markers found but extraction failed
+
+#### 3. Reduce response size -- remove `pending_actions` JSON array from response
+
+**File**: `supabase/functions/mikrotik-sync/index.ts`
+
+The backend response includes BOTH:
+- `pending_actions_pipe`: compact pipe format inside `[[...]]` (what the router uses)
+- `pending_actions`: full JSON array with all actions (for debugging only)
+
+The `pending_actions` array is likely 3-5KB and serves no purpose for the router. It only bloats the response and may cause truncation. Remove it from the response or replace with just the count.
+
+Current (line 1791):
+```typescript
+const jsonBody = JSON.stringify({
+    pending_actions_pipe: formattedPipe,
+    success: true,
+    server_time: new Date().toISOString(),
+    pending_actions: expandedActions,        // <-- 3-5KB of data
+    firewall_rules: firewallRules,           // <-- more data
+    device_violations: deviceViolations,
+    blocked_devices: blockedDevices
+})
 ```
->= 10  ->  >= 3
-```
-Portal auto-repairs after 3 minutes instead of 10.
 
-#### Edit J -- Remove obsolete warning (lines 1159-1161)
-Remove the `>= 5` warning since threshold is now 3.
-
----
-
-### File 3: `supabase/functions/mikrotik-script-generator/index.ts`
-
-#### Edit K -- VERSION bump (line 8)
-```
-"7.1.60" -> "7.1.61"
+New:
+```typescript
+const jsonBody = JSON.stringify({
+    pending_actions_pipe: formattedPipe,
+    success: true,
+    server_time: new Date().toISOString(),
+    actions_count: expandedActions.length,
+    blocked_devices: blockedDevices
+})
 ```
 
----
+This should reduce the response from ~5-8KB to ~1-2KB, well within any RouterOS buffer limit.
 
-## How the deadlock is broken
+### File: `supabase/functions/mikrotik-script-generator/index.ts`
 
-```text
-Current flow (BROKEN):
-  initial_config_sent=true, portal_profile_version=null
-    -> telemetry reads login-url -> :tostr crashes
-      -> telemetry unreliable -> portal repair skipped
-        -> login-url never set -> deadlock forever
-
-Fixed flow (v7.1.61):
-  initial_config_sent=true, portal_profile_version=null
-    -> v7.1.61 block ALWAYS re-injects config (bypasses telemetry)
-    -> telemetry fix: no :tostr crash
-    -> AP health check confirms source is intact
-    -> AP processes commands -> creates profiles + users
-    -> telemetry reads valid login-url -> confirms portal_profile_version
-    -> system stable
+#### 4. VERSION bump
 ```
+"7.1.61" -> "7.1.62"
+```
+
+## Technical Details
+
+### Why actions are likely being dropped
+
+RouterOS has undocumented buffer limits for `/file get contents`. The limits vary by hardware and firmware version but are typically 4-8KB. When the response exceeds this limit, the content is silently truncated. If the truncation cuts off the `]]` marker, the extraction fails. If it cuts off the entire content, `$resp` is empty.
+
+By removing `pending_actions` (the full JSON array), we reduce the response to just the pipe string + minimal metadata, ensuring the response stays under 2KB.
+
+### Diagnostic log reference
+
+| Log | Meaning |
+|-----|---------|
+| `NAVSPOT-SYNC: resp=Xb` | Response file was read, shows size |
+| `NAVSPOT-SYNC: response EMPTY` | File read returned empty string |
+| `NAVSPOT-SYNC: file read FAILED` | File read threw an error |
+| `NAVSPOT-SYNC: no [[ marker in Xb resp` | Markers not found in response |
+| `NAVSPOT-SYNC: no actions, head=...` | Shows first 120 chars of response for debugging |
+
+### Files modified
+
+| File | Change |
+|------|--------|
+| `supabase/functions/mikrotik-scripts/index.ts` | VERSION 7.1.62, diagnostic logging in sync response path |
+| `supabase/functions/mikrotik-sync/index.ts` | Remove pending_actions/firewall_rules/device_violations from response |
+| `supabase/functions/mikrotik-script-generator/index.ts` | VERSION 7.1.62 |
 
 ## Deploy and Verification
 
 1. Deploy `mikrotik-scripts`, `mikrotik-sync`, `mikrotik-script-generator`
-2. On the router, use the "Atualizar Scripts" command from the modal to re-import scripts
+2. Re-import scripts on router via modal command
 3. Run `/system script run navspot-sync`
-4. Check logs for:
-   - `NAVSPOT-SYNC: AP src=XXXXb` -- reveals actual AP source size
-   - `NS-AP: data=XXXb head=configure_hotspot_profile|...` -- confirms AP reads data
-   - `NS-AP: cfg-hp` -- confirms AP processes hotspot config
-   - `NS-AP: c-prof` / `NS-AP: c-user` -- confirms profiles and users created
-5. Verify: `/ip hotspot user profile print` and `/ip hotspot user print` show created entries
-6. Verify: `/ip hotspot profile print` shows correct `login-url` and `login-by=cookie,http-pap`
+4. Check logs -- now we will see EXACTLY why actions aren't being processed
+5. Expected outcome: with smaller response, markers should be found and AP should execute
+6. Verify: `NS-AP: data=` log appears, profiles and users are created
 
