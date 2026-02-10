@@ -837,7 +837,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ($rl=0) do={:log error "NAVSPOT-SYNC: response EMPTY"}
 :local s [:find $resp "[["]
 :local e [:find $resp "]]"]
-:if ([:type $s]="nil") do={:log warning ("NAVSPOT-SYNC: no [[ marker in " . $rl . "b resp")}
+:if ([:typeof $s]="nil") do={:log warning ("NAVSPOT-SYNC: no [[ marker in " . $rl . "b resp")}
 :if (($s>=0)&&($e>$s)) do={
 :local raw [:pick $resp ($s+2) $e]
 :local i 0
