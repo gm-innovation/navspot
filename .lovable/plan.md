@@ -1,120 +1,132 @@
 
 
-# Fix: Hoist Profile Set Commands Out of Deep Nesting (Nesting Depth Reduction)
+# Replace AP + Fallback Block with Flat, Parser-Safe Logic
 
-## Why Previous Fixes Failed
+## What Changes
 
-Every iteration changed the SYNTAX at line 198 but the error persisted because the RouterOS 7 parser fails at that nesting depth (~14-15 levels), not because of any specific syntax issue. The Action Processor uses the same command successfully because it runs at ~9 levels of nesting.
+Replace lines 865-958 in `supabase/functions/mikrotik-scripts/index.ts` (inside `generateSyncSource()`) with the user-provided flat AP execution + fallback logic.
 
-## Root Cause: Nesting Depth
+## Current Problem
 
-The `/ip hotspot profile set` command sits inside 14+ nested blocks:
+The existing code (lines 865-958) has 14+ nesting levels due to:
+- AP existence check -> AP source validation -> AP lock management -> AP execution -> AP failure else -> fallback loop -> action match -> pipe check -> profile find -> profile set
+
+This causes `expected end of command` at the `/ip hotspot profile set` lines regardless of syntax.
+
+## Replacement Logic (User-Validated)
+
+The new code replaces the entire block from `:if ($wok) do={` (line 865) through the matching `}}` (line 958) with:
+
+1. **AP execution** -- flat: find script, try run, set sentinel `apRan`
+2. **Post-AP check** -- verify if actions file was consumed
+3. **Fallback** -- if AP failed or didn't consume, use `[:find]` to locate `configure_hotspot_profile|` in the file contents (no `:while` loop), extract `lu` and `dn`, then apply profile set at ~level 8
+
+### Nesting depth of `/ip hotspot profile set` commands:
 
 ```text
-Level 1:  :do {                    (main error handler)
-Level 2:  :if ($ok) do={           (fetch success)
-Level 3:  :if (markers found)
-Level 4:  :if (has actions)
-Level 5:  :if ($wok)
-Level 6:  else {                   (AP section)
-Level 7:  :if (lock free)
-Level 8:  else {                   (AP failed)
-Level 9:  :if (has data)
-Level 10: :do {                    (fallback error handler)
-Level 11: :while ... do={          (action loop)
-Level 12: :if (configure_hp match)
-Level 13: :if (has pipe)
-Level 14: :if (profile found)
-          --> /ip hotspot profile set  <-- FAILS HERE
+L1: :do {                    (main error handler)
+L2:   :if ($ok) do={         (fetch success)  
+L3:     :if (markers) do={
+L4:       :if ([:len $a]>0) do={
+L5:         :while write-retry
+L6:           :if ($wok) do={        <-- line 865
+L7:             :if (fallback needed) do={
+L8:               :if ($psep>=0) do={
+L9:                 :if ([:len $hp]>0) do={
+                      /ip hotspot profile set  <-- Level 9 (safe!)
 ```
 
-## Solution: Extract-then-Apply Pattern
+Level 9 matches the Action Processor's proven working depth.
 
-Instead of finding the hotspot profile AND setting its properties deep inside the loop, we:
+### Key design rules applied:
+- One property per `/set` command (no multi-property)
+- No quotes on `$lu` / `$dn`
+- No individual `:do {}` wrappers around `/set` commands
+- `[:typeof $sem]="nil"` check for safe nil handling from `[:find]`
+- Flat `[:find]`-based extraction instead of `:while` loop
 
-1. Inside the deep loop: ONLY extract `login-url` and `dns-name` values into variables declared at a higher scope
-2. Outside the loop (at ~level 8-9): Apply the profile set commands
+## Technical Details
 
-This moves `/ip hotspot profile set` from level 14 to level ~10, well within the parser's capability.
+### File: `supabase/functions/mikrotik-scripts/index.ts`
 
-## Change -- Single file: `supabase/functions/mikrotik-scripts/index.ts`
+**Lines 865-958 replaced** with the following RouterOS block (inside the template literal):
 
-### Lines 915-950: Restructure fallback to hoist profile commands
-
-**Before (lines 915-950):**
-The loop finds the hotspot profile AND sets properties all at nesting level 14+.
-
-**After:**
 ```routeros
-} else={
-:log error "NAVSPOT-SYNC: AP FAILED (did not complete)"
-:delay 200ms
-:local fallD ""
-:do {:set fallD [/file get "navspot-actions.txt" contents]} on-error={}
-:local fallLu ""
-:local fallDn ""
-:if ([:len $fallD]>0) do={
-:log info ("NAVSPOT-SYNC: inline fallback, data=" . [:len $fallD] . "b")
-:do {/file remove "navspot-actions.txt"} on-error={}
-:local fp 0
+:if ($wok) do={
+:local apScriptId [/system script find name="navspot-action-processor"]
+:local apRan false
+:if ([:len $apScriptId] > 0) do={
 :do {
-:while ([:find $fallD ";" $fp]>=0) do={
-:local fe [:find $fallD ";" $fp]
-:local fl [:pick $fallD $fp $fe]
-:set fp ($fe+1)
-:if ([:find $fl "configure_hotspot_profile|"]>=0) do={
-:local pp ([:find $fl "|"]+1)
-:local rest [:pick $fl $pp [:len $fl]]
-:local pp2 [:find $rest "|"]
-:if ($pp2>=0) do={
-:set fallLu [:pick $rest 0 $pp2]
-:set fallDn [:pick $rest ($pp2+1) [:len $rest]]
+/system script run navspot-action-processor
+:set apRan true
+} on-error={
+:log error "NAVSPOT-SYNC: AP threw runtime error"
+:set apRan false
+}
+} else={
+:log info "NAVSPOT-SYNC: AP script not found, will attempt fallback"
+}
+:delay 300ms
+:local actionsId2 [/file find name="navspot-actions.txt"]
+:local afterSize 0
+:if ([:len $actionsId2] > 0) do={:set afterSize [/file get $actionsId2 size]}
+:if ($apRan = true) do={
+:if ($afterSize = 0) do={
+:log info "NAVSPOT-SYNC: AP ran and consumed actions - sync complete"
+} else={
+:log warning ("NAVSPOT-SYNC: AP ran but did not consume actions (size=" . $afterSize . "b)")
 }
 }
-}} on-error={:log error "NAVSPOT-SYNC: fallback parse error"}
-}
-:if ([:len $fallLu]>0) do={
-:local hp ""
+:if (($apRan = false) || ($afterSize > 0)) do={
+:local full ""
+:do {:set full [/file get "navspot-actions.txt" contents]} on-error={:set full ""}
+:local marker "configure_hotspot_profile|"
+:local pos [:find $full $marker]
+:if ($pos >= 0) do={
+:local sem [:find $full ";" $pos]
+:local seg ""
+:if ([:typeof $sem]="nil") do={:set seg [:pick $full $pos [:len $full]]} else={:set seg [:pick $full $pos $sem]}
+:local prefixLen [:len $marker]
+:if ([:len $seg] > $prefixLen) do={
+:local payload [:pick $seg $prefixLen [:len $seg]]
+:local psep [:find $payload "|"]
+:if ($psep >= 0) do={
+:local lu [:pick $payload 0 $psep]
+:local dn [:pick $payload ($psep + 1) [:len $payload]]
+:local hp [/ip hotspot profile find name="hsprof-navspot"]
 :local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={}}
-:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
-:if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url=$fallLu
-/ip hotspot profile set $hp dns-name=$fallDn
+:if ([:len $hs] > 0) do={:do {:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]} on-error={}}
+:if ([:len $hp] > 0) do={
+/ip hotspot profile set $hp login-url=$lu
+/ip hotspot profile set $hp dns-name=$dn
 /ip hotspot profile set $hp login-by=cookie,http-pap
-:log info ("NAVSPOT-SYNC: FALLBACK applied login-url + login-by on " . [/ip hotspot profile get $hp name])
+:log info "NAVSPOT-SYNC: Fallback aplicado com sucesso"
+:do {/file remove "navspot-actions.txt"} on-error={}
+} else={
+:log error "NAVSPOT-SYNC: fallback - hotspot profile not found"
+}
+}
+}
+} else={
+:log info "NAVSPOT-SYNC: no configure_hotspot_profile in actions"
 }
 }
 }
 ```
 
-### Key Changes
+Closing braces remain the same from line 959 onward (the `} else={` for `$wok` failure, etc.).
 
-1. Declare `:local fallLu ""` and `:local fallDn ""` at level 8 (the `else` block for AP-failed)
-2. Inside the deep loop (level 12-13): ONLY extract values with `:set fallLu` and `:set fallDn` -- no hotspot find, no profile set
-3. After the `:do { :while ... } on-error={}` block ends (back at level 8-9): find the hotspot profile and apply the `/set` commands
+## What Was Removed
 
-### Nesting Comparison
-
-| Command | Before | After |
-|---------|--------|-------|
-| `:set fallLu [:pick ...]` | -- | Level 13 (just variable assignment, always works) |
-| `/ip hotspot profile set` | Level 14-15 | Level 10 |
-| Hotspot find + profile find | Level 14-15 | Level 9-10 |
-
-Level 10 is well within RouterOS parser limits (AP works at ~9).
-
-## Why This Will Work
-
-- Variable assignment (`:set`) works at ANY nesting depth -- it's a simple parser operation
-- `/ip hotspot profile set` with key=value parameters is the command that fails at deep nesting
-- Moving it from level 14 to level 10 puts it within proven working range
-- The AP proves that level ~9 works for this exact command
+- AP source size validation (`apSrc`, `apLen`, `apHead` diagnostics) -- simplifies script size
+- AP lock re-acquisition inside sync (`navspotLock` management) -- sync already has `navspotSyncLock`
+- Deep `:while` loop for action parsing -- replaced with flat `[:find]`
+- Nested profile find + set inside loop -- hoisted to flat level
 
 ## Verification
 
 1. Deploy `mikrotik-scripts`
-2. Re-import scripts on router ("Atualizar Scripts")
-3. `/system script run navspot-sync` -- no more `expected end of command`
-4. `/ip hotspot profile print` -- confirm `login-url`, `dns-name`, and `login-by` are set
-5. Check logs for `FALLBACK applied` or `AP ran`
+2. Re-import scripts on router
+3. `/system script run navspot-sync` -- no `expected end of command`
+4. `/ip hotspot profile print` -- confirm `login-url`, `dns-name`, `login-by`
+5. Check logs for `AP ran` or `Fallback aplicado`
