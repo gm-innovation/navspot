@@ -777,6 +777,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local r ""
 :local p ""
 :local q "\\22"
+:local lby "cookie,http-pap,http-chap"
 :log info "NAVSPOT-SYNC: step=2a-active"
 :do {:foreach a in=[/ip hotspot active find] do={
 :local au [/ip hotspot active get $a user]
@@ -909,7 +910,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ([:len $hp] > 0) do={
 /ip hotspot profile set $hp login-url=$lu
 /ip hotspot profile set $hp dns-name=$dn
-/ip hotspot profile set $hp login-by=cookie,http-pap,http-chap
+/ip hotspot profile set $hp login-by=$lby
 :log info "NAVSPOT-SYNC: Fallback aplicado com sucesso"
 :do {/file remove "navspot-actions.txt"} on-error={}
 } else={
@@ -976,6 +977,7 @@ function generateActionProcessorCoreSource(): string {
 :log info ("NS-AP: " . [:len $d] . "b")
 :local pos 0
 :local cnt 0
+:local lby "cookie,http-pap,http-chap"
 :do {
 :while ([:find $d ";" $pos]>=0) do={
 :local ep [:find $d ";" $pos]
@@ -1000,8 +1002,8 @@ function generateActionProcessorCoreSource(): string {
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
 /ip hotspot profile set $hp login-url=$lu dns-name=$dn
-/ip hotspot profile set $hp login-by=cookie,http-pap,http-chap
-:log info ("NAVSPOT: login-by=cookie,http-pap,http-chap aplicado em ".[/ip hotspot profile get $hp name])
+/ip hotspot profile set $hp login-by=$lby
+:log info ("NAVSPOT: login-by=" . $lby . " aplicado em ".[/ip hotspot profile get $hp name])
 :set cnt ($cnt+1)
 }}}} on-error={}}
 :if ($c="create_profile") do={
@@ -1103,6 +1105,7 @@ function generateActionProcessorFullSource(): string {
 :log info ("NS-AP: data=" . [:len $d] . "b head=" . $dHead)
 :local pos 0
 :local cnt 0
+:local lby "cookie,http-pap,http-chap"
 :do {
 :while ([:find $d ";" $pos]>=0) do={
 :local ep [:find $d ";" $pos]
@@ -1127,8 +1130,8 @@ function generateActionProcessorFullSource(): string {
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
 /ip hotspot profile set $hp login-url=$lu dns-name=$dn
-/ip hotspot profile set $hp login-by=cookie,http-pap,http-chap
-:log info ("NAVSPOT: login-by=cookie,http-pap,http-chap aplicado em ".[/ip hotspot profile get $hp name])
+/ip hotspot profile set $hp login-by=$lby
+:log info ("NAVSPOT: login-by=" . $lby . " aplicado em ".[/ip hotspot profile get $hp name])
 :set cnt ($cnt+1)
 }}}} on-error={}}
 :if ($c="create_profile") do={
@@ -1359,7 +1362,7 @@ function generateGuardianSource(recoveryUrl: string, syncToken: string): string 
 :if ([:len $loginUrl]<10) do={:set needsRepair 1;:set missing ($missing."login-url ")}
 :if ([:len $hsprof]>0) do={
 :local loginBy [/ip hotspot profile get $hsprof login-by]
-:if ([:find $loginBy "http-chap"]>=0) do={:set needsRepair 1;:set missing ($missing."login-chap ")}}
+:if ([:find $loginBy "http-pap"]<0) do={:set needsRepair 1;:set missing ($missing."login-pap ")}}
 :if (($needsRepair=0)&&([:len $apScript]>0)) do={
 :local apSrc [/system script get $apScript source]
 :if ([:find $apSrc "configure_hotspot_profile"]<0) do={
