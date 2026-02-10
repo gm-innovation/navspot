@@ -1,16 +1,20 @@
 
 
-# Fix: Hoisting do Sync Fallback + Split AP Core/Full (v7.2.0)
+# Fix: Mover variáveis de fallback para FORA do bloco `:do {}`
 
 ## Problema
 
-O comando `/ip hotspot profile set` no fallback do sync (linhas 910-913) esta no nivel 10 de aninhamento, causando `expected end of command` no RouterOS 7.
+As variáveis `fbLu`, `fbDn`, `fbHp` foram declaradas na linha 781-783, **dentro** do bloco `:do {` (linha 751). O bloco de aplicação hoisted (linha 940-945) está **fora** desse `:do`, após o `} on-error={...}` da linha 939. Resultado: variáveis fora de escopo — o RouterOS não as reconhece.
 
-## 3 Mudancas no arquivo `supabase/functions/mikrotik-scripts/index.ts`
+Além disso, o router provavelmente ainda tem o script antigo. Após o fix, será necessário re-baixar os scripts.
 
-### Mudanca 1: Sync Fallback -- Hoisting (generateSyncSource)
+## Mudança Única
 
-**Adicionar variaveis no nivel 1** (apos linha 780, junto com `:local lby`):
+No arquivo `supabase/functions/mikrotik-scripts/index.ts`:
+
+**Mover as 3 declarações** das linhas 781-783 para **antes** da linha 751 (antes do `:do {`).
+
+Ou seja, inserir após a linha 750 (`:do {:set us ...}`) e antes da linha 751 (`:do {`):
 
 ```routeros
 :local fbLu ""
@@ -18,81 +22,40 @@ O comando `/ip hotspot profile set` no fallback do sync (linhas 910-913) esta no
 :local fbHp ""
 ```
 
-**Substituir bloco profundo (linhas 910-915)** -- em vez de executar `/set` no nivel 10, apenas salvar nas variaveis:
+E **remover** as mesmas 3 linhas de dentro do bloco (linhas 781-783 atuais).
 
-```routeros
-:if ([:len $hp] > 0) do={
-:set fbLu $lu
-:set fbDn $dn
-:set fbHp $hp
-:do {/file remove "navspot-actions.txt"} on-error={}
-} else={
-:log error "NAVSPOT-SYNC: fallback - hotspot profile not found"
-}
+### Antes (errado):
+```text
+Linha 750: :do {:set us [...]} on-error={...}
+Linha 751: :do {                           <-- início do bloco principal
+  ...
+Linha 780:   :local lby "cookie,http-pap,http-chap"
+Linha 781:   :local fbLu ""               <-- DENTRO do :do (escopo limitado)
+Linha 782:   :local fbDn ""
+Linha 783:   :local fbHp ""
+  ...
+Linha 939: } on-error={...}               <-- fim do :do
+Linha 940: :if ([:len $fbHp] > 0) do={    <-- fbHp FORA DO ESCOPO!
 ```
 
-**Adicionar bloco de aplicacao no nivel 1** (antes da linha 938 `:set navspotSyncLock "0"`):
-
-```routeros
-:if ([:len $fbHp] > 0) do={
-/ip hotspot profile set $fbHp login-url=$fbLu
-/ip hotspot profile set $fbHp dns-name=$fbDn
-/ip hotspot profile set $fbHp login-by=$lby
-:log info "NAVSPOT-SYNC: Fallback aplicado com sucesso"
-}
+### Depois (correto):
+```text
+Linha 750: :do {:set us [...]} on-error={...}
+           :local fbLu ""                 <-- FORA do :do (escopo global do script)
+           :local fbDn ""
+           :local fbHp ""
+Linha 751: :do {                           <-- início do bloco principal
+  ...
+Linha 780:   :local lby "cookie,http-pap,http-chap"
+                                           <-- SEM fbLu/fbDn/fbHp aqui
+  ...
+Linha 939: } on-error={...}
+Linha 940: :if ([:len $fbHp] > 0) do={    <-- fbHp ACESSÍVEL!
 ```
 
-Os comandos `/set` executam agora no nivel 2 (dentro de um unico `:if` apos o bloco `:do`).
+## Verificação Pós-Deploy
 
-### Mudanca 2: AP Core -- Split "Um Comando, Uma Propriedade" (linha 1004)
-
-De:
-```routeros
-/ip hotspot profile set $hp login-url=$lu dns-name=$dn
-```
-
-Para:
-```routeros
-/ip hotspot profile set $hp login-url=$lu
-/ip hotspot profile set $hp dns-name=$dn
-```
-
-Esta no nivel 9 (borderline). Separar segue a regra de ouro e reduz risco.
-
-### Mudanca 3: AP Full -- Mesmo split (linha 1132)
-
-De:
-```routeros
-/ip hotspot profile set $hp login-url=$lu dns-name=$dn
-```
-
-Para:
-```routeros
-/ip hotspot profile set $hp login-url=$lu
-/ip hotspot profile set $hp dns-name=$dn
-```
-
-## Inicializacao das variaveis
-
-Conforme a dica, todas as variaveis de fallback sao inicializadas com `""` no topo:
-- `:local fbLu ""` -- login-url (vazio ate o fallback preencher)
-- `:local fbDn ""` -- dns-name (vazio ate o fallback preencher)
-- `:local fbHp ""` -- hotspot profile ID (vazio ate o fallback preencher)
-- `:local lby "cookie,http-pap,http-chap"` -- ja existe na linha 780
-
-O bloco de aplicacao so executa se `fbHp` nao for vazio (`[:len $fbHp] > 0`), garantindo que variaveis `""` nunca sejam passadas para `/set`.
-
-## Verificacao Pos-Deploy
-
-1. `/system script run navspot-sync` -- log deve mostrar `NAVSPOT-SYNC v7.2.0: OK`
-2. Se AP ausente/falhar: log deve mostrar `NAVSPOT-SYNC: Fallback aplicado com sucesso`
-3. `/ip hotspot profile print detail` -- confirmar `login-url` e `login-by` corretos
-
-## Resumo
-
-| Local | Linhas | Problema | Fix |
-|-------|--------|----------|-----|
-| Sync fallback | 780, 910-915, antes 938 | `/set` no nivel 10 | Hoisting: extrair no 10, aplicar no 2 |
-| AP Core | 1004 | 2 props em 1 cmd no nivel 9 | Split em 2 comandos |
-| AP Full | 1132 | 2 props em 1 cmd no nivel 9 | Split em 2 comandos |
+1. Re-baixar scripts no router (via "Atualizar Scripts" ou fetch+import manual)
+2. `/system script run navspot-sync` — deve executar sem crash
+3. Log deve mostrar `NAVSPOT-SYNC v7.2.0: OK`
 
