@@ -168,7 +168,25 @@ export function useGenerateHotspotScript() {
       });
 
       if (error) throw error;
-      return data;
+
+      // Detectar formato da resposta (text/plain vs JSON legado)
+      let scriptText: string;
+      if (typeof data === 'string') {
+        scriptText = data;
+      } else if (data && typeof data.text === 'function') {
+        scriptText = await data.text();
+      } else if (data?.bootstrap_script) {
+        // Fallback JSON antigo
+        return data;
+      } else {
+        throw new Error('Formato de resposta inesperado');
+      }
+
+      return {
+        bootstrap_script: scriptText,
+        finalize_script: '',
+        version: scriptText.match(/v(\d+\.\d+\.\d+)/)?.[1] || '7.2.0',
+      };
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['hotspots'] });
