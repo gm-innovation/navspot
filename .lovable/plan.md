@@ -1,61 +1,115 @@
 
 
-# Fix: Separate Profile Properties into Individual Commands + Remove Quotes
+# Fix: Hoist Profile Set Commands Out of Deep Nesting (Nesting Depth Reduction)
 
-## Root Cause (Updated Analysis)
+## Why Previous Fixes Failed
 
-The error `expected end of command (line 198 column 29)` persists because:
+Every iteration changed the SYNTAX at line 198 but the error persisted because the RouterOS 7 parser fails at that nesting depth (~14-15 levels), not because of any specific syntax issue. The Action Processor uses the same command successfully because it runs at ~9 levels of nesting.
 
-1. The quotes around `"$lu"` and `"$dn"` may confuse the parser in this deeply nested context (the working Action Processor at line 1031 uses `login-url=$lu` WITHOUT quotes)
-2. Combining `login-url` and `dns-name` on the same `/set` command increases parser complexity
+## Root Cause: Nesting Depth
 
-The memory note (profile-configuration-pattern) explicitly states: "A configuracao do perfil de hotspot deve separar as propriedades em comandos /set distintos".
+The `/ip hotspot profile set` command sits inside 14+ nested blocks:
+
+```text
+Level 1:  :do {                    (main error handler)
+Level 2:  :if ($ok) do={           (fetch success)
+Level 3:  :if (markers found)
+Level 4:  :if (has actions)
+Level 5:  :if ($wok)
+Level 6:  else {                   (AP section)
+Level 7:  :if (lock free)
+Level 8:  else {                   (AP failed)
+Level 9:  :if (has data)
+Level 10: :do {                    (fallback error handler)
+Level 11: :while ... do={          (action loop)
+Level 12: :if (configure_hp match)
+Level 13: :if (has pipe)
+Level 14: :if (profile found)
+          --> /ip hotspot profile set  <-- FAILS HERE
+```
+
+## Solution: Extract-then-Apply Pattern
+
+Instead of finding the hotspot profile AND setting its properties deep inside the loop, we:
+
+1. Inside the deep loop: ONLY extract `login-url` and `dns-name` values into variables declared at a higher scope
+2. Outside the loop (at ~level 8-9): Apply the profile set commands
+
+This moves `/ip hotspot profile set` from level 14 to level ~10, well within the parser's capability.
 
 ## Change -- Single file: `supabase/functions/mikrotik-scripts/index.ts`
 
-### Line 941: Remove quotes + split into separate commands
+### Lines 915-950: Restructure fallback to hoist profile commands
 
-**Before (line 941):**
+**Before (lines 915-950):**
+The loop finds the hotspot profile AND sets properties all at nesting level 14+.
+
+**After:**
+```routeros
+} else={
+:log error "NAVSPOT-SYNC: AP FAILED (did not complete)"
+:delay 200ms
+:local fallD ""
+:do {:set fallD [/file get "navspot-actions.txt" contents]} on-error={}
+:local fallLu ""
+:local fallDn ""
+:if ([:len $fallD]>0) do={
+:log info ("NAVSPOT-SYNC: inline fallback, data=" . [:len $fallD] . "b")
+:do {/file remove "navspot-actions.txt"} on-error={}
+:local fp 0
+:do {
+:while ([:find $fallD ";" $fp]>=0) do={
+:local fe [:find $fallD ";" $fp]
+:local fl [:pick $fallD $fp $fe]
+:set fp ($fe+1)
+:if ([:find $fl "configure_hotspot_profile|"]>=0) do={
+:local pp ([:find $fl "|"]+1)
+:local rest [:pick $fl $pp [:len $fl]]
+:local pp2 [:find $rest "|"]
+:if ($pp2>=0) do={
+:set fallLu [:pick $rest 0 $pp2]
+:set fallDn [:pick $rest ($pp2+1) [:len $rest]]
+}
+}
+}} on-error={:log error "NAVSPOT-SYNC: fallback parse error"}
+}
+:if ([:len $fallLu]>0) do={
+:local hp ""
+:local hs [/ip hotspot find name="hs-navspot"]
+:if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={}}
+:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
+:if ([:len $hp]>0) do={
+/ip hotspot profile set $hp login-url=$fallLu
+/ip hotspot profile set $hp dns-name=$fallDn
+/ip hotspot profile set $hp login-by=cookie,http-pap
+:log info ("NAVSPOT-SYNC: FALLBACK applied login-url + login-by on " . [/ip hotspot profile get $hp name])
+}
+}
+}
 ```
-/ip hotspot profile set $hp login-url="$lu" dns-name="$dn"
-```
 
-**After (lines 941-942, adds 1 line):**
-```
-/ip hotspot profile set $hp login-url=$lu
-/ip hotspot profile set $hp dns-name=$dn
-```
+### Key Changes
 
-Two changes:
-1. Removed quotes around `$lu` and `$dn` to match the proven AP pattern (line 1031)
-2. Split into separate `/set` commands per the v7.1.62c separation guideline
+1. Declare `:local fallLu ""` and `:local fallDn ""` at level 8 (the `else` block for AP-failed)
+2. Inside the deep loop (level 12-13): ONLY extract values with `:set fallLu` and `:set fallDn` -- no hotspot find, no profile set
+3. After the `:do { :while ... } on-error={}` block ends (back at level 8-9): find the hotspot profile and apply the `/set` commands
 
-The `login-by` command on the next line already follows this pattern (separate command, no quotes on enum).
+### Nesting Comparison
 
-## Why This Should Work
+| Command | Before | After |
+|---------|--------|-------|
+| `:set fallLu [:pick ...]` | -- | Level 13 (just variable assignment, always works) |
+| `/ip hotspot profile set` | Level 14-15 | Level 10 |
+| Hotspot find + profile find | Level 14-15 | Level 9-10 |
 
-The Action Processor uses the exact same command at line 1031 (`/ip hotspot profile set $hp login-url=$lu dns-name=$dn`) and it works. However, the AP is at ~9 nesting levels while the fallback is at ~13. By separating into simpler single-property commands, we reduce the parser complexity at each line and eliminate any interaction between `login-url` value parsing and the `dns-name` parameter.
+Level 10 is well within RouterOS parser limits (AP works at ~9).
 
-## Technical Detail
+## Why This Will Work
 
-```text
-Nesting at line 941:
- 1. :do {              (main error handler, TS 751)
- 2. :if ($ok) do={     (fetch success, TS 830)
- 3. :if (($s>=0)..     (markers found, TS 841)
- 4. :if ([:len $a]>0)  (has actions, TS 849)
- 5. :if ($wok)         (write OK, TS 865)
- 6. else {             (AP section, TS 879)
- 7. :if ($navspotLock="0") (lock free, TS 897)
- 8. else {             (AP failed, TS 915)
- 9. :if ([:len $fallD]>0)  (has data, TS 920)
-10. :do {              (fallback error handler, TS 924)
-11. :while ... do={    (action loop, TS 925)
-12. :if (configure_hp) (match, TS 929)
-13. :if ($pp2>=0)      (has pipe, TS 933)
-14. :if ([:len $hp]>0) (profile found, TS 940)
-     --> /ip hotspot profile set  <-- 14 levels deep
-```
+- Variable assignment (`:set`) works at ANY nesting depth -- it's a simple parser operation
+- `/ip hotspot profile set` with key=value parameters is the command that fails at deep nesting
+- Moving it from level 14 to level 10 puts it within proven working range
+- The AP proves that level ~9 works for this exact command
 
 ## Verification
 
@@ -63,4 +117,4 @@ Nesting at line 941:
 2. Re-import scripts on router ("Atualizar Scripts")
 3. `/system script run navspot-sync` -- no more `expected end of command`
 4. `/ip hotspot profile print` -- confirm `login-url`, `dns-name`, and `login-by` are set
-
+5. Check logs for `FALLBACK applied` or `AP ran`
