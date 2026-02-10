@@ -938,7 +938,8 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={}}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url="$lu" dns-name="$dn"
+/ip hotspot profile set $hp login-url=$lu
+/ip hotspot profile set $hp dns-name=$dn
 /ip hotspot profile set $hp login-by=cookie,http-pap
 :log info ("NAVSPOT-SYNC: FALLBACK applied login-url + login-by on " . [/ip hotspot profile get $hp name])
 }
