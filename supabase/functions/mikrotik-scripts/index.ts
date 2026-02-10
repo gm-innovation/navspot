@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.1.60"
+const VERSION = "7.1.61"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -305,6 +305,7 @@ function generateAllScripts(
 :if ([:len $fid] = 0) do={ :set navspotLock "0"; :return }
 :local raw [/file get $fid contents]
 :do { /file remove $fid } on-error={}
+:log info ("NS-AP: " . [:len $raw] . "b")
 :local pos 0
 :local cnt 0
 :do {
@@ -804,8 +805,8 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 } on-error={:log warning "NAVSPOT-SYNC: tele-hs-find failed"}
 :if ([:len $hp]=0) do={:do {:set hp [/ip hotspot profile find name="hsprof-navspot"]} on-error={}}
 :if ([:len $hp]>0) do={
-:do {:set hlb [:tostr [/ip hotspot profile get $hp login-by]]} on-error={:set hlb "";:log warning "NAVSPOT-SYNC: tele-lb failed"}
-:do {:set hlu [:tostr [/ip hotspot profile get $hp login-url]]} on-error={:set hlu "";:log warning "NAVSPOT-SYNC: tele-lu failed"}
+:do {:set hlb [/ip hotspot profile get $hp login-by]} on-error={:set hlb "";:log warning "NAVSPOT-SYNC: tele-lb failed"}
+:do {:set hlu [/ip hotspot profile get $hp login-url]} on-error={:set hlu "";:log warning "NAVSPOT-SYNC: tele-lu failed"}
 }
 :set step "3-collect"
 :log info "NAVSPOT-SYNC: step=3-collect"
@@ -860,12 +861,19 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ($wok) do={
 :local hasAP [:len [/system script find name="navspot-action-processor"]]
 :if ($hasAP=0) do={
-:log error "NAVSPOT-SYNC: action-processor NAO ENCONTRADO!"
+:log error "NAVSPOT-SYNC: AP NAO ENCONTRADO!"
+} else={
+:local apSrc ""
+:do {:set apSrc [/system script get [find name="navspot-action-processor"] source]} on-error={}
+:local apLen [:len $apSrc]
+:log info ("NAVSPOT-SYNC: AP src=" . $apLen . "b")
+:if ($apLen<100) do={
+:log error ("NAVSPOT-SYNC: AP corrompido (" . $apLen . "b)")
 } else={
 :local aerr ""
 :do {/system script run navspot-action-processor} on-error={:set aerr [:tostr $error]}
 :if ([:len $aerr]>0) do={:log error ("NAVSPOT-SYNC: AP ERRO=".$aerr)} else={:log info "NAVSPOT-SYNC: AP OK"}
-}
+}}
 } else={
 :log error "NAVSPOT-SYNC: write failed after 3 tries"
 }
@@ -912,6 +920,7 @@ function generateActionProcessorCoreSource(): string {
 :do {:set d [/file get $f contents]} on-error={:set navspotLock "0";:return}
 :do {/file remove $f} on-error={}
 :if ([:len $d]=0) do={:set navspotLock "0";:return}
+:log info ("NS-AP: " . [:len $d] . "b")
 :local pos 0
 :local cnt 0
 :do {
@@ -1036,6 +1045,9 @@ function generateActionProcessorFullSource(): string {
 :do {:set d [/file get $f contents]} on-error={:set navspotLock "0";:return}
 :do {/file remove $f} on-error={}
 :if ([:len $d]=0) do={:set navspotLock "0";:return}
+:local dHead $d
+:if ([:len $d]>80) do={:set dHead [:pick $d 0 80]}
+:log info ("NS-AP: data=" . [:len $d] . "b head=" . $dHead)
 :local pos 0
 :local cnt 0
 :do {
