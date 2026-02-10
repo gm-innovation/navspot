@@ -1,76 +1,190 @@
 
 
-# Update Script Generator to v7.1.60 and Improve Re-import Workflow
+# v7.1.61: Complete Reliability Overhaul
 
-## Problem
+## Overview
 
-1. The `mikrotik-script-generator` edge function still has `VERSION = "7.1.59"`, so the modal and generated bootstrap show the old version even though `mikrotik-scripts` was already updated to v7.1.60.
+Three interlocking failures prevent the system from working:
+1. **AP produces zero log output** -- The AP script source may be corrupted or the `:tostr` wrapper crashes the telemetry
+2. **Telemetry deadlock** -- `:tostr` on unset `login-url` crashes telemetry, causing unreliable readings that block portal repair
+3. **`initial_config_sent` set too early** -- Config marked as sent but never confirmed (`portal_profile_version` stays null forever)
 
-2. When you need to re-import just the scripts (not the full bootstrap), you need a `/tool fetch` command with the `sync_token` -- but you don't have it memorized. The system should provide a ready-to-use command.
+Current DB state confirms the deadlock: `initial_config_sent=true`, `portal_profile_version=null`, `telemetry_failures=0`.
 
-## Changes
+## Files Modified (3 files, 11 edits)
 
-### 1. Version bump in `mikrotik-script-generator`
+### File 1: `supabase/functions/mikrotik-scripts/index.ts`
 
-**File**: `supabase/functions/mikrotik-script-generator/index.ts` (line 8)
-
-Change `VERSION` from `"7.1.59"` to `"7.1.60"`.
-
-This ensures the modal title, download filename, and bootstrap header all show v7.1.60.
-
-### 2. Add "Update Scripts" command in the Script Modal
-
-**File**: `src/components/modals/ScriptModal.tsx`
-
-Add a new section in the modal showing a ready-to-paste RouterOS command for re-importing just the scripts (without full reinstall). This command will:
-- Use the hotspot's `sync_token` (passed as a prop)
-- Build the correct `/tool fetch` URL with `type=all` and `ros_version=7`
-- Show the `/import` command right after
-
-The command block will look like:
-```text
-Atualizar scripts (sem reinstalar):
-
-/tool fetch url="https://.../mikrotik-scripts?type=all&token=TOKEN&ros_version=7" dst-path=navspot-scripts.rsc
-/import navspot-scripts.rsc
+#### Edit A -- VERSION bump (line 38)
+```
+"7.1.60" -> "7.1.61"
 ```
 
-With a "Copy" button next to it.
+#### Edit B -- Fix telemetry crash (lines 807-808)
+Remove `:tostr` wrapper that crashes when `login-url`/`login-by` properties are unset on fresh RouterOS profiles.
 
-### 3. Pass `sync_token` to ScriptModal
+Before:
+```routeros
+:do {:set hlb [:tostr [/ip hotspot profile get $hp login-by]]} on-error={...}
+:do {:set hlu [:tostr [/ip hotspot profile get $hp login-url]]} on-error={...}
+```
 
-**File**: `src/pages/Embarcacoes.tsx`
+After:
+```routeros
+:do {:set hlb [/ip hotspot profile get $hp login-by]} on-error={...}
+:do {:set hlu [/ip hotspot profile get $hp login-url]} on-error={...}
+```
 
-When opening the ScriptModal, also pass the hotspot's `sync_token` so the modal can build the update command. The token is already available from the hotspots query data.
+#### Edit C -- AP health verification in sync script (lines 861-868)
+Before running the AP, verify the script source exists and has valid size. This immediately reveals if AP source is corrupted/empty.
 
-**File**: `src/components/modals/ScriptModal.tsx`
+Before:
+```routeros
+:local hasAP [:len [/system script find name="navspot-action-processor"]]
+:if ($hasAP=0) do={
+:log error "NAVSPOT-SYNC: action-processor NAO ENCONTRADO!"
+} else={
+:local aerr ""
+:do {/system script run navspot-action-processor} on-error={...}
+}
+```
 
-Add optional `syncToken` prop to the interface.
+After:
+```routeros
+:local hasAP [:len [/system script find name="navspot-action-processor"]]
+:if ($hasAP=0) do={
+:log error "NAVSPOT-SYNC: AP NAO ENCONTRADO!"
+} else={
+:local apSrc ""
+:do {:set apSrc [/system script get [find name="navspot-action-processor"] source]} on-error={}
+:local apLen [:len $apSrc]
+:log info ("NAVSPOT-SYNC: AP src=" . $apLen . "b")
+:if ($apLen<100) do={
+:log error ("NAVSPOT-SYNC: AP corrompido (" . $apLen . "b)")
+} else={
+:local aerr ""
+:do {/system script run navspot-action-processor} on-error={...}
+}}
+```
 
-### 4. Deploy
+New log entries:
+- `NAVSPOT-SYNC: AP src=5476b` -- confirms AP source is intact
+- `NAVSPOT-SYNC: AP corrompido (0b)` -- reveals corruption
 
-- `mikrotik-script-generator` (version bump)
-- Frontend changes auto-deploy
+#### Edit D -- Core AP diagnostic logging (after line 914)
+Add size log after reading `navspot-actions.txt`:
+```routeros
+:log info ("NS-AP: " . [:len $d] . "b")
+```
 
-## Technical Details
+#### Edit E -- Full AP diagnostic logging (lines 1038-1039)
+Add data size + first 80 chars for debugging:
+```routeros
+:local dHead $d
+:if ([:len $d]>80) do={:set dHead [:pick $d 0 80]}
+:log info ("NS-AP: data=" . [:len $d] . "b head=" . $dHead)
+```
 
-### ScriptModal changes
+#### Edit F -- Fallback AP diagnostic logging (lines 307-308)
+Add size log:
+```routeros
+:log info ("NS-AP: " . [:len $raw] . "b")
+```
 
-New prop: `syncToken?: string`
+---
 
-When `syncToken` is provided, render a new section before the footer with:
-- A small info box showing the update command (pre-built with the real token and API URL)
-- A copy button for quick paste into RouterOS terminal
+### File 2: `supabase/functions/mikrotik-sync/index.ts`
 
-### Embarcacoes.tsx changes
+#### Edit G -- VERSION bump (line 9)
+```
+"7.1.60d" -> "7.1.61"
+```
 
-Store `syncToken` in state when generating script, sourced from the hotspot record. Pass it to `ScriptModal`.
+#### Edit H -- Re-inject portal config when never confirmed (after line 1102)
+This is the key fix that breaks the deadlock. When `initial_config_sent=true` but `portal_profile_version=null`, the config was sent but never applied successfully. Re-inject it on EVERY sync until confirmed, regardless of telemetry reliability.
 
-### Files modified
+```typescript
+// v7.1.61: Re-inject portal config if never confirmed
+if (hotspot.initial_config_sent && !(hotspot as any).portal_profile_version) {
+  console.log(`[mikrotik-sync] v7.1.61: portal_profile_version=null, re-injecting portal config`)
+  
+  const hotspotSlugRetry = hotspot.nome.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+  const retryLoginUrl = `https://navspot.lovable.app/hotspot-login?h=...&mac=$(mac)&ip=$(ip)&link-login-only=$(link-login-only)`
+  const retryDnsName = `${hotspotSlugRetry}.navspot.local`
+  
+  const alreadyHasConfig = formattedActions.some(a => a.type === 'configure_hotspot_profile')
+  if (!alreadyHasConfig) {
+    formattedActions.unshift({ configure_hotspot_profile action })
+    
+    // Also inject essential CPD walled garden entries
+    const essentialDomainsRetry = [
+      'navspot.lovable.app', backendHost,
+      'connectivitycheck.gstatic.com', 'clients3.google.com',
+      'captive.apple.com', 'www.apple.com',
+      'msftconnecttest.com', 'www.msftconnecttest.com'
+    ]
+    // ... push add_whitelist_domain for each
+  }
+  
+  // Reset telemetry_failures + last_force_repair_at
+  await supabase.from('hotspots')
+    .update({ telemetry_failures: 0, last_force_repair_at: null })
+    .eq('id', hotspot.id)
+}
+```
 
-| File | Change |
-|------|--------|
-| `supabase/functions/mikrotik-script-generator/index.ts` line 8 | VERSION "7.1.59" -> "7.1.60" |
-| `src/components/modals/ScriptModal.tsx` | Add syncToken prop + update command section |
-| `src/pages/Embarcacoes.tsx` | Pass syncToken from hotspot data to ScriptModal |
+#### Edit I -- Lower force repair threshold (line 1127)
+```
+>= 10  ->  >= 3
+```
+Portal auto-repairs after 3 minutes instead of 10.
+
+#### Edit J -- Remove obsolete warning (lines 1159-1161)
+Remove the `>= 5` warning since threshold is now 3.
+
+---
+
+### File 3: `supabase/functions/mikrotik-script-generator/index.ts`
+
+#### Edit K -- VERSION bump (line 8)
+```
+"7.1.60" -> "7.1.61"
+```
+
+---
+
+## How the deadlock is broken
+
+```text
+Current flow (BROKEN):
+  initial_config_sent=true, portal_profile_version=null
+    -> telemetry reads login-url -> :tostr crashes
+      -> telemetry unreliable -> portal repair skipped
+        -> login-url never set -> deadlock forever
+
+Fixed flow (v7.1.61):
+  initial_config_sent=true, portal_profile_version=null
+    -> v7.1.61 block ALWAYS re-injects config (bypasses telemetry)
+    -> telemetry fix: no :tostr crash
+    -> AP health check confirms source is intact
+    -> AP processes commands -> creates profiles + users
+    -> telemetry reads valid login-url -> confirms portal_profile_version
+    -> system stable
+```
+
+## Deploy and Verification
+
+1. Deploy `mikrotik-scripts`, `mikrotik-sync`, `mikrotik-script-generator`
+2. On the router, use the "Atualizar Scripts" command from the modal to re-import scripts
+3. Run `/system script run navspot-sync`
+4. Check logs for:
+   - `NAVSPOT-SYNC: AP src=XXXXb` -- reveals actual AP source size
+   - `NS-AP: data=XXXb head=configure_hotspot_profile|...` -- confirms AP reads data
+   - `NS-AP: cfg-hp` -- confirms AP processes hotspot config
+   - `NS-AP: c-prof` / `NS-AP: c-user` -- confirms profiles and users created
+5. Verify: `/ip hotspot user profile print` and `/ip hotspot user print` show created entries
+6. Verify: `/ip hotspot profile print` shows correct `login-url` and `login-by=cookie,http-pap`
 
