@@ -1,132 +1,53 @@
 
 
-# Replace AP + Fallback Block with Flat, Parser-Safe Logic
+# Add Android Connectivity Check Domains to Walled Garden (v7.2.0)
 
-## What Changes
+## Context
 
-Replace lines 865-958 in `supabase/functions/mikrotik-scripts/index.ts` (inside `generateSyncSource()`) with the user-provided flat AP execution + fallback logic.
+Android devices perform connectivity checks by reaching `connectivitycheck.gstatic.com`. If this domain is blocked by the hotspot captive portal, devices show "Internet Indisponible" and may auto-disconnect from Wi-Fi before the user ever sees the login page. Adding these domains to the initial Walled Garden rules ensures a smooth captive portal experience on all Android devices.
 
-## Current Problem
+## Reinstall Safety
 
-The existing code (lines 865-958) has 14+ nesting levels due to:
-- AP existence check -> AP source validation -> AP lock management -> AP execution -> AP failure else -> fallback loop -> action match -> pipe check -> profile find -> profile set
+The cleanup block (line 344) already removes all entries with `comment="navspot-initial"` before re-creating them, so running v7.2.0 over v7.1.62 will NOT cause duplicates.
 
-This causes `expected end of command` at the `/ip hotspot profile set` lines regardless of syntax.
+## Changes
 
-## Replacement Logic (User-Validated)
+### File: `supabase/functions/mikrotik-script-generator/index.ts`
 
-The new code replaces the entire block from `:if ($wok) do={` (line 865) through the matching `}}` (line 958) with:
+**1. Version bump** (line 8): `"7.1.62"` to `"7.2.0"`
 
-1. **AP execution** -- flat: find script, try run, set sentinel `apRan`
-2. **Post-AP check** -- verify if actions file was consumed
-3. **Fallback** -- if AP failed or didn't consume, use `[:find]` to locate `configure_hotspot_profile|` in the file contents (no `:while` loop), extract `lu` and `dn`, then apply profile set at ~level 8
-
-### Nesting depth of `/ip hotspot profile set` commands:
-
-```text
-L1: :do {                    (main error handler)
-L2:   :if ($ok) do={         (fetch success)  
-L3:     :if (markers) do={
-L4:       :if ([:len $a]>0) do={
-L5:         :while write-retry
-L6:           :if ($wok) do={        <-- line 865
-L7:             :if (fallback needed) do={
-L8:               :if ($psep>=0) do={
-L9:                 :if ([:len $hp]>0) do={
-                      /ip hotspot profile set  <-- Level 9 (safe!)
+**2. Update login-by** (line 460): Add `http-chap` for device compatibility:
+```
+login-by=cookie,http-pap,http-chap
 ```
 
-Level 9 matches the Action Processor's proven working depth.
+**3. Add cookie lifetime** (after line 461): New line:
+```
+/ip hotspot profile set [find name="hsprof-navspot"] http-cookie-lifetime=3d
+```
 
-### Key design rules applied:
-- One property per `/set` command (no multi-property)
-- No quotes on `$lu` / `$dn`
-- No individual `:do {}` wrappers around `/set` commands
-- `[:typeof $sem]="nil"` check for safe nil handling from `[:find]`
-- Flat `[:find]`-based extraction instead of `:while` loop
-
-## Technical Details
+**4. Add Walled Garden rules** (after line 463, right after "Hotspot criado" log): Insert 5 entries covering all infrastructure + Android connectivity:
+```routeros
+# 10.1 WALLED GARDEN INICIAL (infraestrutura + Android CNA)
+/ip hotspot walled-garden add dst-host="*.supabase.co" action=allow comment="navspot-initial"
+/ip hotspot walled-garden add dst-host="*.navspot.com.br" action=allow comment="navspot-initial"
+/ip hotspot walled-garden add dst-host="*.googleapis.com" action=allow comment="navspot-initial"
+/ip hotspot walled-garden add dst-host="connectivitycheck.gstatic.com" action=allow comment="navspot-initial"
+/ip hotspot walled-garden add dst-host="*.gstatic.com" action=allow comment="navspot-initial"
+:log info "NAVSPOT v7.2.0: Walled Garden inicial configurado (5 regras)"
+```
 
 ### File: `supabase/functions/mikrotik-scripts/index.ts`
 
-**Lines 865-958 replaced** with the following RouterOS block (inside the template literal):
+**5. Version bump** (line 38): `"7.1.62"` to `"7.2.0"`
 
-```routeros
-:if ($wok) do={
-:local apScriptId [/system script find name="navspot-action-processor"]
-:local apRan false
-:if ([:len $apScriptId] > 0) do={
-:do {
-/system script run navspot-action-processor
-:set apRan true
-} on-error={
-:log error "NAVSPOT-SYNC: AP threw runtime error"
-:set apRan false
-}
-} else={
-:log info "NAVSPOT-SYNC: AP script not found, will attempt fallback"
-}
-:delay 300ms
-:local actionsId2 [/file find name="navspot-actions.txt"]
-:local afterSize 0
-:if ([:len $actionsId2] > 0) do={:set afterSize [/file get $actionsId2 size]}
-:if ($apRan = true) do={
-:if ($afterSize = 0) do={
-:log info "NAVSPOT-SYNC: AP ran and consumed actions - sync complete"
-} else={
-:log warning ("NAVSPOT-SYNC: AP ran but did not consume actions (size=" . $afterSize . "b)")
-}
-}
-:if (($apRan = false) || ($afterSize > 0)) do={
-:local full ""
-:do {:set full [/file get "navspot-actions.txt" contents]} on-error={:set full ""}
-:local marker "configure_hotspot_profile|"
-:local pos [:find $full $marker]
-:if ($pos >= 0) do={
-:local sem [:find $full ";" $pos]
-:local seg ""
-:if ([:typeof $sem]="nil") do={:set seg [:pick $full $pos [:len $full]]} else={:set seg [:pick $full $pos $sem]}
-:local prefixLen [:len $marker]
-:if ([:len $seg] > $prefixLen) do={
-:local payload [:pick $seg $prefixLen [:len $seg]]
-:local psep [:find $payload "|"]
-:if ($psep >= 0) do={
-:local lu [:pick $payload 0 $psep]
-:local dn [:pick $payload ($psep + 1) [:len $payload]]
-:local hp [/ip hotspot profile find name="hsprof-navspot"]
-:local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs] > 0) do={:do {:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]} on-error={}}
-:if ([:len $hp] > 0) do={
-/ip hotspot profile set $hp login-url=$lu
-/ip hotspot profile set $hp dns-name=$dn
-/ip hotspot profile set $hp login-by=cookie,http-pap
-:log info "NAVSPOT-SYNC: Fallback aplicado com sucesso"
-:do {/file remove "navspot-actions.txt"} on-error={}
-} else={
-:log error "NAVSPOT-SYNC: fallback - hotspot profile not found"
-}
-}
-}
-} else={
-:log info "NAVSPOT-SYNC: no configure_hotspot_profile in actions"
-}
-}
-}
-```
-
-Closing braces remain the same from line 959 onward (the `} else={` for `$wok` failure, etc.).
-
-## What Was Removed
-
-- AP source size validation (`apSrc`, `apLen`, `apHead` diagnostics) -- simplifies script size
-- AP lock re-acquisition inside sync (`navspotLock` management) -- sync already has `navspotSyncLock`
-- Deep `:while` loop for action parsing -- replaced with flat `[:find]`
-- Nested profile find + set inside loop -- hoisted to flat level
+**6. Update login-by in sync fallback, AP Core, and AP Full**: Change all occurrences of `login-by=cookie,http-pap` to `login-by=cookie,http-pap,http-chap` for consistency with the bootstrap.
 
 ## Verification
 
-1. Deploy `mikrotik-scripts`
-2. Re-import scripts on router
-3. `/system script run navspot-sync` -- no `expected end of command`
-4. `/ip hotspot profile print` -- confirm `login-url`, `dns-name`, `login-by`
-5. Check logs for `AP ran` or `Fallback aplicado`
+1. Generate a new script from the panel -- confirm header shows `v7.2.0`
+2. Search the `.rsc` file for `connectivitycheck.gstatic.com` -- must be present
+3. Confirm `login-by=cookie,http-pap,http-chap` in the hotspot profile section
+4. On router after import: `/ip hotspot walled-garden print` should show 5 `navspot-initial` entries
+5. Re-run import over existing install: `/ip hotspot walled-garden print` should still show exactly 5 entries (no duplicates)
+
