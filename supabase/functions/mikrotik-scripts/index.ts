@@ -871,12 +871,54 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :do {:set apSrc [/system script get [find name="navspot-action-processor"] source]} on-error={}
 :local apLen [:len $apSrc]
 :log info ("NAVSPOT-SYNC: AP src=" . $apLen . "b")
+:local apHead $apSrc
+:if ($apLen>80) do={:set apHead [:pick $apSrc 0 80]}
+:log info ("NAVSPOT-SYNC: AP head=" . $apHead)
 :if ($apLen<100) do={
 :log error ("NAVSPOT-SYNC: AP corrompido (" . $apLen . "b)")
 } else={
+# v7.1.62c: Safe conditional lock reset
+:global navspotLock
+:global navspotLockTime
+:local apUs 0
+:do {:set apUs [/system resource get uptime-as-secs]} on-error={:set apUs 0}
+:if ([:type $navspotLock]="nothing") do={:set navspotLock "0"}
+:if ($navspotLock="1") do={
+:local lockAge 99999
+:if (($apUs>0)&&([:type $navspotLockTime]!="nothing")&&($navspotLockTime>0)) do={:set lockAge ($apUs - $navspotLockTime)}
+:log info ("NAVSPOT-SYNC: AP lock=1 age=" . $lockAge . "s lockTime=" . $navspotLockTime . " uptime=" . $apUs)
+:if ($lockAge>120) do={
+:log warning "NAVSPOT-SYNC: AP lock stale -> resetting"
+:set navspotLock "0"
+} else={
+:log warning "NAVSPOT-SYNC: AP lock active -> skipping AP run"
+}
+}
+:if ($navspotLock="0") do={
 :local aerr ""
 :do {/system script run navspot-action-processor} on-error={:set aerr [:tostr $error]}
-:if ([:len $aerr]>0) do={:log error ("NAVSPOT-SYNC: AP ERRO=".$aerr)} else={:log info "NAVSPOT-SYNC: AP OK"}
+:if ([:len $aerr]>0) do={
+:log error ("NAVSPOT-SYNC: AP ERRO=" . $aerr)
+} else={
+:log info "NAVSPOT-SYNC: AP OK"
+# v7.1.62c: Check if AP consumed actions file
+:delay 200ms
+:local actLeft [/file find name="navspot-actions.txt"]
+:if ([:len $actLeft]>0) do={
+:local leftSize 0
+:do {:set leftSize [:len [/file get "navspot-actions.txt" contents]]} on-error={}
+:if ($leftSize>0) do={
+:log warning ("NAVSPOT-SYNC: AP did NOT consume actions (" . $leftSize . "b remain)")
+} else={
+:log info "NAVSPOT-SYNC: AP consumed actions (file empty)"
+}
+} else={
+:log info "NAVSPOT-SYNC: AP consumed actions (file removed)"
+}
+}
+} else={
+:log warning "NAVSPOT-SYNC: AP skipped (lock held)"
+}
 }}
 } else={
 :log error "NAVSPOT-SYNC: write failed after 3 tries"
