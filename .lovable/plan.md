@@ -1,97 +1,87 @@
 
 
-# Fix v7.2.0 Sync Crash and Guardian Repair Loop (Hoisting + Logic Fix)
+# Ajustar mikrotik-script-generator para retornar plain text
 
-## Problem
+## Esclarecimento Importante
 
-1. `navspot-sync` crashes with `expected end of command (line 167)` because `login-by=cookie,http-pap,http-chap` (comma-separated literal) sits at nesting level 9+ in the fallback block.
-2. Guardian triggers false repairs every 10 minutes because it treats `http-chap` as a fault indicator, but v7.2.0 intentionally enables it.
-3. Recovery script still applies old `login-by=cookie,http-pap` (missing `http-chap`).
+O endpoint `mikrotik-scripts` (que gera Sync, Guardian e Action Processor) **ja retorna `text/plain`** -- o MikroTik recebe o `.rsc` corretamente via `/tool fetch`. Nenhuma mudanca necessaria nesse endpoint.
 
-## Solution: Variable Hoisting + Guardian Logic Inversion
+O unico endpoint que ainda retorna JSON e o `mikrotik-script-generator` (Bootstrap), que e consumido pelo frontend web. Esse e o alvo desta mudanca.
 
-Declare `:local lby "cookie,http-pap,http-chap"` at a shallow nesting level and reference `$lby` in deep blocks, avoiding the RouterOS 7 parser crash.
+## Mudancas
 
-## Changes
+### 1. `supabase/functions/mikrotik-script-generator/index.ts` (linhas 247-261)
 
-### 1. `supabase/functions/mikrotik-scripts/index.ts`
+Alterar a resposta de sucesso de JSON para plain text com metadados nos headers:
 
-**Sync fallback (3 edits):**
-
-- **Line 779** -- Insert `lby` declaration right after the `q` variable (nesting level 2, very shallow):
-```
-:local lby "cookie,http-pap,http-chap"
+```text
+De:   JSON.stringify({ success: true, bootstrap_script: ..., version: ... })
+Para: Response body = script puro (text/plain)
+      Headers: X-Navspot-Version, X-Navspot-Hotspot, X-Navspot-Wan-Interface, X-Navspot-Wan-Type
 ```
 
-- **Line 912** -- Replace literal with variable:
-```
-/ip hotspot profile set $hp login-by=$lby
+Respostas de erro permanecem em JSON (o frontend precisa da mensagem de erro estruturada).
+
+### 2. `src/hooks/useHotspots.ts` -- `useGenerateHotspotScript` (linhas 164-171)
+
+Atualizar o `mutationFn` para tratar a resposta como texto, com fallback robusto:
+
+- Se `data` for string: extrair versao via regex do header do script
+- Se `data` for Blob/object: chamar `.text()` para converter
+- Se nenhum dos dois: lancar erro
+- Fallback: formato JSON antigo (compatibilidade)
+
+### 3. `src/services/mikrotikService.ts` -- `generateScript` (linhas 71-82)
+
+Mesma logica de deteccao de tipo da resposta:
+
+- `typeof data === 'string'` -> usar diretamente
+- Caso contrario -> tentar `.text()` ou usar como JSON antigo
+
+### 4. Nenhuma mudanca em `mikrotik-scripts/index.ts`
+
+Ja retorna `text/plain` com Content-Disposition correto. O MikroTik recebe o `.rsc` com newlines reais.
+
+## Detalhes Tecnicos
+
+O `supabase.functions.invoke()` da lib JS pode retornar o body ja parseado dependendo do Content-Type:
+- `application/json` -> objeto JS
+- `text/plain` -> string (na maioria das versoes)
+- Em versoes mais antigas -> pode vir como Blob
+
+Para cobrir todos os cenarios, o codigo fara:
+
+```typescript
+const { data, error } = await supabase.functions.invoke('mikrotik-script-generator', {
+  body: { hotspot_id: hotspotId },
+});
+if (error) throw error;
+
+// Detectar formato da resposta
+let scriptText: string;
+if (typeof data === 'string') {
+  scriptText = data;
+} else if (data && typeof data.text === 'function') {
+  scriptText = await data.text();
+} else if (data?.bootstrap_script) {
+  // Fallback JSON antigo
+  return data;
+} else {
+  throw new Error('Formato de resposta inesperado');
+}
+
+return {
+  bootstrap_script: scriptText,
+  finalize_script: '',
+  version: scriptText.match(/v(\d+\.\d+\.\d+)/)?.[1] || '7.2.0',
+};
 ```
 
-**AP Core (2 edits):**
+## Resultado Esperado
 
-- **Line 977** -- Insert `lby` declaration after `cnt` (nesting level 1):
-```
-:local lby "cookie,http-pap,http-chap"
-```
-
-- **Line 1003** -- Replace literal with variable:
-```
-/ip hotspot profile set $hp login-by=$lby
-```
-
-- **Line 1004** -- Update log message to use `$lby`:
-```
-:log info ("NAVSPOT: login-by=" . $lby . " aplicado em ".[/ip hotspot profile get $hp name])
-```
-
-**AP Full (2 edits):**
-
-- **Line 1105** -- Insert `lby` declaration after `cnt` (nesting level 1):
-```
-:local lby "cookie,http-pap,http-chap"
-```
-
-- **Line 1130** -- Replace literal with variable:
-```
-/ip hotspot profile set $hp login-by=$lby
-```
-
-- **Line 1131** -- Update log message:
-```
-:log info ("NAVSPOT: login-by=" . $lby . " aplicado em ".[/ip hotspot profile get $hp name])
-```
-
-**Guardian (1 edit):**
-
-- **Line 1362** -- Invert the check to detect MISSING `http-pap` instead of flagging present `http-chap`:
-```
-:if ([:find $loginBy "http-pap"]<0) do={:set needsRepair 1;:set missing ($missing."login-pap ")}
-```
-
-### 2. `supabase/functions/mikrotik-recovery-download/index.ts`
-
-- **Line 243** -- Update log message:
-```
-:log info "NAVSPOT-RECOVERY v${VERSION}: Aplicando login-by=cookie,http-pap,http-chap..."
-```
-
-- **Line 249** -- Update the actual command:
-```
-/ip hotspot profile set $hp login-by=cookie,http-pap,http-chap
-```
-(This is at nesting level 2-3, safe without hoisting.)
-
-- **Line 262** -- Update the summary note:
-```
-:log info "NOTE: login-by=cookie,http-pap,http-chap aplicado localmente"
-```
-
-## Verification (post-deploy)
-
-1. Generate new `.rsc` from the panel -- confirm `:local lby "cookie,http-pap,http-chap"` appears in sync and AP scripts
-2. Import on router and run `/system script run navspot-sync` -- must NOT crash
-3. `/ip hotspot profile print detail where name="hsprof-navspot"` -- confirm `login-by` includes `http-chap`
-4. Run Guardian manually -- should report `Sistema OK` (no false `login-chap` trigger)
-5. Check recovery script: download and verify `login-by=cookie,http-pap,http-chap` is present
+- Bootstrap `.rsc` retornado como texto puro com newlines reais
+- Frontend continua funcionando, extraindo versao via regex
+- Download direto via curl/browser retorna arquivo `.rsc` pronto
+- Compatibilidade mantida com formato JSON antigo (fallback)
+- Endpoint `mikrotik-scripts` (Sync/AP/Guardian) ja funciona corretamente -- sem mudancas
 
