@@ -882,10 +882,10 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :global navspotLockTime
 :local apUs 0
 :do {:set apUs [/system resource get uptime-as-secs]} on-error={:set apUs 0}
-:if ([:type $navspotLock]="nothing") do={:set navspotLock "0"}
+:if ([:typeof $navspotLock]="nothing") do={:set navspotLock "0"}
 :if ($navspotLock="1") do={
 :local lockAge 99999
-:if (($apUs>0)&&([:type $navspotLockTime]!="nothing")&&($navspotLockTime>0)) do={:set lockAge ($apUs - $navspotLockTime)}
+:if (($apUs>0)&&([:typeof $navspotLockTime]!="nothing")&&($navspotLockTime>0)) do={:set lockAge ($apUs - $navspotLockTime)}
 :log info ("NAVSPOT-SYNC: AP lock=1 age=" . $lockAge . "s lockTime=" . $navspotLockTime . " uptime=" . $apUs)
 :if ($lockAge>120) do={
 :log warning "NAVSPOT-SYNC: AP lock stale -> resetting"
@@ -938,7 +938,8 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={}}
 :if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
 :if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-url=$lu dns-name=$dn login-by=cookie,http-pap
+:do {/ip hotspot profile set $hp login-url=$lu dns-name=$dn} on-error={:log error "NAVSPOT-SYNC: fallback set login-url failed"}
+:do {/ip hotspot profile set $hp login-by=cookie,http-pap} on-error={:log error "NAVSPOT-SYNC: fallback set login-by failed"}
 :log info ("NAVSPOT-SYNC: FALLBACK applied login-url + login-by on " . [/ip hotspot profile get $hp name])
 }
 }
