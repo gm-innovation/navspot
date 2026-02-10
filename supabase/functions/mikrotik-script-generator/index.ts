@@ -245,18 +245,19 @@ Deno.serve(async (req) => {
     console.log(`[script-generator ${VERSION}] ULTRA-THIN bootstrap generated for ${hotspot.nome} (WAN: ${hotspot.wan_interface || 'ether1'})`)
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        bootstrap_script: sanitizedBootstrap,
-        finalize_script: '', // v7.1: No finalize script needed
-        hotspot_name: hotspot.nome,
-        wan_interface: hotspot.wan_interface || 'ether1',
-        wan_type: hotspot.wan_type || 'dhcp',
-        version: VERSION
-      }),
+      sanitizedBootstrap,
       { 
         status: 200, 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        headers: { 
+          ...corsHeaders, 
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Disposition': `attachment; filename="navspot-bootstrap-v${VERSION}.rsc"`,
+          'X-Navspot-Version': VERSION,
+          'X-Navspot-Hotspot': hotspot.nome,
+          'X-Navspot-Wan-Interface': hotspot.wan_interface || 'ether1',
+          'X-Navspot-Wan-Type': hotspot.wan_type || 'dhcp',
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+        } 
       }
     )
 

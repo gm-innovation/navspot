@@ -78,7 +78,24 @@ export async function generateScript(hotspotId: string): Promise<ScriptGenerator
     return { success: false, error: error.message };
   }
 
-  return data as ScriptGeneratorResult;
+  // Detectar formato da resposta (text/plain vs JSON legado)
+  let scriptText: string;
+  if (typeof data === 'string') {
+    scriptText = data;
+  } else if (data && typeof data.text === 'function') {
+    scriptText = await data.text();
+  } else if (data?.script || data?.bootstrap_script) {
+    // Fallback JSON antigo
+    return data as ScriptGeneratorResult;
+  } else {
+    return { success: false, error: 'Formato de resposta inesperado' };
+  }
+
+  return {
+    success: true,
+    script: scriptText,
+    version: scriptText.match(/v(\d+\.\d+\.\d+)/)?.[1] || '7.2.0',
+  } as unknown as ScriptGeneratorResult;
 }
 
 // Convenience functions for common actions
