@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 /**
- * mikrotik-scripts v7.3.0
+ * mikrotik-scripts v7.4.5
  * 
  * RADICAL SIMPLIFICATION: Action Processor eliminated.
  * All action processing is now INLINE in the sync script.
@@ -18,7 +18,7 @@ const corsHeaders = {
  *   - ros_version: "6" | "7" | "auto" (default: "6")
  */
 
-const VERSION = "7.4.0"
+const VERSION = "7.4.5"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration (simplified - no more AP)
@@ -353,11 +353,11 @@ function generateAllScripts(
 }
 
 // ==========================================
-// SCRIPT SOURCES - v7.3.0: INLINE ACTION PROCESSING
+// SCRIPT SOURCES - v7.4.5: INLINE ACTION PROCESSING
 // ==========================================
 
 /**
- * v7.3.0: Sync with INLINE action processing (NO separate action-processor)
+ * v7.4.5: Sync with INLINE action processing (NO separate action-processor)
  * All actions are processed directly from the API response variable.
  */
 function generateSyncSource(syncUrl: string, syncToken: string): string {
@@ -408,18 +408,32 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local p2 [:find $r "|"]
 :if ($p2>=0) do={
 :local un [:pick $r 0 $p2]
-:local pw [:pick $r ($p2+1) [:len $r]]
+:local rest [:pick $r ($p2+1) [:len $r]]
+:local p3 [:find $rest "|"]
+:local pw $rest
+:local pr "default"
+:if ($p3>=0) do={
+:set pw [:pick $rest 0 $p3]
+:set pr [:pick $rest ($p3+1) [:len $rest]]
+}
 :do {/ip hotspot user remove [find name=$un]} on-error={}
-:do {/ip hotspot user add name=$un password=$pw profile="default" comment="navspot"} on-error={}
+:do {/ip hotspot user add name=$un password=$pw profile=$pr comment="navspot"} on-error={}
 :set cnt ($cnt+1)
 }}
 :if ($c="create_profile") do={
 :local p2 [:find $r "|"]
 :if ($p2>=0) do={
 :local n [:pick $r 0 $p2]
-:local rt [:pick $r ($p2+1) [:len $r]]
+:local rest [:pick $r ($p2+1) [:len $r]]
+:local p3 [:find $rest "|"]
+:local rt $rest
+:local su "1"
+:if ($p3>=0) do={
+:set rt [:pick $rest 0 $p3]
+:set su [:pick $rest ($p3+1) [:len $rest]]
+}
 :do {/ip hotspot user profile remove [find name=$n]} on-error={}
-:do {/ip hotspot user profile add name=$n rate-limit=$rt shared-users=1} on-error={}
+:do {/ip hotspot user profile add name=$n rate-limit=$rt shared-users=$su} on-error={}
 :set cnt ($cnt+1)
 }}
 :if ($c="remove_user") do={
@@ -445,7 +459,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 
 /**
- * v7.3.0: Simplified Guardian - no more action-processor checks
+ * v7.4.5: Simplified Guardian - no more action-processor checks
  */
 function generateGuardianSource(recoveryUrl: string, syncToken: string): string {
   return `:log info "NAVSPOT-GUARDIAN v${VERSION}"
