@@ -1,42 +1,78 @@
 
 
-# Bump de Versao: 7.2.1 -> 7.2.2
+# Fix v7.2.3: Achatar TODOS os handlers para Level 7
 
-## Objetivo
+## Problema
 
-Corrigir crash do Fallback Action Processor (v7.2.1F) causado por nesting excessivo (~Level 9-10) no handler `configure_hotspot_profile`. O RouterOS 7 falha a partir de ~Level 8.
+O Fallback AP (v7.2.2F) continua crashando com "AP threw runtime error" em TODOS os syncs. O `dns-name` e `login-url` permanecem vazios. Dois pontos de falha identificados:
+
+1. **Fallback AP - handler `create_profile`** atinge Level 8 (sub-parsing de `shared-users` com 3 niveis de `:if` aninhados)
+2. **Sync Inline Fallback** - parser de `configure_hotspot_profile` atinge Level 9-10 (verificacao redundante de `[:len $seg]`, busca indireta via `hs-navspot`)
+
+O `create_profile` causa crash de PARSE do Fallback AP inteiro antes mesmo da primeira linha executar, impedindo que o `configure_hotspot_profile` (ja corrigido na v7.2.2) seja alcancado.
 
 ## Mudancas
 
 **Arquivo:** `supabase/functions/mikrotik-scripts/index.ts`
 
-1. **Linha 38:** `const VERSION = "7.2.1"` -> `const VERSION = "7.2.2"`
-2. **Linhas 325-337:** Handler `configure_hotspot_profile` achatado:
-   - Removido wrapper `:do { } on-error={}` (economiza 1 nivel)
-   - Removida verificacao dupla `[:len $lu] > 0 && [:len $dn] > 0` (economiza 1 nivel)
-   - Removida busca indireta via `hs-navspot` -> profile name -> find (economiza 2 niveis)
-   - Agora usa `hsprof-navspot` direto (max Level 7)
+### 1. VERSION: "7.2.2" -> "7.2.3" (linha 38)
+
+### 2. Fallback AP - Achatar `create_profile` (linhas 333-347)
+
+Remover parsing profundo de `shared-users` (3 niveis extras). O perfil sera criado com `shared-users=1` (default do MikroTik). Reduz de Level 8 para Level 6.
+
+Antes:
+```text
+:if ($c = "create_profile") do={        # L5
+  :if ($p2 >= 0) do={                   # L6
+    :if ($p3 >= 0) do={                 # L7
+      :if ($p4 >= 0) do={              # L8  <-- CRASH
+```
+
+Depois:
+```text
+:if ($c = "create_profile") do={        # L5
+  :if ($p2 >= 0) do={                   # L6  <-- SEGURO
+```
+
+### 3. Sync Inline Fallback - Achatar parser (linhas 916-947)
+
+Remover verificacao redundante de `[:len $seg] > $prefixLen`, busca indireta via `hs-navspot`, e declarar `lu`/`dn` como strings vazias fora do `:if`. Reduz de Level 9-10 para Level 7.
+
+Antes:
+```text
+:if (($apRan=false)||...)               # L6
+  :if ($pos >= 0)                       # L7
+    :if ([:len $seg] > $prefixLen)      # L8  <-- CRASH
+      :if ($psep >= 0)                  # L9
+        :if ([:len $hp]>0)              # L10
+```
+
+Depois:
+```text
+:if (($apRan=false)||...)               # L6
+  :if ($pos >= 0)                       # L7
+    (parsing inline, sem sub-ifs)       # L7  <-- SEGURO
+```
 
 **Arquivo:** `supabase/functions/mikrotik-script-generator/index.ts`
 
-- **Linha 8:** `const VERSION = "7.2.1"` -> `const VERSION = "7.2.2"`
+### 4. VERSION: "7.2.2" -> "7.2.3" (linha 8)
 
-## Contagem de Niveis (Apos Fix)
+## Resumo de niveis apos fix
 
-```
-:do {                                       # L1
-  :while                                    # L2
-    :if ([:len $ln] > 0)                    # L3
-      :if ($p1 >= 0)                        # L4
-        :if ($c = "configure_hotspot_profile")  # L5
-          :if ($p2 >= 0)                    # L6
-            :if ([:len $hp] > 0)            # L7  <-- SEGURO
-```
+| Handler | Antes | Depois |
+|---|---|---|
+| Fallback AP: configure_hotspot_profile | L7 (ok desde v7.2.2) | L7 |
+| Fallback AP: create_profile | L8 (CRASH) | L6 |
+| Fallback AP: create_user | L7 | L7 (sem alteracao) |
+| Sync Inline Fallback | L9-10 (CRASH) | L7 |
 
 ## Verificacao
 
-Apos re-importar o bootstrap v7.2.2:
-- `NAVSPOT-ACTION v7.2.2F: Start` (sem crash)
+Apos re-importar o bootstrap v7.2.3:
+- `NAVSPOT-ACTION v7.2.3F: Start` (sem crash)
 - `NAVSPOT: cfg-hp applied on hsprof-navspot`
 - `dns-name` e `login-url` preenchidos no profile
-- Logs mostrarao `NAVSPOT-SYNC v7.2.2`
+- Logs mostrarao `NAVSPOT-SYNC v7.2.3`
+
