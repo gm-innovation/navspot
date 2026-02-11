@@ -347,7 +347,7 @@ function generateAllScripts(
 
 # ===== 5. PRIMEIRO SYNC =====
 :log info "NAVSPOT-INSTALL: Executando primeiro sync..."
-:delay 2s
+:delay 5s
 :do {/system script run navspot-sync} on-error={:log warning "NAVSPOT-INSTALL: sync inicial falhou (nao-fatal)"}
 `
 }
@@ -363,203 +363,82 @@ function generateAllScripts(
 function generateSyncSource(syncUrl: string, syncToken: string): string {
   return `:log info "NAVSPOT-SYNC v${VERSION}"
 :global navspotSyncLock
-:global navspotSyncLockTime
 :if ([:len $navspotSyncLock]=0) do={:set navspotSyncLock "0"}
-:if ([:len $navspotSyncLockTime]=0) do={:set navspotSyncLockTime 0}
-:local us 0
-:do {:set us [/system resource get uptime-as-secs]} on-error={:set us 0}
-:local lby "cookie,http-pap,http-chap"
-:local a ""
-:do {
-:if ($navspotSyncLock="1") do={
-:local shouldSkip true
-:if ($us=0) do={:set shouldSkip false} else={
-:local la 999
-:if (([:typeof $navspotSyncLockTime]="num")&&($navspotSyncLockTime>0)) do={:set la ($us - $navspotSyncLockTime)}
-:if ($la>300) do={:set shouldSkip false} else={:log info ("NAVSPOT-SYNC: locked (age=" . $la . "s)")}
-}
-:if ($shouldSkip) do={:return}}
+:if ($navspotSyncLock="1") do={:log info "NAVSPOT-SYNC: locked";:return}
 :set navspotSyncLock "1"
-:set navspotSyncLockTime $us
-:log info "NAVSPOT-SYNC: step=1-lock"
-:local tk ""
-:do {:set tk [/file get "navspot-token.txt" contents]} on-error={}
-:if ([:len $tk]<10) do={:set tk "${syncToken}"}
-:log info "NAVSPOT-SYNC: step=2-collect"
-:local u ""
-:local r ""
-:local p ""
+:local a ""
 :local q "\\22"
-:do {:foreach ai in=[/ip hotspot active find] do={
-:local au [/ip hotspot active get $ai user]
-:local am [/ip hotspot active get $ai mac-address]
-:local abi [/ip hotspot active get $ai bytes-in]
-:local abo [/ip hotspot active get $ai bytes-out]
-:set u ($u.$au.",".$am.",".$abi.",".$abo.";")
-}} on-error={}
-:do {:foreach i in=[/ip hotspot user find where dynamic=no] do={:set r ($r.[/ip hotspot user get $i name].",")
-}} on-error={}
-:do {:foreach x in=[/ip hotspot user profile find] do={:set p ($p.[/ip hotspot user profile get $x name].",")
-}} on-error={}
-:local hp ""
-:local hlb ""
-:local hlu ""
+:local lby "cookie,http-pap,http-chap"
+:local ac 0
+:do {:set ac [:len [/ip hotspot active find]]} on-error={}
+:local rc 0
+:do {:set rc [:len [/ip hotspot user find]]} on-error={}
+:local tk "${syncToken}"
+:local b ("{".$q."sync_token".$q.":".$q.$tk.$q.",".$q."active_count".$q.":".$ac.",".$q."registered_count".$q.":".$rc."}")
+:log info "NAVSPOT-SYNC: fetch..."
 :do {
-:local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs]>0) do={
-:do {:local pN [:tostr [/ip hotspot get $hs profile]];:set hp [/ip hotspot profile find name=$pN]} on-error={}
-}
-} on-error={}
-:if ([:len $hp]=0) do={:do {:set hp [/ip hotspot profile find name="hsprof-navspot"]} on-error={}}
-:if ([:len $hp]>0) do={
-:do {:set hlb [/ip hotspot profile get $hp login-by]} on-error={:set hlb ""}
-:do {:set hlu [/ip hotspot profile get $hp login-url]} on-error={:set hlu ""}
-}
-:log info "NAVSPOT-SYNC: step=3-json"
-:local b ("{".$q."sync_token".$q.":".$q.$tk.$q.",".$q."active_users_csv".$q.":".$q.$u.$q.",".$q."registered_users_csv".$q.":".$q.$r.$q.",".$q."registered_profiles_csv".$q.":".$q.$p.$q.",".$q."hotspot_login_by".$q.":".$q.$hlb.$q.",".$q."hotspot_login_url".$q.":".$q.$hlu.$q."}")
-:local ok false
-:local respFile "navspot-resp.txt"
-:do {:foreach oldF in=[/file find where name~"^navspot-resp-"] do={/file remove $oldF}} on-error={}
-:do {/file remove $respFile} on-error={}
-:delay 1s
-:log info "NAVSPOT-SYNC: step=4-fetch"
-:do {
-/tool fetch url="${syncUrl}" http-method=post http-data=($b) http-header-field="Content-Type: application/json" check-certificate=no dst-path=$respFile
-:set ok true
-} on-error={:log warning "NAVSPOT-SYNC: fetch FALHOU";:set navspotSyncLock "0"}
-:if ($ok) do={
-:delay 2s
-:local resp ""
-:do {:set resp [/file get $respFile contents]} on-error={:log error "NAVSPOT-SYNC: file read FAILED"}
-:do {/file remove $respFile} on-error={}
-:local rl [:len $resp]
-:log info ("NAVSPOT-SYNC: resp=" . $rl . "b")
-:if ($rl=0) do={:log error "NAVSPOT-SYNC: response EMPTY"}
-:local s [:find $resp "[["]
-:local e [:find $resp "]]"]
-:if ([:typeof $s]="nil") do={:log warning ("NAVSPOT-SYNC: no [[ marker in " . $rl . "b resp")}
+:local res [/tool fetch url="${syncUrl}" http-method=post http-data=$b http-header-field="Content-Type: application/json" check-certificate=no as-value output=user]
+:local body ($res->"data")
+:local bl [:len $body]
+:log info ("NAVSPOT-SYNC: resp=" . $bl . "b")
+:local s [:find $body "[["]
+:local e [:find $body "]]"]
 :if (($s>=0)&&($e>$s)) do={
-:local raw [:pick $resp ($s+2) $e]
-:local i 0
-:local j ([:len $raw]-1)
-:while (($i<=$j)&&([:pick $raw $i ($i+1)]=" ")) do={:set i ($i+1)}
-:while (($j>=$i)&&([:pick $raw $j ($j+1)]=" ")) do={:set j ($j-1)}
-:if ($j>=$i) do={:set a [:pick $raw $i ($j+1)]}
-:if ([:len $a]>0) do={:log info ("NAVSPOT-SYNC: actions len=" . [:len $a])}
-} else={
-:if ($rl>0) do={
-:local rHead $resp
-:if ($rl>120) do={:set rHead [:pick $resp 0 120]}
-:log warning ("NAVSPOT-SYNC: no actions, head=" . $rHead)
-}}
+:set a [:pick $body ($s+2) $e]
 }
-} on-error={:log error "NAVSPOT-SYNC: CRASH in main block";:set navspotSyncLock "0"}
-# === v7.3.0: PROCESS ACTIONS AT LEVEL 0 (hoisted) ===
+} on-error={:log error "NAVSPOT-SYNC: fetch failed";:set navspotSyncLock "0"}
 :if ([:len $a]>0) do={
 :local pos 0
 :local cnt 0
-:while ([:find $a ";" $pos] >= 0) do={
+:while ([:find $a ";" $pos]>=0) do={
 :local ep [:find $a ";" $pos]
 :local ln [:pick $a $pos $ep]
-:set pos ($ep + 1)
-:if ([:len $ln] > 0) do={
+:set pos ($ep+1)
 :local p1 [:find $ln "|"]
-:if ($p1 >= 0) do={
+:if ($p1>=0) do={
 :local c [:pick $ln 0 $p1]
-:local rv [:pick $ln ($p1+1) [:len $ln]]
-:if ($c = "configure_hotspot_profile") do={
-:local p2 [:find $rv "|"]
-:if ($p2 >= 0) do={
-:local lu [:pick $rv 0 $p2]
-:local dn [:pick $rv ($p2 + 1) [:len $rv]]
-/ip hotspot profile set [find name="hsprof-navspot"] login-url=$lu dns-name=$dn login-by=$lby
-:log info "NAVSPOT-SYNC: cfg-hp applied"
+:local r [:pick $ln ($p1+1) [:len $ln]]
+:if ($c="configure_hotspot_profile") do={
+:local p2 [:find $r "|"]
+:if ($p2>=0) do={
+:do {/ip hotspot profile set [find name="hsprof-navspot"] login-url=[:pick $r 0 $p2] dns-name=[:pick $r ($p2+1) [:len $r]] login-by=$lby} on-error={}
 :set cnt ($cnt+1)
 }}
-:if ($c = "create_profile") do={
-:do {
-:local p2 [:find $rv "|"]
+:if ($c="create_user") do={
+:local p2 [:find $r "|"]
 :if ($p2>=0) do={
-:local n [:pick $rv 0 $p2]
-:local sub [:pick $rv ($p2+1) [:len $rv]]
-:local p3 [:find $sub "|"]
-:local rt ""
-:local sh "1"
-:if ($p3>=0) do={:set rt [:pick $sub 0 $p3];:set sh [:pick $sub ($p3+1) [:len $sub]]} else={:set rt $sub}
-:local ex [/ip hotspot user profile find name=$n]
-:if ([:len $ex]>0) do={
-:if ([:len $rt]>0) do={/ip hotspot user profile set $ex rate-limit=$rt}
-/ip hotspot user profile set $ex shared-users=$sh
-} else={
-:if ([:len $rt]>0) do={/ip hotspot user profile add name=$n rate-limit=$rt shared-users=$sh} else={/ip hotspot user profile add name=$n shared-users=$sh}
-}
+:local un [:pick $r 0 $p2]
+:local pw [:pick $r ($p2+1) [:len $r]]
+:do {/ip hotspot user remove [find name=$un]} on-error={}
+:do {/ip hotspot user add name=$un password=$pw profile="default" comment="navspot"} on-error={}
 :set cnt ($cnt+1)
-}
-} on-error={}}
-:if ($c = "create_user") do={
-:do {
-:local p2 [:find $rv "|"]
+}}
+:if ($c="create_profile") do={
+:local p2 [:find $r "|"]
 :if ($p2>=0) do={
-:local un [:pick $rv 0 $p2]
-:local sub [:pick $rv ($p2+1) [:len $rv]]
-:local p3 [:find $sub "|"]
-:local pw ""
-:local pf "default"
-:if ($p3>=0) do={:set pw [:pick $sub 0 $p3];:set pf [:pick $sub ($p3+1) [:len $sub]]} else={:set pw $sub}
-:if ([:len $pf]=0) do={:set pf "default"}
-:do {/ip hotspot user profile add name=$pf} on-error={}
-:local ex [/ip hotspot user find name=$un]
-:if ([:len $ex]>0) do={
-:if ([:len $pw]>0) do={/ip hotspot user set $ex password=$pw}
-:if ($pf!="default") do={/ip hotspot user set $ex profile=$pf}
-} else={
-:if ([:len $pw]>0) do={/ip hotspot user add name=$un password=$pw profile=$pf comment="navspot"}
-}
+:local n [:pick $r 0 $p2]
+:local rt [:pick $r ($p2+1) [:len $r]]
+:do {/ip hotspot user profile remove [find name=$n]} on-error={}
+:do {/ip hotspot user profile add name=$n rate-limit=$rt shared-users=1} on-error={}
 :set cnt ($cnt+1)
-}
-} on-error={}}
-:if (($c="create_whitelist_domain")||($c="add_whitelist_domain")) do={
-:do {
-:local dom $rv
-:local p2 [:find $rv "|"]
-:if ($p2>=0) do={:set dom [:pick $rv ($p2+1) [:len $rv]]}
-:if ([:len $dom]>0) do={
-:local wg [/ip hotspot walled-garden find dst-host~$dom]
-:if ([:len $wg]=0) do={/ip hotspot walled-garden add dst-host=("*".$dom."*") action=allow comment="navspot";:set cnt ($cnt+1)}
-}} on-error={}}
-:if ($c="add_firewall_block") do={
-:do {
-:local dom $rv
-:local p2 [:find $rv "|"]
-:if ($p2>=0) do={:set dom [:pick $rv ($p2+1) [:len $rv]]}
-:if ([:len $dom]>0) do={
-:local cm ("NAVSPOT-BLOCK-".$dom)
-:local ex [/ip firewall filter find comment=$cm]
-:if ([:len $ex]=0) do={/ip firewall filter add chain=forward content=$dom action=drop comment=$cm place-before=0;:set cnt ($cnt+1)}
-}} on-error={}}
-:if ($c="add_firewall_allow") do={
-:do {
-:local dom $rv
-:local p2 [:find $rv "|"]
-:if ($p2>=0) do={:set dom [:pick $rv ($p2+1) [:len $rv]]}
-:if ([:len $dom]>0) do={
-:local cm ("NAVSPOT-ALLOW-".$dom)
-:local ex [/ip firewall filter find comment=$cm]
-:if ([:len $ex]=0) do={/ip firewall filter add chain=forward content=$dom action=accept comment=$cm place-before=0;:set cnt ($cnt+1)}
-}} on-error={}}
+}}
 :if ($c="remove_user") do={
-:do {:if ([:len $rv]>0) do={:local ex [/ip hotspot user find name=$rv];:if ([:len $ex]>0) do={/ip hotspot user remove $ex;:set cnt ($cnt+1)}}} on-error={}}
+:do {/ip hotspot user remove [find name=$r]} on-error={}
+:set cnt ($cnt+1)
+}
 :if ($c="disable_user") do={
-:do {:if ([:len $rv]>0) do={/ip hotspot user set [find name=$rv] disabled=yes;:set cnt ($cnt+1)}} on-error={}}
+:do {/ip hotspot user set [find name=$r] disabled=yes} on-error={}
+:set cnt ($cnt+1)
+}
 :if ($c="enable_user") do={
-:do {:if ([:len $rv]>0) do={/ip hotspot user set [find name=$rv] disabled=no;:set cnt ($cnt+1)}} on-error={}}
-:if ($c="kick_session") do={
-:do {:local p2 [:find $rv "|"];:if ($p2>=0) do={:local mac [:pick $rv ($p2+1) [:len $rv]];:if ([:len $mac]>0) do={/ip hotspot active remove [find mac-address=$mac];:set cnt ($cnt+1)}}} on-error={}}
-}}}
+:do {/ip hotspot user set [find name=$r] disabled=no} on-error={}
+:set cnt ($cnt+1)
+}
+}}
 :log info ("NAVSPOT-SYNC: processed " . $cnt . " actions")
 :set a ""
 } else={
-:log info "NAVSPOT-SYNC: no actions to process"
+:log info "NAVSPOT-SYNC: no actions"
 }
 :set navspotSyncLock "0"
 :log info "NAVSPOT-SYNC v${VERSION}: OK"`
