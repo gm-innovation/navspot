@@ -939,6 +939,27 @@ export type Database = {
           },
         ]
       }
+      script_templates: {
+        Row: {
+          content: string
+          id: string
+          updated_at: string | null
+          version: string
+        }
+        Insert: {
+          content: string
+          id: string
+          updated_at?: string | null
+          version?: string
+        }
+        Update: {
+          content?: string
+          id?: string
+          updated_at?: string | null
+          version?: string
+        }
+        Relationships: []
+      }
       sessoes_wifi: {
         Row: {
           bytes_in: number

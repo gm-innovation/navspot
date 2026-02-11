@@ -1,4 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'npm:@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -164,7 +164,7 @@ Deno.serve(async (req) => {
     }
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-    const scriptsUrl = `${supabaseUrl}/functions/v1/mikrotik-scripts`
+    const scriptsUrl = `${supabaseUrl}/functions/v1/mt-scripts`
 
     console.log(`[mikrotik-recovery-download ${VERSION}] Generating ULTRA-THIN recovery for: ${hotspot.nome}`)
 
