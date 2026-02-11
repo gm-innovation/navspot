@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.2.4"
+const VERSION = "7.2.5"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -290,77 +290,30 @@ function generateAllScripts(
   // This fallback handles only create_profile and create_user
   const fallbackSource = `:log info "NAVSPOT-ACTION v${VERSION}F: Start"
 :global navspotLock
-:global navspotLockTime
-:local us 0
-:do {:set us [/system resource get uptime-as-secs]} on-error={:set us 0}
-:if ([:len $navspotLock]=0) do={:set navspotLock "0"}
-:if ($navspotLock = "1") do={
-:local la 999
-:if (($us>0)&&([:typeof $navspotLockTime]="num")&&($navspotLockTime>0)) do={:set la ($us - $navspotLockTime)}
-:if ($la>120) do={:log warning ("NS-AP: lock expired (age=" . $la . "s)")} else={:return}
-}
 :set navspotLock "1"
-:set navspotLockTime $us
 :local fid [/file find name="navspot-actions.txt"]
 :if ([:len $fid] = 0) do={ :set navspotLock "0"; :return }
 :local raw [/file get $fid contents]
 :do { /file remove $fid } on-error={}
-:log info ("NS-AP: " . [:len $raw] . "b")
-:local pos 0
-:local cnt 0
-:local lby "cookie,http-pap,http-chap"
-:local cfgHp ""
-:local cfgLu ""
-:local cfgDn ""
-:while ([:find $raw ";" $pos] >= 0) do={
-:local ep [:find $raw ";" $pos]
-:local ln [:pick $raw $pos $ep]
-:set pos ($ep + 1)
-:if ([:len $ln] > 0) do={
-:local p1 [:find $ln "|"]
-:if ($p1 >= 0) do={
-:local c [:pick $ln 0 $p1]
-:local r [:pick $ln ($p1 + 1) [:len $ln]]
-:if ($c = "configure_hotspot_profile") do={
-:local p2 [:find $r "|"]
-:if ($p2 >= 0) do={
-:local lu [:pick $r 0 $p2]
-:local dn [:pick $r ($p2 + 1) [:len $r]]
+:local marker "configure_hotspot_profile|"
+:local mpos [:find $raw $marker]
+:if ([:typeof $mpos] = "nil") do={ :set navspotLock "0"; :log info "NAVSPOT-ACTION v${VERSION}F: no cfg-hp"; :return }
+:local rest [:pick $raw ($mpos + [:len $marker]) [:len $raw]]
+:local sem [:find $rest ";"]
+:if ($sem >= 0) do={ :set rest [:pick $rest 0 $sem] }
+:local psep [:find $rest "|"]
+:if ([:typeof $psep] = "nil") do={ :set navspotLock "0"; :return }
+:local lu [:pick $rest 0 $psep]
+:local dn [:pick $rest ($psep + 1) [:len $rest]]
 :local hp [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len $hp] > 0) do={:set cfgHp $hp;:set cfgLu $lu;:set cfgDn $dn;:set cnt ($cnt + 1)}
-}}
-:if ($c = "create_profile") do={
-:local p2 [:find $r "|"]
-:if ($p2 >= 0) do={
-:local pn [:pick $r 0 $p2]
-:do { /ip hotspot user profile add name=$pn shared-users=1 } on-error={}
-:set cnt ($cnt + 1)
-}}
-:if ($c = "create_user") do={
-:local p2 [:find $r "|"]
-:if ($p2 >= 0) do={
-:local u [:pick $r 0 $p2]
-:local sub [:pick $r ($p2 + 1) [:len $r]]
-:local p3 [:find $sub "|"]
-:local pw ""
-:local pf "default"
-:if ($p3 >= 0) do={
-:set pw [:pick $sub 0 $p3]
-:set pf [:pick $sub ($p3 + 1) [:len $sub]]
-}
-:do { /ip hotspot user profile add name=$pf } on-error={}
-:do { /ip hotspot user add name=$u password=$pw profile=$pf } on-error={}
-:set cnt ($cnt + 1)
-}}
-}}}
-:if ([:len $cfgHp] > 0) do={
-/ip hotspot profile set $cfgHp login-url=$cfgLu
-/ip hotspot profile set $cfgHp dns-name=$cfgDn
-/ip hotspot profile set $cfgHp login-by=$lby
-:log info ("NAVSPOT: cfg-hp applied on " . [/ip hotspot profile get $cfgHp name])
+:if ([:len $hp] > 0) do={
+/ip hotspot profile set $hp login-url=$lu
+/ip hotspot profile set $hp dns-name=$dn
+/ip hotspot profile set $hp login-by=cookie,http-pap,http-chap
+:log info ("NAVSPOT: cfg-hp applied on " . [/ip hotspot profile get $hp name])
 }
 :set navspotLock "0"
-:log info ("NAVSPOT-ACTION v${VERSION}F: OK - " . $cnt)`
+:log info "NAVSPOT-ACTION v${VERSION}F: OK"`
 
   // Escape the fallback for embedding in RSC (minimal escaping for multi-line)
   const escapedFallback = fallbackSource
@@ -893,19 +846,9 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :log info "NAVSPOT-SYNC: AP script not found, will attempt fallback"
 }
 :delay 300ms
-:local actionsId2 [/file find name="navspot-actions.txt"]
-:local afterSize 0
-:if ([:len $actionsId2] > 0) do={:set afterSize [/file get $actionsId2 size]}
-:if ($apRan = true) do={
-:if ($afterSize = 0) do={
-:log info "NAVSPOT-SYNC: AP ran and consumed actions - sync complete"
-} else={
-:log warning ("NAVSPOT-SYNC: AP ran but did not consume actions (size=" . $afterSize . "b)")
-}
-}
-:if (($apRan = false) || ($afterSize > 0)) do={
 :do {/file remove "navspot-actions.txt"} on-error={}
-}
+:if ($apRan = true) do={ :log info "NAVSPOT-SYNC: AP processed actions" }
+:if ($apRan = false) do={ :log warning "NAVSPOT-SYNC: AP failed, fallback pending" }
 }
 } else={
 :log error "NAVSPOT-SYNC: write failed after 3 tries"
