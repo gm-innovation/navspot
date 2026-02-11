@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.2.1"
+const VERSION = "7.2.2"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -323,18 +323,13 @@ function generateAllScripts(
 :local c [:pick $ln 0 $p1]
 :local r [:pick $ln ($p1 + 1) [:len $ln]]
 :if ($c = "configure_hotspot_profile") do={
-:do {
 :local p2 [:find $r "|"]
 :if ($p2 >= 0) do={
 :local lu [:pick $r 0 $p2]
 :local dn [:pick $r ($p2 + 1) [:len $r]]
-:if (([:len $lu] > 0) && ([:len $dn] > 0)) do={
-:local hp ""
-:local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs] > 0) do={:do {:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]} on-error={}}
-:if ([:len $hp] = 0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
+:local hp [/ip hotspot profile find name="hsprof-navspot"]
 :if ([:len $hp] > 0) do={:set cfgHp $hp;:set cfgLu $lu;:set cfgDn $dn;:set cnt ($cnt + 1)}
-}}} on-error={}}
+}}
 :if ($c = "create_profile") do={
 :local p2 [:find $r "|"]
 :if ($p2 >= 0) do={
