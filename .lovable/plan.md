@@ -1,144 +1,170 @@
 
 
-# Refatoracao do mikrotik-scripts: Split Modular + Health Endpoint
+# Templates RouterOS no Banco + Edge Function Leve (mt-scripts)
 
-## Problema
+## Visao Geral
 
-O arquivo `supabase/functions/mikrotik-scripts/index.ts` tem 500 linhas com template strings RouterOS complexas. O bundler Deno da Lovable Cloud excede o timeout de 60s, resultando em 404 persistente (funcao registrada mas nao roteavel).
+Mover os 3 templates RouterOS (sync, guardian, installer) para a tabela `script_templates` no banco de dados, reescrever `mt-scripts/index.ts` com ~80 linhas (sem template strings), e atualizar todas as 4 referencias de `mikrotik-scripts` para `mt-scripts`.
 
-## Solucao
+## Ordem de Execucao
 
-Dividir em 4 arquivos menores + adicionar endpoint `health` para diagnostico rapido.
+### Passo 1: Migration SQL - Criar tabela + Inserir templates
 
-```text
-supabase/functions/mikrotik-scripts/
-  constants.ts      (~10 linhas)  - VERSION, DEPLOYED_AT, ROSConfig, corsHeaders
-  sync-source.ts    (~100 linhas) - generateSyncSource()
-  installer.ts      (~210 linhas) - generateAllScripts() + generateGuardianSource()
-  index.ts          (~90 linhas)  - Handler HTTP + roteamento + health
+Criar tabela `script_templates` e popular com os 3 templates usando Dollar Quoting (`$ts$...$ts$`) para evitar problemas de escape.
+
+```sql
+CREATE TABLE public.script_templates (
+  id TEXT PRIMARY KEY,
+  content TEXT NOT NULL,
+  version TEXT NOT NULL DEFAULT '7.4.5',
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE public.script_templates ENABLE ROW LEVEL SECURITY;
+
+-- RLS: bloqueia acesso publico (edge functions usam service_role que bypassa RLS)
+CREATE POLICY "service_role_only" ON public.script_templates
+  FOR ALL USING (false);
+
+-- INSERT dos 3 templates com Dollar Quoting
+INSERT INTO public.script_templates (id, content, version) VALUES
+('sync', $ts$:log info "NAVSPOT-SYNC v{{VERSION}}"
+:global navspotSyncLock
+... (conteudo identico ao generateSyncSource atual, trocando ${VERSION} por {{VERSION}}, ${syncToken} por {{SYNC_TOKEN}}, ${syncUrl} por {{SYNC_URL}})
+:log info "NAVSPOT-SYNC v{{VERSION}}: OK"$ts$, '7.4.5'),
+
+('guardian', $ts$:log info "NAVSPOT-GUARDIAN v{{VERSION}}"
+... (conteudo identico ao generateGuardianSource, com placeholders)
+$ts$, '7.4.5'),
+
+('installer', $ts$# =========================================
+# NAVSPOT Scripts Installer v{{VERSION}}
+... (conteudo identico ao generateAllScripts, com placeholders)
+$ts$, '7.4.5');
 ```
 
-## Detalhes tecnicos
+**Placeholders usados nos templates:**
 
-### Arquivo 1: `constants.ts` (NOVO - ~10 linhas)
+| Placeholder | Substituido por | Usado em |
+|-------------|----------------|----------|
+| `{{VERSION}}` | `7.4.5` | sync, guardian, installer |
+| `{{SYNC_TOKEN}}` | token do hotspot | sync, guardian, installer |
+| `{{SYNC_URL}}` | URL do mikrotik-sync | sync |
+| `{{RECOVERY_URL}}` | URL do recovery | guardian |
+| `{{API_BASE}}` | URL base das functions | installer |
+| `{{DEPLOYED_AT}}` | timestamp ISO | installer |
+| `{{ROS_VERSION}}` | versao do RouterOS | installer |
+| `{{SYNC_INTERVAL}}` | minutos entre syncs | installer |
+| `{{FETCH_DELAY}}` | delay em ms | installer |
+| `{{WRITE_DELAY}}` | delay em ms | installer |
+| `{{MAX_RETRIES}}` | numero de retries | installer |
 
-Exporta constantes compartilhadas para evitar dessincronizacao de VERSION:
+### Passo 2: Reescrever `mt-scripts/index.ts` (~80 linhas)
 
-```typescript
-export const VERSION = "7.4.5"
-export const DEPLOYED_AT = new Date().toISOString()
-
-export const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
-
-export interface ROSConfig {
-  delayAfterFetch: number
-  delayAfterFileWrite: number
-  contentRetryCount: number
-  flashSyncDelay: number
-}
-
-export const ROS_CONFIGS: Record<string, ROSConfig> = {
-  '6': { delayAfterFetch: 2500, delayAfterFileWrite: 1500, contentRetryCount: 3, flashSyncDelay: 700 },
-  '7': { delayAfterFetch: 500, delayAfterFileWrite: 300, contentRetryCount: 1, flashSyncDelay: 200 },
-}
-```
-
-### Arquivo 2: `sync-source.ts` (NOVO - ~100 linhas)
-
-Move `generateSyncSource()` (linhas 363-458 atuais) para arquivo separado:
-
-```typescript
-import { VERSION } from './constants.ts'
-
-export function generateSyncSource(syncUrl: string, syncToken: string): string {
-  // ... conteudo atual identico, usando VERSION importada
-}
-```
-
-### Arquivo 3: `installer.ts` (NOVO - ~210 linhas)
-
-Move `generateAllScripts()` (linhas 153-352) e `generateGuardianSource()` (linhas 464-500):
-
-```typescript
-import { VERSION, DEPLOYED_AT, type ROSConfig } from './constants.ts'
-
-export function generateAllScripts(...): string { /* conteudo atual */ }
-export function generateGuardianSource(...): string { /* conteudo atual */ }
-```
-
-### Arquivo 4: `index.ts` (REESCRITO - ~90 linhas)
-
-Fica apenas com handler HTTP, roteamento e o novo endpoint health:
+O handler HTTP busca o template do banco e faz `.replace()` dos placeholders:
 
 ```typescript
 import { createClient } from 'npm:@supabase/supabase-js@2'
-import { VERSION, corsHeaders, ROS_CONFIGS } from './constants.ts'
-import { generateSyncSource } from './sync-source.ts'
-import { generateAllScripts, generateGuardianSource } from './installer.ts'
 
-// maskToken + getROSConfig helpers (~10 linhas)
-// Deno.serve handler (~70 linhas)
-//   - case 'health': retorna { version, status: "ok", deployed_at }
-//   - case 'sync-raw' / 'guardian-raw' / 'all': logica atual
+const VERSION = "7.4.5"
+const DEPLOYED_AT = new Date().toISOString()
+const corsHeaders = { ... }
+const ROS_CONFIGS = { ... }
+
+Deno.serve(async (req) => {
+  // CORS, health endpoint (igual ao atual)
+  // Validar token, buscar hotspot (igual ao atual)
+  
+  // Mapear type para template id
+  const templateId = scriptType === 'sync-raw' ? 'sync'
+    : scriptType === 'guardian-raw' ? 'guardian' : 'installer'
+  
+  // Buscar template do banco
+  const { data: tpl, error: tplError } = await supabase
+    .from('script_templates')
+    .select('content')
+    .eq('id', templateId)
+    .single()
+  
+  if (tplError || !tpl) {
+    return new Response('# Error: Template not found', { status: 500 })
+  }
+  
+  // Substituir placeholders (com fallback para "" se undefined)
+  const script = tpl.content
+    .replace(/\{\{VERSION\}\}/g, VERSION)
+    .replace(/\{\{SYNC_TOKEN\}\}/g, syncToken || '')
+    .replace(/\{\{SYNC_URL\}\}/g, syncUrl || '')
+    .replace(/\{\{RECOVERY_URL\}\}/g, recoveryUrl || '')
+    .replace(/\{\{API_BASE\}\}/g, apiBase || '')
+    .replace(/\{\{DEPLOYED_AT\}\}/g, DEPLOYED_AT)
+    .replace(/\{\{ROS_VERSION\}\}/g, effRos || '')
+    .replace(/\{\{SYNC_INTERVAL\}\}/g, String(syncMin))
+    .replace(/\{\{FETCH_DELAY\}\}/g, String(rosConfig.delayAfterFetch))
+    .replace(/\{\{WRITE_DELAY\}\}/g, String(rosConfig.delayAfterFileWrite))
+    .replace(/\{\{MAX_RETRIES\}\}/g, String(rosConfig.contentRetryCount))
+  
+  return new Response(script, {
+    status: 200,
+    headers: {
+      ...corsHeaders,
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Content-Length': String(new TextEncoder().encode(script).length),
+    }
+  })
+})
 ```
 
-**Health endpoint** (novo case no switch):
+Zero template strings RouterOS no TypeScript. Bundler nao tera problemas.
 
+### Passo 3: Deploy e teste de bancada
+
+1. Deletar edge function `mt-scripts` (limpar estado)
+2. Redeployar `mt-scripts`
+3. Testar com curl:
+   - `GET /mt-scripts?type=health` --> 200 + version 7.4.5
+   - `GET /mt-scripts?type=sync-raw&token=TOKEN_REAL` --> 200 + script com `$un`, `$pw` literais
+
+### Passo 4: Atualizar referencias no frontend e backend
+
+**4 locais precisam trocar `mikrotik-scripts` para `mt-scripts`:**
+
+1. **`src/components/modals/ScriptModal.tsx`** (linhas 213 e 220):
+   - Trocar `mikrotik-scripts?type=all&token=` por `mt-scripts?type=all&token=`
+
+2. **`supabase/functions/mikrotik-script-generator/index.ts`** (linha 281):
+   - Trocar `${supabaseUrl}/functions/v1/mikrotik-scripts` por `${supabaseUrl}/functions/v1/mt-scripts`
+
+3. **`supabase/functions/mikrotik-recovery-download/index.ts`** (linha 167):
+   - Trocar `${supabaseUrl}/functions/v1/mikrotik-scripts` por `${supabaseUrl}/functions/v1/mt-scripts`
+
+4. Redeployar `mikrotik-script-generator` e `mikrotik-recovery-download` apos as mudancas.
+
+### Passo 5: Limpeza
+
+- Remover pasta `supabase/functions/mikrotik-scripts/` (se ainda existir)
+- Remover entrada `[functions.mikrotik-scripts]` do config.toml (auto-gerenciado)
+
+## Protecoes contra undefined/null
+
+Cada `.replace()` usa `|| ''` como fallback:
 ```typescript
-case 'health':
-  return new Response(
-    JSON.stringify({ version: VERSION, status: "ok", deployed_at: DEPLOYED_AT }),
-    { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-  )
+.replace(/\{\{SYNC_TOKEN\}\}/g, syncToken || '')
 ```
 
-Permite testar roteabilidade sem precisar de token valido:
-`GET /mikrotik-scripts?type=health`
+Isso garante que nenhum placeholder vire a string `"undefined"` no script final.
 
-### Arquivo 5: `mikrotik-script-generator/index.ts` (EDIT)
+## O que NAO muda
 
-Trocar import na linha 1:
-- De: `import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'`
-- Para: `import { createClient } from 'npm:@supabase/supabase-js@2'`
+- Logica de negocio dos scripts RouterOS (identica)
+- Handlers v7.4.5 (create_user 3 campos, create_profile 3 campos)
+- Variaveis RouterOS ($un, $pw, $pr, $rest) - ficam como texto puro no banco
+- mikrotik-sync, mikrotik-recovery-download (so muda a URL referenciada)
+- mikrotik-script-generator (so muda a URL referenciada)
+- Nenhuma tabela existente, RLS ou frontend afetado (exceto ScriptModal)
 
-### Deploy
+## Vantagem futura
 
-1. Criar os 3 novos arquivos (constants.ts, sync-source.ts, installer.ts)
-2. Reescrever index.ts (~90 linhas)
-3. Corrigir import do mikrotik-script-generator
-4. Deletar edge function `mikrotik-scripts` (limpar estado fantasma)
-5. Redeployar `mikrotik-scripts` e `mikrotik-script-generator`
-6. Testar com curl:
-   - `GET /mikrotik-scripts?type=health` -- esperar 200 + JSON com version 7.4.5
-   - `GET /mikrotik-scripts?type=sync-raw&token=TOKEN` -- esperar 200 + script com `$un`, `$pw`, `$pr` literais
-   - `GET /mikrotik-scripts?type=guardian-raw&token=TOKEN` -- esperar 200
-
-### Contagem de linhas por arquivo
-
-| Arquivo | Linhas | Conteudo |
-|---------|--------|----------|
-| constants.ts | ~20 | VERSION, DEPLOYED_AT, corsHeaders, ROSConfig, ROS_CONFIGS |
-| sync-source.ts | ~100 | generateSyncSource() |
-| installer.ts | ~210 | generateAllScripts() + generateGuardianSource() |
-| index.ts | ~90 | Handler HTTP + health + roteamento |
-| **Total** | ~420 | Mesmo que antes, mas nenhum arquivo ultrapassa 210 linhas |
-
-### O que NAO muda
-
-- Nenhuma logica de negocio dos scripts RouterOS
-- Handlers v7.4.5 (create_user 3 campos, create_profile 3 campos) intactos
-- Variaveis RouterOS ($un, $pw, $pr, $rest) sem chaves -- seguras em template literals
-- Nenhuma tabela, RLS ou frontend
-- mikrotik-sync, mikrotik-recovery-download e demais edge functions inalteradas
-
-### Riscos e mitigacoes
-
-| Risco | Mitigacao |
-|-------|-----------|
-| Imports relativos nao resolverem | Deno suporta nativamente `./arquivo.ts` em edge functions |
-| Bundler ainda falhar com installer.ts (210 linhas) | Dividir em allScripts.ts + guardian.ts se necessario |
-| VERSION dessincronizada | Centralizada em constants.ts -- fonte unica |
+Atualizar templates RouterOS passa a ser um simples `UPDATE script_templates SET content = ... WHERE id = 'sync'` -- sem precisar redeployar a edge function.
 
