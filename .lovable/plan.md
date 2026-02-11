@@ -1,170 +1,77 @@
 
 
-# Templates RouterOS no Banco + Edge Function Leve (mt-scripts)
+# Correcao do mt-scripts: esm.sh + Storage Hibrido
 
-## Visao Geral
+## Descoberta Critica
 
-Mover os 3 templates RouterOS (sync, guardian, installer) para a tabela `script_templates` no banco de dados, reescrever `mt-scripts/index.ts` com ~80 linhas (sem template strings), e atualizar todas as 4 referencias de `mikrotik-scripts` para `mt-scripts`.
+Durante a investigacao, ficou claro que o problema do `mt-scripts` NAO e o tamanho do arquivo (99 linhas) nem os templates (ja estao no banco). O padrao observado:
 
-## Ordem de Execucao
+| Funcao | Import | Status | Linhas |
+|--------|--------|--------|--------|
+| mikrotik-sync | esm.sh | OK | 1819 |
+| mikrotik-recovery-download | npm: | OK | 190 |
+| mikrotik-script-generator | npm: | OK | 595 |
+| mt-scripts | npm: | 404 | 99 |
+| mt-scripts (stub sem import) | nenhum | OK | 1 |
 
-### Passo 1: Migration SQL - Criar tabela + Inserir templates
+O stub sem nenhum import funciona. As demais funcoes com `npm:` tambem funcionam. Isso sugere um problema de **estado fantasma no gateway** especifico para `mt-scripts` com o import `npm:`. A correcao mais segura e trocar para `esm.sh` (padrao de todas as funcoes estaveis).
 
-Criar tabela `script_templates` e popular com os 3 templates usando Dollar Quoting (`$ts$...$ts$`) para evitar problemas de escape.
+## Plano em 2 Partes
 
-```sql
-CREATE TABLE public.script_templates (
-  id TEXT PRIMARY KEY,
-  content TEXT NOT NULL,
-  version TEXT NOT NULL DEFAULT '7.4.5',
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
+### Parte 1: Fix Imediato - Trocar npm: para esm.sh
 
-ALTER TABLE public.script_templates ENABLE ROW LEVEL SECURITY;
+Apenas 1 linha precisa mudar no `mt-scripts/index.ts`:
 
--- RLS: bloqueia acesso publico (edge functions usam service_role que bypassa RLS)
-CREATE POLICY "service_role_only" ON public.script_templates
-  FOR ALL USING (false);
-
--- INSERT dos 3 templates com Dollar Quoting
-INSERT INTO public.script_templates (id, content, version) VALUES
-('sync', $ts$:log info "NAVSPOT-SYNC v{{VERSION}}"
-:global navspotSyncLock
-... (conteudo identico ao generateSyncSource atual, trocando ${VERSION} por {{VERSION}}, ${syncToken} por {{SYNC_TOKEN}}, ${syncUrl} por {{SYNC_URL}})
-:log info "NAVSPOT-SYNC v{{VERSION}}: OK"$ts$, '7.4.5'),
-
-('guardian', $ts$:log info "NAVSPOT-GUARDIAN v{{VERSION}}"
-... (conteudo identico ao generateGuardianSource, com placeholders)
-$ts$, '7.4.5'),
-
-('installer', $ts$# =========================================
-# NAVSPOT Scripts Installer v{{VERSION}}
-... (conteudo identico ao generateAllScripts, com placeholders)
-$ts$, '7.4.5');
+```text
+ANTES:  import { createClient } from 'npm:@supabase/supabase-js@2'
+DEPOIS: import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 ```
 
-**Placeholders usados nos templates:**
+Depois: delete + redeploy + testar health endpoint.
 
-| Placeholder | Substituido por | Usado em |
-|-------------|----------------|----------|
-| `{{VERSION}}` | `7.4.5` | sync, guardian, installer |
-| `{{SYNC_TOKEN}}` | token do hotspot | sync, guardian, installer |
-| `{{SYNC_URL}}` | URL do mikrotik-sync | sync |
-| `{{RECOVERY_URL}}` | URL do recovery | guardian |
-| `{{API_BASE}}` | URL base das functions | installer |
-| `{{DEPLOYED_AT}}` | timestamp ISO | installer |
-| `{{ROS_VERSION}}` | versao do RouterOS | installer |
-| `{{SYNC_INTERVAL}}` | minutos entre syncs | installer |
-| `{{FETCH_DELAY}}` | delay em ms | installer |
-| `{{WRITE_DELAY}}` | delay em ms | installer |
-| `{{MAX_RETRIES}}` | numero de retries | installer |
+O codigo atual (99 linhas, templates no banco) ja esta correto. So precisa do import certo.
 
-### Passo 2: Reescrever `mt-scripts/index.ts` (~80 linhas)
+### Parte 2 (Opcional): Storage Hibrido
 
-O handler HTTP busca o template do banco e faz `.replace()` dos placeholders:
+Se a Parte 1 funcionar, a arquitetura atual (tabela `script_templates` + edge function leve) ja e suficiente. Porem, se quiser adicionar Storage como camada extra, a abordagem hibrida seria:
 
-```typescript
-import { createClient } from 'npm:@supabase/supabase-js@2'
+**Tabela `script_templates`** (ja existe): metadados + versao + conteudo
+**Storage bucket `script-templates`**: arquivos .rsc como backup/CDN
 
-const VERSION = "7.4.5"
-const DEPLOYED_AT = new Date().toISOString()
-const corsHeaders = { ... }
-const ROS_CONFIGS = { ... }
+```text
+Fluxo normal:
+  MikroTik --> mt-scripts --> DB (script_templates) --> replace --> .rsc
 
-Deno.serve(async (req) => {
-  // CORS, health endpoint (igual ao atual)
-  // Validar token, buscar hotspot (igual ao atual)
-  
-  // Mapear type para template id
-  const templateId = scriptType === 'sync-raw' ? 'sync'
-    : scriptType === 'guardian-raw' ? 'guardian' : 'installer'
-  
-  // Buscar template do banco
-  const { data: tpl, error: tplError } = await supabase
-    .from('script_templates')
-    .select('content')
-    .eq('id', templateId)
-    .single()
-  
-  if (tplError || !tpl) {
-    return new Response('# Error: Template not found', { status: 500 })
-  }
-  
-  // Substituir placeholders (com fallback para "" se undefined)
-  const script = tpl.content
-    .replace(/\{\{VERSION\}\}/g, VERSION)
-    .replace(/\{\{SYNC_TOKEN\}\}/g, syncToken || '')
-    .replace(/\{\{SYNC_URL\}\}/g, syncUrl || '')
-    .replace(/\{\{RECOVERY_URL\}\}/g, recoveryUrl || '')
-    .replace(/\{\{API_BASE\}\}/g, apiBase || '')
-    .replace(/\{\{DEPLOYED_AT\}\}/g, DEPLOYED_AT)
-    .replace(/\{\{ROS_VERSION\}\}/g, effRos || '')
-    .replace(/\{\{SYNC_INTERVAL\}\}/g, String(syncMin))
-    .replace(/\{\{FETCH_DELAY\}\}/g, String(rosConfig.delayAfterFetch))
-    .replace(/\{\{WRITE_DELAY\}\}/g, String(rosConfig.delayAfterFileWrite))
-    .replace(/\{\{MAX_RETRIES\}\}/g, String(rosConfig.contentRetryCount))
-  
-  return new Response(script, {
-    status: 200,
-    headers: {
-      ...corsHeaders,
-      'Content-Type': 'text/plain; charset=utf-8',
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      'Content-Length': String(new TextEncoder().encode(script).length),
-    }
-  })
-})
+Fluxo com storage (futuro/fallback):
+  MikroTik --> mt-scripts --> tenta DB --> se falhar --> fetch do Storage --> replace --> .rsc
 ```
 
-Zero template strings RouterOS no TypeScript. Bundler nao tera problemas.
+Vantagens do hibrido:
+- Storage serve como CDN (cacheable, rapido)
+- Fallback se o banco estiver lento
+- Templates podem ser atualizados via upload de arquivo OU via SQL
 
-### Passo 3: Deploy e teste de bancada
+Desvantagens:
+- Complexidade extra de manter 2 fontes sincronizadas
+- Storage publico expoem os templates (sem dados sensiveis, mas visivel)
 
-1. Deletar edge function `mt-scripts` (limpar estado)
-2. Redeployar `mt-scripts`
-3. Testar com curl:
-   - `GET /mt-scripts?type=health` --> 200 + version 7.4.5
-   - `GET /mt-scripts?type=sync-raw&token=TOKEN_REAL` --> 200 + script com `$un`, `$pw` literais
+**Recomendacao**: Implementar apenas a Parte 1 agora. A abordagem de tabela no banco ja resolve o problema dos templates. O Storage hibrido pode ser adicionado futuramente como otimizacao se houver necessidade de performance.
 
-### Passo 4: Atualizar referencias no frontend e backend
+## Detalhes Tecnicos
 
-**4 locais precisam trocar `mikrotik-scripts` para `mt-scripts`:**
+### Arquivo: `supabase/functions/mt-scripts/index.ts`
 
-1. **`src/components/modals/ScriptModal.tsx`** (linhas 213 e 220):
-   - Trocar `mikrotik-scripts?type=all&token=` por `mt-scripts?type=all&token=`
+Unica mudanca: linha 1, trocar import.
 
-2. **`supabase/functions/mikrotik-script-generator/index.ts`** (linha 281):
-   - Trocar `${supabaseUrl}/functions/v1/mikrotik-scripts` por `${supabaseUrl}/functions/v1/mt-scripts`
+### Deploy
 
-3. **`supabase/functions/mikrotik-recovery-download/index.ts`** (linha 167):
-   - Trocar `${supabaseUrl}/functions/v1/mikrotik-scripts` por `${supabaseUrl}/functions/v1/mt-scripts`
+1. Delete `mt-scripts`
+2. Redeploy `mt-scripts`
+3. Testar: `GET /mt-scripts?type=health`
+4. Se 200: testar `GET /mt-scripts?type=sync-raw&token=TOKEN`
+5. Se ainda 404: tentar nome completamente novo (ex: `navspot-rsc`)
 
-4. Redeployar `mikrotik-script-generator` e `mikrotik-recovery-download` apos as mudancas.
+### Correcao adicional: reverter mikrotik-recovery-download
 
-### Passo 5: Limpeza
-
-- Remover pasta `supabase/functions/mikrotik-scripts/` (se ainda existir)
-- Remover entrada `[functions.mikrotik-scripts]` do config.toml (auto-gerenciado)
-
-## Protecoes contra undefined/null
-
-Cada `.replace()` usa `|| ''` como fallback:
-```typescript
-.replace(/\{\{SYNC_TOKEN\}\}/g, syncToken || '')
-```
-
-Isso garante que nenhum placeholder vire a string `"undefined"` no script final.
-
-## O que NAO muda
-
-- Logica de negocio dos scripts RouterOS (identica)
-- Handlers v7.4.5 (create_user 3 campos, create_profile 3 campos)
-- Variaveis RouterOS ($un, $pw, $pr, $rest) - ficam como texto puro no banco
-- mikrotik-sync, mikrotik-recovery-download (so muda a URL referenciada)
-- mikrotik-script-generator (so muda a URL referenciada)
-- Nenhuma tabela existente, RLS ou frontend afetado (exceto ScriptModal)
-
-## Vantagem futura
-
-Atualizar templates RouterOS passa a ser um simples `UPDATE script_templates SET content = ... WHERE id = 'sync'` -- sem precisar redeployar a edge function.
+Na mensagem anterior, o import de `mikrotik-recovery-download` foi trocado de `esm.sh` para `npm:`. Como funciona com ambos, mas `esm.sh` e o padrao estavel, vale reverter para manter consistencia.
 
