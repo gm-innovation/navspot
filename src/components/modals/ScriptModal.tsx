@@ -210,14 +210,14 @@ export function ScriptModal({
                   Cole no terminal do RouterOS para atualizar apenas os scripts, sem precisar refazer a instalação completa:
                 </p>
                 <code className="block bg-blue-500/20 p-2 rounded text-xs font-mono whitespace-pre-wrap break-all">
-                  {`/tool fetch url="https://focqrhkozhdefohroqyi.supabase.co/functions/v1/mikrotik-scripts?type=all&token=${syncToken}&ros_version=7" dst-path=navspot-scripts.rsc\n/import navspot-scripts.rsc`}
+                  {`/tool fetch url="https://focqrhkozhdefohroqyi.supabase.co/functions/v1/mt-scripts?type=all&token=${syncToken}&ros_version=7" dst-path=navspot-scripts.rsc\n/import navspot-scripts.rsc`}
                 </code>
                 <Button
                   variant="outline"
                   size="sm"
                   className="mt-2"
                   onClick={async () => {
-                    const cmd = `/tool fetch url="https://focqrhkozhdefohroqyi.supabase.co/functions/v1/mikrotik-scripts?type=all&token=${syncToken}&ros_version=7" dst-path=navspot-scripts.rsc\n/import navspot-scripts.rsc`;
+                    const cmd = `/tool fetch url="https://focqrhkozhdefohroqyi.supabase.co/functions/v1/mt-scripts?type=all&token=${syncToken}&ros_version=7" dst-path=navspot-scripts.rsc\n/import navspot-scripts.rsc`;
                     await navigator.clipboard.writeText(cmd);
                     setCopiedUpdate(true);
                     toast({ title: "Comando copiado!", description: "Cole no terminal do MikroTik." });

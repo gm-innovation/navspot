@@ -278,7 +278,7 @@ function generateBootstrapScript(
   embarcacao: Embarcacao,
   supabaseUrl: string
 ): string {
-  const scriptsUrl = `${supabaseUrl}/functions/v1/mikrotik-scripts`
+  const scriptsUrl = `${supabaseUrl}/functions/v1/mt-scripts`
   const networkParts = hotspot.rede.split('/')
   const networkBase = networkParts[0].replace(/\.\d+$/, '')
   const gateway = `${networkBase}.1`
