@@ -1,4 +1,4 @@
-import { createClient } from 'npm:@supabase/supabase-js@2'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const VERSION = "7.4.5"
 const DEPLOYED_AT = new Date().toISOString()
