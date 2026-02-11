@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.2.5"
+const VERSION = "7.3.0"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -330,7 +330,7 @@ function generateBootstrapScript(
 :global navspotSyncLock; :set navspotSyncLock "0"
 :global navspotSyncLockTime; :set navspotSyncLockTime 0
 :do { /system script remove [find where name=navspot-sync] } on-error={}
-:do { /system script remove [find where name=navspot-action-processor] } on-error={}
+# v7.3.0: action-processor removido (tudo inline no sync)
 :do { /system script remove [find where name=navspot-guardian] } on-error={}
 :do { /system scheduler remove [find where name=navspot-sync-scheduler] } on-error={}
 :do { /system scheduler remove [find where name=navspot-guardian-scheduler] } on-error={}
