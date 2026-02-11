@@ -312,7 +312,6 @@ function generateAllScripts(
 :local cfgHp ""
 :local cfgLu ""
 :local cfgDn ""
-:do {
 :while ([:find $raw ";" $pos] >= 0) do={
 :local ep [:find $raw ";" $pos]
 :local ln [:pick $raw $pos $ep]
@@ -354,7 +353,6 @@ function generateAllScripts(
 :set cnt ($cnt + 1)
 }}
 }}}
-} on-error={:log error "NS-AP: action processing error"}
 :if ([:len $cfgHp] > 0) do={
 /ip hotspot profile set $cfgHp login-url=$cfgLu
 /ip hotspot profile set $cfgHp dns-name=$cfgDn
@@ -906,31 +904,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }
 }
 :if (($apRan = false) || ($afterSize > 0)) do={
-:local full $fbActions
-:local marker "configure_hotspot_profile|"
-:local pos [:find $full $marker]
-:if ($pos >= 0) do={
-:local sem [:find $full ";" $pos]
-:local seg ""
-:if ([:typeof $sem] = "nil") do={ :set seg [:pick $full $pos [:len $full]] } else={ :set seg [:pick $full $pos $sem] }
-:local pl [:len $marker]
-:local payload [:pick $seg $pl [:len $seg]]
-:local psep [:find $payload "|"]
-:local lu ""
-:local dn ""
-:if ($psep >= 0) do={ :set lu [:pick $payload 0 $psep]; :set dn [:pick $payload ($psep + 1) [:len $payload]] }
-:local hp [/ip hotspot profile find name="hsprof-navspot"]
-:if ([:len $hp] > 0) do={
-:set fbLu $lu
-:set fbDn $dn
-:set fbHp $hp
 :do {/file remove "navspot-actions.txt"} on-error={}
-} else={
-:log error "NAVSPOT-SYNC: fallback - hotspot profile not found"
-}
-} else={
-:log info "NAVSPOT-SYNC: no configure_hotspot_profile in actions"
-}
 }
 }
 } else={
@@ -945,6 +919,27 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }}
 }
 } on-error={:log error "NAVSPOT-SYNC: CRASH in main block";:set navspotSyncLock "0"}
+:if (([:len $fbHp] = 0) && ([:len $fbActions] > 0)) do={
+:local marker "configure_hotspot_profile|"
+:local mpos [:find $fbActions $marker]
+:if ($mpos >= 0) do={
+:local sem [:find $fbActions ";" $mpos]
+:local seg ""
+:if ([:typeof $sem] = "nil") do={ :set seg [:pick $fbActions $mpos [:len $fbActions]] } else={ :set seg [:pick $fbActions $mpos $sem] }
+:local pl [:len $marker]
+:local payload [:pick $seg $pl [:len $seg]]
+:local psep [:find $payload "|"]
+:local lu ""
+:local dn ""
+:if ($psep >= 0) do={ :set lu [:pick $payload 0 $psep]; :set dn [:pick $payload ($psep + 1) [:len $payload]] }
+:local hp [/ip hotspot profile find name="hsprof-navspot"]
+:if ([:len $hp] > 0) do={
+:set fbLu $lu
+:set fbDn $dn
+:set fbHp $hp
+}
+}
+}
 :if ([:len $fbHp] > 0) do={
 :if ([:len $fbLu] > 10) do={ /ip hotspot profile set $fbHp login-url=$fbLu }
 :if ([:len $fbDn] > 0) do={ /ip hotspot profile set $fbHp dns-name=$fbDn }
@@ -1134,7 +1129,6 @@ function generateActionProcessorFullSource(): string {
 :local cfgHp ""
 :local cfgLu ""
 :local cfgDn ""
-:do {
 :while ([:find $d ";" $pos]>=0) do={
 :local ep [:find $d ";" $pos]
 :local ln [:pick $d $pos $ep]
@@ -1168,7 +1162,7 @@ function generateActionProcessorFullSource(): string {
 :local p3 [:find $sub "|"]
 :local rt ""
 :local sh "1"
-:if ($p3>=0) do={:set rt [:pick $sub 0 $p3];:local sub2 [:pick $sub ($p3+1) [:len $sub]];:local p4 [:find $sub2 "|"];:if ($p4>=0) do={:set sh [:pick $sub2 0 $p4]} else={:set sh $sub2}} else={:set rt $sub}
+:if ($p3>=0) do={:set rt [:pick $sub 0 $p3];:set sh [:pick $sub ($p3+1) [:len $sub]]} else={:set rt $sub}
 :local ex [/ip hotspot user profile find name=$n]
 :if ([:len $ex]>0) do={
 :if ([:len $rt]>0) do={/ip hotspot user profile set $ex rate-limit=$rt}
@@ -1251,7 +1245,6 @@ function generateActionProcessorFullSource(): string {
 :if ([:len $mac]>0) do={/ip hotspot active remove [find mac-address=$mac];:set cnt ($cnt+1)}
 }} on-error={}}
 }}}
-} on-error={:log error "NS-AP: action processing error"}
 :if ([:len $cfgHp]>0) do={
 /ip hotspot profile set $cfgHp login-url=$cfgLu
 /ip hotspot profile set $cfgHp dns-name=$cfgDn
