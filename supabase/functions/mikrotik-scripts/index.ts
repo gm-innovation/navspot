@@ -369,6 +369,7 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local us 0
 :do {:set us [/system resource get uptime-as-secs]} on-error={:set us 0}
 :local lby "cookie,http-pap,http-chap"
+:local a ""
 :do {
 :if ($navspotSyncLock="1") do={
 :local shouldSkip true
@@ -389,11 +390,11 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local r ""
 :local p ""
 :local q "\\22"
-:do {:foreach a in=[/ip hotspot active find] do={
-:local au [/ip hotspot active get $a user]
-:local am [/ip hotspot active get $a mac-address]
-:local abi [/ip hotspot active get $a bytes-in]
-:local abo [/ip hotspot active get $a bytes-out]
+:do {:foreach ai in=[/ip hotspot active find] do={
+:local au [/ip hotspot active get $ai user]
+:local am [/ip hotspot active get $ai mac-address]
+:local abi [/ip hotspot active get $ai bytes-in]
+:local abo [/ip hotspot active get $ai bytes-out]
 :set u ($u.$au.",".$am.",".$abi.",".$abo.";")
 }} on-error={}
 :do {:foreach i in=[/ip hotspot user find where dynamic=no] do={:set r ($r.[/ip hotspot user get $i name].",")
@@ -443,11 +444,18 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :local j ([:len $raw]-1)
 :while (($i<=$j)&&([:pick $raw $i ($i+1)]=" ")) do={:set i ($i+1)}
 :while (($j>=$i)&&([:pick $raw $j ($j+1)]=" ")) do={:set j ($j-1)}
-:local a ""
 :if ($j>=$i) do={:set a [:pick $raw $i ($j+1)]}
+:if ([:len $a]>0) do={:log info ("NAVSPOT-SYNC: actions len=" . [:len $a])}
+} else={
+:if ($rl>0) do={
+:local rHead $resp
+:if ($rl>120) do={:set rHead [:pick $resp 0 120]}
+:log warning ("NAVSPOT-SYNC: no actions, head=" . $rHead)
+}}
+}
+} on-error={:log error "NAVSPOT-SYNC: CRASH in main block";:set navspotSyncLock "0"}
+# === v7.3.0: PROCESS ACTIONS AT LEVEL 0 (hoisted) ===
 :if ([:len $a]>0) do={
-:log info ("NAVSPOT-SYNC: actions len=" . [:len $a])
-# === v7.3.0: INLINE ACTION PROCESSING (no separate script) ===
 :local pos 0
 :local cnt 0
 :while ([:find $a ";" $pos] >= 0) do={
@@ -550,18 +558,9 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 }}}
 :log info ("NAVSPOT-SYNC: processed " . $cnt . " actions")
 :set a ""
-:set raw ""
 } else={
-:log info "NAVSPOT-SYNC: no actions in response"
+:log info "NAVSPOT-SYNC: no actions to process"
 }
-} else={
-:if ($rl>0) do={
-:local rHead $resp
-:if ($rl>120) do={:set rHead [:pick $resp 0 120]}
-:log warning ("NAVSPOT-SYNC: no actions, head=" . $rHead)
-}}
-}
-} on-error={:log error "NAVSPOT-SYNC: CRASH in main block";:set navspotSyncLock "0"}
 :set navspotSyncLock "0"
 :log info "NAVSPOT-SYNC v${VERSION}: OK"`
 }
