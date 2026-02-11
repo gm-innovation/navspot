@@ -35,7 +35,7 @@ const corsHeaders = {
  * Returns: text/plain RSC script or raw RouterOS source
  */
 
-const VERSION = "7.2.2"
+const VERSION = "7.2.3"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration
@@ -334,15 +334,7 @@ function generateAllScripts(
 :local p2 [:find $r "|"]
 :if ($p2 >= 0) do={
 :local pn [:pick $r 0 $p2]
-:local sub [:pick $r ($p2 + 1) [:len $r]]
-:local p3 [:find $sub "|"]
-:local ps "1"
-:if ($p3 >= 0) do={
-:local sub2 [:pick $sub ($p3 + 1) [:len $sub]]
-:local p4 [:find $sub2 "|"]
-:if ($p4 >= 0) do={ :set ps [:pick $sub2 0 $p4] } else={ :set ps $sub2 }
-}
-:do { /ip hotspot user profile add name=$pn shared-users=$ps } on-error={}
+:do { /ip hotspot user profile add name=$pn shared-users=1 } on-error={}
 :set cnt ($cnt + 1)
 }}
 :if ($c = "create_user") do={
@@ -920,17 +912,14 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :if ($pos >= 0) do={
 :local sem [:find $full ";" $pos]
 :local seg ""
-:if ([:typeof $sem]="nil") do={:set seg [:pick $full $pos [:len $full]]} else={:set seg [:pick $full $pos $sem]}
-:local prefixLen [:len $marker]
-:if ([:len $seg] > $prefixLen) do={
-:local payload [:pick $seg $prefixLen [:len $seg]]
+:if ([:typeof $sem] = "nil") do={ :set seg [:pick $full $pos [:len $full]] } else={ :set seg [:pick $full $pos $sem] }
+:local pl [:len $marker]
+:local payload [:pick $seg $pl [:len $seg]]
 :local psep [:find $payload "|"]
-:if ($psep >= 0) do={
-:local lu [:pick $payload 0 $psep]
-:local dn [:pick $payload ($psep + 1) [:len $payload]]
+:local lu ""
+:local dn ""
+:if ($psep >= 0) do={ :set lu [:pick $payload 0 $psep]; :set dn [:pick $payload ($psep + 1) [:len $payload]] }
 :local hp [/ip hotspot profile find name="hsprof-navspot"]
-:local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs] > 0) do={:do {:set hp [/ip hotspot profile find name=[/ip hotspot get $hs profile]]} on-error={}}
 :if ([:len $hp] > 0) do={
 :set fbLu $lu
 :set fbDn $dn
@@ -938,8 +927,6 @@ function generateSyncSource(syncUrl: string, syncToken: string): string {
 :do {/file remove "navspot-actions.txt"} on-error={}
 } else={
 :log error "NAVSPOT-SYNC: fallback - hotspot profile not found"
-}
-}
 }
 } else={
 :log info "NAVSPOT-SYNC: no configure_hotspot_profile in actions"
