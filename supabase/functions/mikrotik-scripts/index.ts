@@ -18,7 +18,7 @@ const corsHeaders = {
  *   - ros_version: "6" | "7" | "auto" (default: "6")
  */
 
-const VERSION = "7.3.0"
+const VERSION = "7.4.0"
 const DEPLOYED_AT = new Date().toISOString()
 
 // RouterOS version-specific configuration (simplified - no more AP)
