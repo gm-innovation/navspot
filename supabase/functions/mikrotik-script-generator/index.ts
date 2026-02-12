@@ -147,8 +147,21 @@ Deno.serve(async (req) => {
       const recoveryUrl = `${sUrl}/functions/v1/mikrotik-recovery-download`
       const apiBase = `${sUrl}/functions/v1`
       const syncMin = hotspot.sync_interval_minutes || 5
-      // Bootstrap/infra type
-      if (scriptType === 'bootstrap' || scriptType === 'infra') {
+      // Infra type (standalone infrastructure script)
+      if (scriptType === 'infra') {
+        const embarcacao = (hotspot as any).embarcacoes as Embarcacao
+        const vars = deriveBootstrapVars(hotspot as unknown as Hotspot, embarcacao, sUrl)
+        const { data: tpl, error: tplError } = await supabaseServe.from('script_templates').select('content').eq('id', 'infra').single()
+        if (tplError || !tpl) {
+          return new Response('# Error: Infra template not found', { status: 500, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8', 'X-Navspot-Version': VERSION } })
+        }
+        let script = applyPlaceholders(tpl.content, vars)
+        script = normalizeNewlines(script)
+        console.log(`[serve ${VERSION}] type=infra tpl=infra (${script.length}b)`)
+        return new Response(script, { status: 200, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': String(new TextEncoder().encode(script).length), 'Cache-Control': 'no-store, max-age=0', 'X-Navspot-Version': VERSION } })
+      }
+      // Bootstrap type (ultra-thin fetch+import)
+      if (scriptType === 'bootstrap') {
         const embarcacao = (hotspot as any).embarcacoes as Embarcacao
         const vars = deriveBootstrapVars(hotspot as unknown as Hotspot, embarcacao, sUrl)
         const { data: tpl, error: tplError } = await supabaseServe.from('script_templates').select('content').eq('id', 'bootstrap').single()
@@ -157,7 +170,7 @@ Deno.serve(async (req) => {
         }
         let script = applyPlaceholders(tpl.content, vars)
         script = normalizeNewlines(script)
-        console.log(`[serve ${VERSION}] type=${scriptType} tpl=bootstrap (${script.length}b)`)
+        console.log(`[serve ${VERSION}] type=bootstrap tpl=bootstrap (${script.length}b)`)
         return new Response(script, { status: 200, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': String(new TextEncoder().encode(script).length), 'Cache-Control': 'no-store, max-age=0', 'X-Navspot-Version': VERSION } })
       }
       // Other template types
