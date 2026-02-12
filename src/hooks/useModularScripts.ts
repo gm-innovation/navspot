@@ -35,12 +35,20 @@ export function useDownloadModularScript() {
 /**
  * Download a script from a signed URL (v7.8.0+)
  */
-export function downloadFromSignedUrl(url: string, filename: string) {
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.target = '_blank';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+export async function downloadFromSignedUrl(url: string, filename: string) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+  } catch (error) {
+    window.open(url, '_blank');
+  }
 }
