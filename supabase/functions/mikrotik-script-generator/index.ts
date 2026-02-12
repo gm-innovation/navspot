@@ -1,11 +1,11 @@
-import { createClient } from 'npm:@supabase/supabase-js@2'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.6.3"
+const VERSION = "7.7.0"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -129,11 +129,11 @@ Deno.serve(async (req) => {
     const url = new URL(req.url)
     const mode = url.searchParams.get('mode')
 
-    // Health check
+    // Health check (v7.7.0)
     if (req.method === 'GET' && mode === 'health') {
       return new Response(
         JSON.stringify({ version: VERSION, status: 'ok', deployed_at: DEPLOYED_AT }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Navspot-Version': VERSION } }
       )
     }
 
@@ -182,8 +182,45 @@ Deno.serve(async (req) => {
       const apiBase = `${sUrl}/functions/v1`
       const syncMin = hotspot.sync_interval_minutes || 5
 
-      const templateId = scriptType === 'sync-raw' ? 'sync'
-        : scriptType === 'guardian-raw' ? 'guardian' : 'installer'
+      // v7.7.0: Map type to template ID (including standalone types)
+      let templateId: string
+      let isStandalone = false
+      switch (scriptType) {
+        case 'sync-raw': templateId = 'sync'; break
+        case 'guardian-raw': templateId = 'guardian'; break
+        case 'infra': templateId = 'installer'; break // reuse installer as infra for now
+        case 'sync-standalone': templateId = 'sync-standalone'; isStandalone = true; break
+        case 'guardian-standalone': templateId = 'guardian-standalone'; isStandalone = true; break
+        default: templateId = 'installer'; break
+      }
+
+      // For standalone types, also fetch the inner script template
+      let innerContent = ''
+      if (isStandalone) {
+        const innerTemplateId = scriptType === 'sync-standalone' ? 'sync' : 'guardian'
+        const { data: innerTpl } = await supabaseServe
+          .from('script_templates')
+          .select('content')
+          .eq('id', innerTemplateId)
+          .single()
+        if (innerTpl) {
+          // Apply placeholder replacements to inner content, then escape for RouterOS source="..."
+          innerContent = innerTpl.content
+            .replace(/\{\{VERSION\}\}/g, VERSION)
+            .replace(/\{\{SYNC_TOKEN\}\}/g, syncToken || '')
+            .replace(/\{\{SYNC_URL\}\}/g, syncUrl || '')
+            .replace(/\{\{RECOVERY_URL\}\}/g, recoveryUrl || '')
+            .replace(/\{\{API_BASE\}\}/g, apiBase || '')
+            .replace(/\{\{DEPLOYED_AT\}\}/g, DEPLOYED_AT)
+            .replace(/\{\{ROS_VERSION\}\}/g, effRos || '')
+            .replace(/\{\{SYNC_INTERVAL\}\}/g, String(syncMin))
+          // Escape for RouterOS source="..." (quotes and newlines)
+          innerContent = innerContent
+            .replace(/\\/g, '\\\\')
+            .replace(/"/g, '\\"')
+            .replace(/\n/g, '\\r\\n')
+        }
+      }
 
       const { data: tpl, error: tplError } = await supabaseServe
         .from('script_templates')
@@ -195,11 +232,11 @@ Deno.serve(async (req) => {
         console.error(`[serve ${VERSION}] Template not found: ${templateId}`, tplError)
         return new Response('# Error: Template not found', {
           status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8' }
+          headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8', 'X-Navspot-Version': VERSION }
         })
       }
 
-      const script = tpl.content
+      let script = tpl.content
         .replace(/\{\{VERSION\}\}/g, VERSION)
         .replace(/\{\{SYNC_TOKEN\}\}/g, syncToken || '')
         .replace(/\{\{SYNC_URL\}\}/g, syncUrl || '')
@@ -212,7 +249,14 @@ Deno.serve(async (req) => {
         .replace(/\{\{WRITE_DELAY\}\}/g, String(rosConfig.delayAfterFileWrite))
         .replace(/\{\{MAX_RETRIES\}\}/g, String(rosConfig.contentRetryCount))
 
-      console.log(`[serve ${VERSION}] ${scriptType} (${script.length}b)`)
+      // v7.7.0: Replace inner source placeholders for standalone wrappers
+      if (isStandalone && innerContent) {
+        script = script
+          .replace(/\{\{SYNC_SOURCE\}\}/g, innerContent)
+          .replace(/\{\{GUARDIAN_SOURCE\}\}/g, innerContent)
+      }
+
+      console.log(`[serve ${VERSION}] type=${scriptType} tpl=${templateId} (${script.length}b)`)
 
       return new Response(script, {
         status: 200,
@@ -220,7 +264,8 @@ Deno.serve(async (req) => {
           ...corsHeaders,
           'Content-Type': 'text/plain; charset=utf-8',
           'Content-Length': String(new TextEncoder().encode(script).length),
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Cache-Control': 'no-store, max-age=0',
+          'X-Navspot-Version': VERSION,
         },
       })
     }
@@ -242,11 +287,10 @@ Deno.serve(async (req) => {
     )
 
     // Validate JWT
-    const token = authHeader.replace('Bearer ', '')
-    const { data: claims, error: claimsError } = await supabase.auth.getClaims(token)
+    const { data: { user }, error: userError } = await supabase.auth.getUser()
     
-    if (claimsError || !claims?.claims) {
-      console.error(`[script-generator ${VERSION}] Invalid JWT:`, claimsError)
+    if (userError || !user) {
+      console.error(`[script-generator ${VERSION}] Invalid JWT:`, userError)
       return new Response(
         JSON.stringify({ success: false, error: 'Invalid token' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
