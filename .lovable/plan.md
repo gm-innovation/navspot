@@ -1,117 +1,107 @@
 
 
-# Fix: Reduzir Nesting dos Handlers no Sync Template (v7.5.1)
+# Fix v7.5.2: Hoist [find] para Eliminar Subexpressao em L5
 
-## Problema Real
+## Causa Raiz Definitiva
 
-O parse error NAO era apenas por multiplas propriedades no mesmo comando. O problema fundamental e o **nivel de aninhamento (nesting) L6**, que excede o limite do hAP ax2 (maximo L5).
+O erro "expected end of command (line 43 column 59)" aponta para `login-url=` na linha:
 
-Todos os handlers que usam `:if ($p2>=0) do={...}` como bloco multi-linha criam um nivel extra de nesting, empurrando os comandos executaveis para L6.
-
-Handlers afetados:
-- `configure_hotspot_profile` (L6 - causa o crash na linha 41)
-- `create_user` (L6 - tambem vai crashar)
-- `create_profile` (L6 - tambem vai crashar)
-
-Handlers nao afetados (ficam em L5):
-- `remove_user`, `disable_user`, `enable_user` - nao tem o `:if ($p2>=0) do={}` extra
-
-## Solucao: Inline Guard Pattern
-
-Converter os blocos `:if ($p2>=0) do={...multi-linha...}` em guards inline de uma unica linha, seguidos de comandos flat. Isso elimina 1 nivel de nesting.
-
-### Antes (L6 - CRASH):
 ```text
-:if ($c="configure_hotspot_profile") do={       L4
-:local p2 [:find $r "|"]
-:if ($p2>=0) do={                               L5
-:local lu [:pick $r 0 $p2]
-:do {/ip hotspot profile set ... login-url=$lu} on-error={}   L6 CRASH
-}}
+:do {/ip hotspot profile set [find name="hsprof-navspot"] login-url=$lu} on-error={}
+                                                          ^-- col 59
 ```
 
-### Depois (L5 - OK):
+O parser do ROS 7 no hAP ax2 interpreta `[find name="hsprof-navspot"]` como o argumento completo de `set`. Quando encontra `login-url=$lu` logo depois, nao sabe o que fazer e rejeita com "expected end of command".
+
+Isso acontece porque `[find ...]` e uma **subexpressao** que, dentro de `:do {} on-error={}` em L5, esgota a capacidade de parsing do hardware. O problema NAO e o nivel de nesting em si, mas a combinacao de `:do {}` + `[find ...]` + propriedade no mesmo comando.
+
+## Solucao: Hoist [find] para Variavel
+
+Mover a chamada `[find]` para uma variavel local no nivel L4 (fora do `:do {}`). Isso elimina a subexpressao de dentro do bloco protegido.
+
+### Antes (CRASH - subexpressao [find] dentro de :do {} em L5):
 ```text
-:if ($c="configure_hotspot_profile") do={       L4
-:local p2 [:find $r "|"]
-:local lu ""
-:local dn ""
-:if ($p2>=0) do={:set lu [:pick $r 0 $p2];:set dn [:pick $r ($p2+1) [:len $r]]}   L5 inline (apenas :set)
-:do {/ip hotspot profile set [find name="hsprof-navspot"] login-url=$lu} on-error={}   L5
-:do {/ip hotspot profile set [find name="hsprof-navspot"] dns-name=$dn} on-error={}    L5
-:do {/ip hotspot profile set [find name="hsprof-navspot"] login-by=$lby} on-error={}   L5
-:set cnt ($cnt+1)
-}
+:do {/ip hotspot profile set [find name="hsprof-navspot"] login-url=$lu} on-error={}
 ```
 
-A mesma tecnica sera aplicada aos handlers `create_user` e `create_profile`.
+### Depois (OK - [find] hoisted para L4, :do {} usa variavel simples):
+```text
+:local hp [/ip hotspot profile find name="hsprof-navspot"]
+:do {/ip hotspot profile set $hp login-url=$lu} on-error={}
+```
+
+## Handlers Afetados
+
+3 handlers usam `set [find ...] propriedade=valor` dentro de `:do {} on-error={}`:
+
+1. **configure_hotspot_profile** - `set [find name="hsprof-navspot"]` com 3 propriedades
+2. **disable_user** - `set [find name=$r] disabled=yes`
+3. **enable_user** - `set [find name=$r] disabled=no`
+
+Handlers NAO afetados (usam `[find]` sem propriedade depois, ou usam `add`):
+- `remove_user` - `remove [find name=$r]` (sem propriedade, OK)
+- `create_user` - `remove [find name=$un]` (sem propriedade) + `add` (sem [find])
+- `create_profile` - `remove [find name=$n]` (sem propriedade) + `add` (sem [find])
 
 ## Alteracoes
 
-### 1. Bump de versao para 7.5.1
+### 1. Bump de versao para 7.5.2
 
 Arquivos:
-- `supabase/functions/mt-scripts/index.ts`: VERSION "7.5.0" -> "7.5.1"
-- `supabase/functions/mikrotik-script-generator/index.ts`: VERSION "7.5.0" -> "7.5.1"
+- `supabase/functions/mt-scripts/index.ts`: VERSION "7.5.1" -> "7.5.2"
+- `supabase/functions/mikrotik-script-generator/index.ts`: VERSION "7.5.1" -> "7.5.2"
 
 ### 2. SQL Migration - Atualizar template sync
 
-Atualizar a tabela `script_templates` com o template corrigido, aplicando o Inline Guard Pattern nos 3 handlers afetados:
+Apenas os 3 handlers afetados serao alterados:
 
-**configure_hotspot_profile:**
+**configure_hotspot_profile (hoisted):**
 ```text
 :if ($c="configure_hotspot_profile") do={
 :local p2 [:find $r "|"]
 :local lu ""
 :local dn ""
 :if ($p2>=0) do={:set lu [:pick $r 0 $p2];:set dn [:pick $r ($p2+1) [:len $r]]}
-:do {/ip hotspot profile set [find name="hsprof-navspot"] login-url=$lu} on-error={}
-:do {/ip hotspot profile set [find name="hsprof-navspot"] dns-name=$dn} on-error={}
-:do {/ip hotspot profile set [find name="hsprof-navspot"] login-by=$lby} on-error={}
+:local hp [/ip hotspot profile find name="hsprof-navspot"]
+:do {/ip hotspot profile set $hp login-url=$lu} on-error={}
+:do {/ip hotspot profile set $hp dns-name=$dn} on-error={}
+:do {/ip hotspot profile set $hp login-by=$lby} on-error={}
 :set cnt ($cnt+1)
 }
 ```
 
-**create_user:**
+**disable_user (hoisted):**
 ```text
-:if ($c="create_user") do={
-:local p2 [:find $r "|"]
-:local un $r
-:local pw ""
-:local pr "default"
-:if ($p2>=0) do={:set un [:pick $r 0 $p2];:set pw [:pick $r ($p2+1) [:len $r]];:local p3 [:find $pw "|"];:if ($p3>=0) do={:set pr [:pick $pw ($p3+1) [:len $pw]];:set pw [:pick $pw 0 $p3]}}
-:do {/ip hotspot user remove [find name=$un]} on-error={}
-:do {/ip hotspot user add name=$un password=$pw profile=$pr comment="navspot"} on-error={}
+:if ($c="disable_user") do={
+:local hu [/ip hotspot user find name=$r]
+:do {/ip hotspot user set $hu disabled=yes} on-error={}
 :set cnt ($cnt+1)
 }
 ```
 
-**create_profile:**
+**enable_user (hoisted):**
 ```text
-:if ($c="create_profile") do={
-:local p2 [:find $r "|"]
-:local n $r
-:local rt ""
-:local su "1"
-:if ($p2>=0) do={:set n [:pick $r 0 $p2];:set rt [:pick $r ($p2+1) [:len $r]];:local p3 [:find $rt "|"];:if ($p3>=0) do={:set su [:pick $rt ($p3+1) [:len $rt]];:set rt [:pick $rt 0 $p3]}}
-:do {/ip hotspot user profile remove [find name=$n]} on-error={}
-:do {/ip hotspot user profile add name=$n rate-limit=$rt shared-users=$su} on-error={}
+:if ($c="enable_user") do={
+:local hu [/ip hotspot user find name=$r]
+:do {/ip hotspot user set $hu disabled=no} on-error={}
 :set cnt ($cnt+1)
 }
 ```
+
+Os demais handlers (create_user, create_profile, remove_user) permanecem inalterados pois nao combinam `[find]` + propriedade dentro de `:do {}`.
 
 ### 3. Deploy e teste
 
-1. Atualizar VERSION nos 2 edge functions
-2. Executar SQL migration
+1. Atualizar VERSION nos 2 edge functions para "7.5.2"
+2. Executar SQL migration para atualizar template sync
 3. Deploy mt-scripts e mikrotik-script-generator
-4. No MikroTik: `/system script run navspot-guardian` para forcar re-download v7.5.1
-5. Verificar: `/system script run navspot-sync` — deve executar sem parse error
+4. No MikroTik: `/system script run navspot-guardian` para forcar re-download
+5. Verificar: `/system script run navspot-sync` -- o parse error da linha 43 nao deve mais ocorrer
 
 ## Detalhes Tecnicos
 
-- A tecnica "Inline Guard" mantem a logica de validacao ($p2>=0) mas como statement de uma unica linha, sem abrir um bloco multi-linha
-- Os comandos `:set` dentro do guard inline nao tem sub-expressoes complexas como `[find]`, entao sao seguros mesmo em L5
-- Os comandos executaveis (`/ip hotspot profile set`, `/ip hotspot user add`) ficam em L5, dentro do limite do hAP ax2
-- Dollar quoting ($ts$...$ts$) sera usado na migration SQL
+- A tecnica "Hoist [find]" extrai a subexpressao `[find]` para uma variavel local (`$hp`, `$hu`) no nivel L4
+- Dentro do `:do {} on-error={}` em L5, o comando `/set $hp propriedade=valor` usa apenas variaveis simples, sem subexpressoes
+- Isso respeita o limite de complexidade do parser do hAP ax2 que nao suporta subexpressoes + propriedades no mesmo comando dentro de blocos `:do {}` profundos
+- Cirurgicamente, apenas os 3 handlers afetados serao modificados, conforme a politica de modificacao minima
 
