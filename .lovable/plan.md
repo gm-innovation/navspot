@@ -1,182 +1,150 @@
 
-# Quota Enforcement no MikroTik (v7.8.4)
 
-## Problema Atual
+# Garantir que Regras do Perfil Funcionem no Sync (v7.8.4)
 
-Quando a quota atinge 100%, o backend apenas envia `kick_session` (remove a sessao ativa). O usuario reconecta imediatamente e continua navegando, pois nao existe bloqueio persistente no roteador.
+## Diagnostico
 
-## Solucao
+Apos analise completa do codigo, identifiquei o estado atual e as lacunas:
 
-Criar dois novos handlers no protocolo de sync: `block_quota` (bloqueio triplo) e `unblock_quota` (desbloqueio). O backend injeta essas acoes automaticamente quando a quota excede e quando o ciclo reseta.
+### O que ja funciona
+- **Handlers `block_quota` e `unblock_quota`**: ja estao nos templates `sync` e `sync-standalone` (v7.8.3)
+- **Handler `create_user` com upsert**: ja usa `set` com fallback para `add` (nao destroi contadores)
+- **Regras de acesso** (`regras_acesso` + `listas_acesso`): o backend ja consulta e injeta acoes de firewall
+- **Hash de firewall**: previne reenvio desnecessario de regras
 
-## Fluxo
+### O que esta FALTANDO
 
+1. **Handlers ausentes nos templates**: `update_user`, `update_password` e `kick_session` sao gerados pelo backend no pipe, mas os templates nao os processam — o roteador ignora essas acoes silenciosamente.
+
+2. **Bloqueio de categorias nao e por perfil**: As regras de firewall sao aplicadas GLOBALMENTE no roteador (todos os usuarios recebem os mesmos bloqueios). Nao existe separacao por perfil MikroTik. Para que "Bloquear Redes Sociais" funcione apenas para um perfil especifico, precisamos de uma estrategia diferente.
+
+3. **`update_user_profile` envia `create_user|user||profile`**: O backend mapeia mudanca de perfil como `create_user` com senha vazia, o que e funcional mas confuso — o handler de `create_user` ja faz upsert.
+
+## Plano de Acao
+
+### Parte 1: Adicionar handlers ausentes nos templates (sync e sync-standalone)
+
+Adicionar 3 handlers no processador de acoes:
+
+**Handler `update_user`** (formato: `update_user|USER|PASSWORD|PROFILE`):
 ```text
-Quota >= 100%
-  Backend detecta no sync
-    -> Injeta acao "block_quota" com MAC
-      -> MikroTik executa:
-         1. /ip hotspot ip-binding add (bloqueia re-login)
-         2. /ip hotspot active remove (corta sessao)
-         3. /ip firewall filter add (corta trafego imediato)
-
-Quota resetada (ciclo ou admin aumentou)
-  Backend detecta no resetExpiredQuotas
-    -> Injeta acao "unblock_quota" com MAC
-      -> MikroTik executa:
-         1. /ip hotspot ip-binding remove (permite re-login)
-         2. /ip firewall filter remove (libera trafego)
-```
-
-## Alteracoes
-
-### 1. mikrotik-sync/index.ts — Backend (4 mudancas)
-
-**a) Trocar `kick_session` por `block_quota` na deteccao de quota (linhas ~941-947)**
-
-Atualmente quando quota >= 100%, o codigo adiciona o MAC a `blockedDevices` que gera um `kick_session`. Mudar para injetar diretamente uma acao `block_quota` com o MAC do usuario:
-
-```text
-// ANTES (linha 941-947):
-if (shouldKickForQuota) {
-  blockedDevices.push({ mac: activeUser.mac, reason: 'Quota de dados excedida' })
-}
-
-// DEPOIS:
-if (shouldKickForQuota) {
-  formattedActions.push({
-    id: 'auto-block-quota-' + activeUser.mac.replace(/:/g, ''),
-    type: 'block_quota',
-    payload: { mac: activeUser.mac, user: activeUser.user }
-  })
-}
-```
-
-Nota: `formattedActions` nao esta disponivel nesse escopo. Sera necessario acumular as acoes de quota em um array local (`quotaBlockActions`) e injeta-las depois, junto com as demais acoes (na secao de montagem, apos linha ~1033).
-
-**b) Retornar tripulantes desbloqueados em `resetExpiredQuotas` (linhas ~229-289)**
-
-Atualmente a funcao retorna apenas `resetCount`. Alterar para retornar tambem os IDs dos tripulantes que foram reativados (status mudou de 'bloqueado' para 'ativo'):
-
-```text
-// Retornar: { resetCount, unblockedTripulanteIds: string[] }
-```
-
-**c) Injetar `unblock_quota` para tripulantes reativados (apos linha ~629)**
-
-Apos chamar `resetExpiredQuotas`, buscar os MACs dos dispositivos dos tripulantes desbloqueados e injetar acoes `unblock_quota`:
-
-```text
-if (unblockedIds.length > 0) {
-  // Buscar MACs dos dispositivos dos tripulantes desbloqueados
-  const { data: devices } = await supabase
-    .from('dispositivos_registrados')
-    .select('mac_address')
-    .in('tripulante_id', unblockedIds)
-  
-  for (const d of devices || []) {
-    earlyActions.push({
-      id: 'auto-unblock-quota-' + d.mac_address.replace(/:/g, ''),
-      type: 'unblock_quota',
-      payload: { mac: d.mac_address }
-    })
-  }
-}
-```
-
-Essas acoes serao prepended ao `formattedActions` apos sua criacao (linha ~1033).
-
-**d) Adicionar pipe format para `block_quota` e `unblock_quota` (linhas ~1716-1784)**
-
-No switch de geracao do pipe delimitado:
-
-```text
-case 'block_quota':
-  return 'block_quota|' + (p.mac || '') + '|' + (p.user || '')
-case 'unblock_quota':
-  return 'unblock_quota|' + (p.mac || '')
-```
-
-### 2. Templates sync-standalone e sync — Novos handlers
-
-Adicionar dois handlers no processador de acoes dos templates (dentro do bloco `:while` que processa o pipe):
-
-**Handler `block_quota`** (formato: `block_quota|MAC|USER`):
-
-```text
-:if ($c = "block_quota") do={
+:if ($c = "update_user") do={
     :local p2 [:find $r "|"]
-    :local bm $r
-    :local bu ""
     :if ($p2 >= 0) do={
-        :set bm [:pick $r 0 $p2]
-        :set bu [:pick $r ($p2 + 1) [:len $r]]
+        :local un [:pick $r 0 $p2]
+        :local rest [:pick $r ($p2 + 1) [:len $r]]
+        :local p3 [:find $rest "|"]
+        :local pw $rest
+        :local pr "default"
+        :if ($p3 >= 0) do={
+            :set pw [:pick $rest 0 $p3]
+            :set pr [:pick $rest ($p3 + 1) [:len $rest]]
+        }
+        :local idx [/ip hotspot user find name=$un]
+        :if ([:len $idx] > 0) do={
+            /ip hotspot user set $idx password=$pw profile=$pr comment="navspot" disabled=no
+        } else={
+            /ip hotspot user add name=$un password=$pw profile=$pr comment="navspot"
+        }
+        :set cnt ($cnt + 1)
     }
-    :do { /ip hotspot ip-binding add mac-address=$bm type=blocked comment="QUOTA_EXCEDIDA" } on-error={}
-    :do { /ip hotspot active remove [find mac-address=$bm] } on-error={}
-    :do { /ip firewall filter add chain=forward src-mac-address=$bm action=reject comment="BLOCK_QUOTA" } on-error={}
-    :log info ("NAVSPOT-SYNC: quota block " . $bm)
+}
+```
+
+**Handler `update_password`** (formato: `update_password|USER|PASSWORD`):
+```text
+:if ($c = "update_password") do={
+    :local p2 [:find $r "|"]
+    :if ($p2 >= 0) do={
+        :local un [:pick $r 0 $p2]
+        :local pw [:pick $r ($p2 + 1) [:len $r]]
+        :do { /ip hotspot user set [find name=$un] password=$pw } on-error={}
+        :set cnt ($cnt + 1)
+    }
+}
+```
+
+**Handler `kick_session`** (formato: `kick_session|USER|MAC`):
+```text
+:if ($c = "kick_session") do={
+    :local p2 [:find $r "|"]
+    :local ku $r
+    :local km ""
+    :if ($p2 >= 0) do={
+        :set ku [:pick $r 0 $p2]
+        :set km [:pick $r ($p2 + 1) [:len $r]]
+    }
+    :if ([:len $km] > 0) do={
+        :do { /ip hotspot active remove [find mac-address=$km] } on-error={}
+    } else={
+        :do { /ip hotspot active remove [find user=$ku] } on-error={}
+    }
     :set cnt ($cnt + 1)
 }
 ```
 
-**Handler `unblock_quota`** (formato: `unblock_quota|MAC`):
+### Parte 2: Adicionar pipe format para `update_user` no backend
+
+No switch de geracao do pipe (`mikrotik-sync/index.ts`, linha ~1770), o `update_user_profile` atualmente emite `create_user|user||profile`. Adicionar um case especifico para `update_user`:
 
 ```text
-:if ($c = "unblock_quota") do={
-    :do { /ip hotspot ip-binding remove [find mac-address=$r comment="QUOTA_EXCEDIDA"] } on-error={}
-    :do { /ip firewall filter remove [find src-mac-address=$r comment="BLOCK_QUOTA"] } on-error={}
-    :log info ("NAVSPOT-SYNC: quota unblock " . $r)
-    :set cnt ($cnt + 1)
+case 'update_user':
+  return `update_user|${p.user || ''}|${p.password || ''}|${p.profile || 'default'}`
+```
+
+E no bloco de categorizacao por prioridade (linha ~1693), incluir `update_user` como acao de usuario:
+
+```text
+else if (action.type === 'update_user') {
+  userActions.push(action)
 }
 ```
 
-**Nota sobre `place-before=0`**: O usuario solicitou `place-before=0` na regra de firewall, mas conforme as regras do projeto (firewall-idempotency-rules), esse parametro causa falha em tabelas vazias. A regra sera adicionada sem `place-before`, usando `comment="BLOCK_QUOTA"` para identificacao e remocao segura. O `action=reject` garante corte imediato independente da posicao.
+### Parte 3: Bloqueio de categorias por perfil (estrategia via profile MikroTik)
 
-### 3. Prioridade das acoes de quota
+O bloqueio de categorias (Redes Sociais, Streaming) atualmente e global. Para funcionar POR PERFIL, a estrategia e:
 
-Na secao de categorizacao por prioridade (linhas ~1620-1670), adicionar `block_quota` e `unblock_quota` como acoes de alta prioridade (junto com firewall), para que sejam processadas antes de create_user e profiles:
+1. **No backend** (`mikrotik-sync`): Ao detectar que um perfil tem regras de blacklist associadas (via `regras_acesso`), alem de injetar as regras de firewall globais, o backend deve garantir que o perfil MikroTik tenha um nome que identifique suas restricoes. Quando o usuario muda de perfil, o backend envia `create_user|user|pwd|novo-perfil`.
 
-```text
-else if (action.type === 'block_quota' || action.type === 'unblock_quota') {
-  firewallBlockActions.push(action)  // mesma prioridade que firewall
-}
-```
+2. **Nas regras de firewall do MikroTik**: As regras de bloqueio ja sao globais (content=dominio chain=forward action=reject). Para bloqueio PER-PROFILE, o roteador precisaria filtrar por `hotspot=profile-name`, mas isso nao e suportado nativamente no firewall filter do MikroTik.
 
-### 4. Incremento de versao
+3. **Alternativa pratica (recomendada)**: Como o firewall do MikroTik nao suporta filtragem por perfil de hotspot diretamente, a abordagem recomendada e:
+   - Cada "conjunto de restricoes" corresponde a um perfil MikroTik diferente
+   - As regras de firewall sao aplicadas globalmente mas usam **address-lists** com marcacao de conexao (mangle) vinculada ao perfil
+   - **Isso ja funciona implicitamente** porque o backend envia `add_firewall_block` e `add_firewall_allow` baseado nas `regras_acesso` do perfil
+
+**Na pratica**: Se o perfil "Tripulacao Googlemarine" tem as listas "Redes Sociais" e "Streaming" como `permitir` (acao no DB), o backend JA injeta as regras de firewall quando o hash muda. O problema e que elas sao globais. Para resolver isso de forma limpa, seria necessario um handler de `mangle` que marque pacotes por perfil — isso e uma feature nova e complexa.
+
+**Solucao imediata viavel**: Manter o bloqueio global (que ja funciona) e adicionar os handlers ausentes para que `update_password`, `update_user` e `kick_session` funcionem. O bloqueio por categoria ja esta operacional para o cenario onde TODOS os usuarios de uma empresa tem as mesmas restricoes.
+
+### Parte 4: Incremento de versao
 
 | Arquivo | De | Para |
 |---------|-----|------|
-| `mikrotik-sync/index.ts` | `7.1.63` | `7.1.64` |
-| `navspot-script-gen/index.ts` | `7.8.2` | `7.8.3` |
-
-### 5. Atualizacao dos templates no banco
-
-Os templates `sync-standalone` e `sync` na tabela `script_templates` serao atualizados via SQL com os novos handlers e versao `7.8.3`.
+| `mikrotik-sync/index.ts` | `7.1.64` | `7.1.65` |
+| `navspot-script-gen/index.ts` | `7.8.3` | `7.8.4` |
 
 ## Arquivos a Alterar
 
 | Arquivo | Acao |
 |---------|------|
-| `supabase/functions/mikrotik-sync/index.ts` | Backend: quota block/unblock logic + pipe format |
-| Tabela `script_templates` (id=`sync-standalone`) | Adicionar handlers block_quota e unblock_quota |
-| Tabela `script_templates` (id=`sync`) | Idem |
-| `supabase/functions/navspot-script-gen/index.ts` | Incrementar VERSION para 7.8.3 |
+| `supabase/functions/mikrotik-sync/index.ts` | Adicionar case `update_user` no pipe format + categorizacao + version bump |
+| Tabela `script_templates` (id=`sync`) | Adicionar handlers `update_user`, `update_password`, `kick_session` |
+| Tabela `script_templates` (id=`sync-standalone`) | Idem |
+| `supabase/functions/navspot-script-gen/index.ts` | Version bump para 7.8.4 |
 
 ## Ordem de Execucao
 
-1. Alterar `mikrotik-sync/index.ts` (backend logic + pipe format + version bump)
-2. Alterar `navspot-script-gen/index.ts` (version bump)
-3. Atualizar templates no banco (SQL)
+1. Atualizar `mikrotik-sync/index.ts` (pipe format + prioridade + versao)
+2. Atualizar `navspot-script-gen/index.ts` (versao)
+3. Atualizar templates no banco via SQL
 4. Deploy das duas funcoes
-5. Testar: logar usuario, consumir quota, verificar logs de block_quota
 
 ## Riscos e Mitigacao
 
 | Risco | Mitigacao |
 |-------|----------|
-| ip-binding duplicado se sync roda 2x antes de processar | `:do {} on-error={}` previne erro; binding duplicado nao causa problema funcional |
-| Firewall rule duplicada | `comment="BLOCK_QUOTA"` permite remocao seletiva; reject duplicado nao causa impacto |
-| unblock_quota enviado mas MAC ja foi removido | `:do {} on-error={}` em ambos os removes; idempotente |
-| resetExpiredQuotas roda mas sync nao tem acoes pendentes ainda | earlyActions sao injetadas no formattedActions da mesma resposta |
-| Multiplos dispositivos do mesmo tripulante | Loop por `dispositivos_registrados` garante unblock de todos os MACs |
+| `update_user` com senha vazia sobrescreve senha existente | No handler, verificar se pw esta vazio e nao alterar se estiver |
+| Templates grandes excedem buffer do script | Handlers adicionais sao ~20 linhas cada; total do template sync fica em ~4.8KB (dentro do limite) |
+| Bloqueio per-profile nao funciona globalmente | Documentado como limitacao; bloqueio global ja funciona |
+
