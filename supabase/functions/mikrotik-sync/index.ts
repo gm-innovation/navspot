@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 // v7.1.51: Reverted cleanup to stable format (unquoted values)
-const VERSION = "7.1.64"
+const VERSION = "7.1.65"
 
 // v7.1.50: Required portal profile version - only marked after telemetry confirms
 const REQUIRED_PORTAL_VERSION = "7.1.50-http-pap"
@@ -1690,7 +1690,7 @@ Deno.serve(async (req) => {
       else if (action.type === 'add_user_profile' || action.type === 'create_profile' || action.type === 'update_profile_config') {
         profileActions.push(action)
       }
-      else if (action.type === 'create_user' || action.type === 'add_user') {
+      else if (action.type === 'create_user' || action.type === 'add_user' || action.type === 'update_user') {
         userActions.push(action)
       }
       else if (action.type === 'add_whitelist_domain' || action.type === 'add_blacklist_domain') {
@@ -1767,6 +1767,9 @@ Deno.serve(async (req) => {
         case 'add_user':
         case 'create_user':
           return `create_user|${p.user || ''}|${p.password || ''}|${p.profile || 'default-navspot'}`
+        // v7.1.65: update_user — upsert user with password and profile
+        case 'update_user':
+          return `update_user|${p.user || ''}|${p.password || ''}|${p.profile || 'default'}`
         case 'update_profile':
         case 'update_profile_config':
         case 'update_user_profile':
