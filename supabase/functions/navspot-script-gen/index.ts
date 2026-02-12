@@ -199,11 +199,14 @@ Deno.serve(async (req) => {
 
     console.log(`[generate:start] hotspot=${hotspot_id}`)
 
-    const { data: h } = await sbGet(SU, 'hotspots', ah.split(' ')[1], {
+    const { data: h, error: hErr } = await sbGet(SU, 'hotspots', SK, {
       select: 'id,nome,interface_wifi,wan_interface,wan_type,rede,sync_token,sync_interval_minutes,max_usuarios,ros_version,script_versao,embarcacoes!inner(id,nome,empresa_id)',
       id: 'eq.' + hotspot_id
     })
-    if (!h) return json({ success: false, error: 'Hotspot not found' }, 404)
+    if (!h || hErr) {
+      console.error('[generate] hotspot fetch failed:', hErr)
+      return json({ success: false, error: 'Hotspot not found' }, 404)
+    }
 
     // Validations
     const nv = isBlockedNetwork(h.rede)
@@ -243,7 +246,7 @@ Deno.serve(async (req) => {
     ])
 
     // Update hotspot metadata only after everything succeeded
-    await sbUpdate(SU, 'hotspots', ah.split(' ')[1], {
+    await sbUpdate(SU, 'hotspots', SK, {
       scripts_version: VERSION, scripts_generated_at: new Date().toISOString(),
       scripts_storage_path: sp, script_gerado: bootstrap,
       script_versao: h.script_versao ? h.script_versao + 1 : 1,
