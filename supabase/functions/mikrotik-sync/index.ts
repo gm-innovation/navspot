@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 // v7.1.51: Reverted cleanup to stable format (unquoted values)
-const VERSION = "7.1.63"
+const VERSION = "7.1.64"
 
 // v7.1.50: Required portal profile version - only marked after telemetry confirms
 const REQUIRED_PORTAL_VERSION = "7.1.50-http-pap"
@@ -226,11 +226,12 @@ function shouldResetQuota(
 }
 
 // v6.9.21: Reset expired quotas for ALL tripulantes, not just active ones
+// v7.1.64: Returns both resetCount and IDs of unblocked tripulantes for unblock_quota injection
 async function resetExpiredQuotas(
   supabase: ReturnType<typeof createClient>,
   embarcacaoId: string,
   timezone: string
-): Promise<number> {
+): Promise<{ resetCount: number; unblockedTripulanteIds: string[] }> {
   const now = new Date().toISOString()
   
   // Fetch tripulantes with consumption that might need reset
@@ -244,10 +245,11 @@ async function resetExpiredQuotas(
     .gt('bytes_consumidos', 0) // Only check those with consumption
   
   if (error || !tripulantes || tripulantes.length === 0) {
-    return 0
+    return { resetCount: 0, unblockedTripulanteIds: [] }
   }
   
   let resetCount = 0
+  const unblockedTripulanteIds: string[] = []
   
   for (const t of tripulantes) {
     const perfil = t.perfis_velocidade as { limite_dados_mb: number | null; quota_periodo: string } | null
@@ -267,7 +269,8 @@ async function resetExpiredQuotas(
           })
           .eq('id', t.id)
         
-        console.log(`[mikrotik-sync] v6.9.21: Reset quota AND reactivated blocked user: ${t.id}`)
+        unblockedTripulanteIds.push(t.id)
+        console.log(`[mikrotik-sync] v7.1.64: Reset quota AND reactivated blocked user: ${t.id}`)
       } else {
         // Just reset consumption
         await supabase
@@ -285,7 +288,7 @@ async function resetExpiredQuotas(
     }
   }
   
-  return resetCount
+  return { resetCount, unblockedTripulanteIds }
 }
 
 // Helper to create alerts without duplicating recent ones
@@ -621,10 +624,28 @@ Deno.serve(async (req) => {
     const effectiveTimezone = embarcacao?.timezone || 'America/Sao_Paulo'
     
     // v6.9.21: Reset expired quotas for ALL tripulantes (not just active ones)
+    // v7.1.64: Collect unblocked tripulante IDs for unblock_quota injection
+    const earlyUnblockActions: PendingAction[] = []
     if (embarcacao) {
-      const resetCount = await resetExpiredQuotas(supabase, hotspot.embarcacao_id, effectiveTimezone)
+      const { resetCount, unblockedTripulanteIds } = await resetExpiredQuotas(supabase, hotspot.embarcacao_id, effectiveTimezone)
       if (resetCount > 0) {
-        console.log(`[mikrotik-sync] v6.9.21: Reset quota for ${resetCount} tripulante(s) in ${effectiveTimezone}`)
+        console.log(`[mikrotik-sync] v7.1.64: Reset quota for ${resetCount} tripulante(s) in ${effectiveTimezone}`)
+      }
+      // v7.1.64: Inject unblock_quota for reactivated tripulantes
+      if (unblockedTripulanteIds.length > 0) {
+        const { data: devices } = await supabase
+          .from('dispositivos_registrados')
+          .select('mac_address')
+          .in('tripulante_id', unblockedTripulanteIds)
+        
+        for (const d of devices || []) {
+          earlyUnblockActions.push({
+            id: 'auto-unblock-quota-' + d.mac_address.replace(/:/g, ''),
+            type: 'unblock_quota',
+            payload: { mac: d.mac_address }
+          })
+        }
+        console.log(`[mikrotik-sync] v7.1.64: Injecting ${earlyUnblockActions.length} unblock_quota actions for ${unblockedTripulanteIds.length} reactivated tripulante(s)`)
       }
     }
     console.log(`[mikrotik-sync] Using timezone: ${effectiveTimezone}`)
@@ -937,12 +958,13 @@ Deno.serve(async (req) => {
               })
           }
 
-          // v6.9.11: Add kick action if quota exceeded
+          // v7.1.64: Block quota exceeded — use block_quota (triple block) instead of kick_session
           if (shouldKickForQuota) {
-            // This will be pushed to formattedActions later
-            blockedDevices.push({
-              mac: activeUser.mac,
-              reason: 'Quota de dados excedida'
+            // Will be injected into formattedActions after it's created
+            earlyUnblockActions.push({
+              id: 'auto-block-quota-' + activeUser.mac.replace(/:/g, ''),
+              type: 'block_quota',
+              payload: { mac: activeUser.mac, user: activeUser.user }
             })
           }
 
@@ -1050,6 +1072,12 @@ Deno.serve(async (req) => {
         type: 'kick_session',
         payload: { user: '', mac: bd.mac }
       })
+    }
+
+    // v7.1.64: Inject early actions (block_quota / unblock_quota) into formattedActions
+    if (earlyUnblockActions.length > 0) {
+      formattedActions.push(...earlyUnblockActions)
+      console.log(`[mikrotik-sync] v7.1.64: Injected ${earlyUnblockActions.length} quota block/unblock actions`)
     }
 
     // v7.0: First-sync detection - inject initial configuration
@@ -1655,6 +1683,10 @@ Deno.serve(async (req) => {
       else if (action.type === 'add_firewall_block') {
         firewallBlockActions.push(action)
       }
+      // v7.1.64: Quota enforcement actions — high priority (same as firewall)
+      else if (action.type === 'block_quota' || action.type === 'unblock_quota') {
+        firewallBlockActions.push(action)
+      }
       else if (action.type === 'add_user_profile' || action.type === 'create_profile' || action.type === 'update_profile_config') {
         profileActions.push(action)
       }
@@ -1774,6 +1806,11 @@ Deno.serve(async (req) => {
         case 'add_firewall_allow':
           // v6.9.17: Firewall filter for "bloquear_tudo" mode - whitelist
           return `add_firewall_allow|${p.domain || ''}`
+        // v7.1.64: Quota enforcement — triple block / unblock
+        case 'block_quota':
+          return `block_quota|${p.mac || ''}|${p.user || ''}`
+        case 'unblock_quota':
+          return `unblock_quota|${p.mac || ''}`
         case 'add_firewall_l7':
           return `create_firewall_rule|${p.order || 0}|${p.list || ''}|${p.type || ''}|${p.profile || ''}|${p.schedule || ''}|${p.action || ''}`
         case 'update_profile_quota':
