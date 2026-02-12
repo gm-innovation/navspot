@@ -12,11 +12,8 @@ verify_jwt = false
 [functions.mikrotik-recovery-download]
 verify_jwt = false
 
-[functions.mikrotik-scripts]
-verify_jwt = false
 
-[functions.mt-scripts]
-verify_jwt = false
+
 
 [functions.create-user]
 verify_jwt = false
