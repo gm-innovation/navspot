@@ -102,7 +102,7 @@ async function renderTemplate(
       for (const [key, value] of Object.entries(vars)) {
         ic = ic.replaceAll(key, value)
       }
-      innerContent = ic.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\r\\n')
+      innerContent = ic.replace(/\\/g, '\\\\').replace(/\$/g, '\\$').replace(/"/g, '\\"').replace(/\n/g, '\\r\\n')
     }
   }
   const { data: tpl, error } = await supabase.from('script_templates').select('content').eq('id', templateId).single()
