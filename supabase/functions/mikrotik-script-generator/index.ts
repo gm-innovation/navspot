@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.6.2"
+const VERSION = "7.6.3"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -125,7 +125,108 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Validate authorization
+    // ===== v7.6.3: UNIFIED SERVE MODE (GET requests - no auth required) =====
+    const url = new URL(req.url)
+    const mode = url.searchParams.get('mode')
+
+    // Health check
+    if (req.method === 'GET' && mode === 'health') {
+      return new Response(
+        JSON.stringify({ version: VERSION, status: 'ok', deployed_at: DEPLOYED_AT }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // Script serve mode (replaces mt-scripts)
+    if (req.method === 'GET' && mode === 'serve') {
+      const scriptType = url.searchParams.get('type') || 'all'
+      const syncToken = url.searchParams.get('token')
+      const rosVersion = url.searchParams.get('ros_version') || '6'
+
+      if (!syncToken) {
+        return new Response('# Error: token required', {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8' }
+        })
+      }
+
+      console.log(`[serve ${VERSION}] type=${scriptType}, token=${syncToken.slice(0,4)}...${syncToken.slice(-4)}, ros=${rosVersion}`)
+
+      const supabaseServe = createClient(
+        Deno.env.get('SUPABASE_URL')!,
+        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+      )
+
+      const { data: hotspot, error: hotspotError } = await supabaseServe
+        .from('hotspots')
+        .select('id, nome, sync_token, sync_interval_minutes, ros_version, embarcacoes!inner(id, nome, empresa_id)')
+        .eq('sync_token', syncToken)
+        .single()
+
+      if (hotspotError || !hotspot) {
+        return new Response('# Error: Invalid sync token', {
+          status: 404,
+          headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8' }
+        })
+      }
+
+      const effRos = hotspot.ros_version === 'auto' ? rosVersion : (hotspot.ros_version || rosVersion)
+      const rosConfigs: Record<string, { delayAfterFetch: number; delayAfterFileWrite: number; contentRetryCount: number }> = {
+        '6': { delayAfterFetch: 2500, delayAfterFileWrite: 1500, contentRetryCount: 3 },
+        '7': { delayAfterFetch: 500, delayAfterFileWrite: 300, contentRetryCount: 1 },
+      }
+      const rosConfig = rosConfigs[effRos] || rosConfigs['6']
+      const sUrl = Deno.env.get('SUPABASE_URL')!
+      const syncUrl = `${sUrl}/functions/v1/mikrotik-sync`
+      const recoveryUrl = `${sUrl}/functions/v1/mikrotik-recovery-download`
+      const apiBase = `${sUrl}/functions/v1`
+      const syncMin = hotspot.sync_interval_minutes || 5
+
+      const templateId = scriptType === 'sync-raw' ? 'sync'
+        : scriptType === 'guardian-raw' ? 'guardian' : 'installer'
+
+      const { data: tpl, error: tplError } = await supabaseServe
+        .from('script_templates')
+        .select('content')
+        .eq('id', templateId)
+        .single()
+
+      if (tplError || !tpl) {
+        console.error(`[serve ${VERSION}] Template not found: ${templateId}`, tplError)
+        return new Response('# Error: Template not found', {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8' }
+        })
+      }
+
+      const script = tpl.content
+        .replace(/\{\{VERSION\}\}/g, VERSION)
+        .replace(/\{\{SYNC_TOKEN\}\}/g, syncToken || '')
+        .replace(/\{\{SYNC_URL\}\}/g, syncUrl || '')
+        .replace(/\{\{RECOVERY_URL\}\}/g, recoveryUrl || '')
+        .replace(/\{\{API_BASE\}\}/g, apiBase || '')
+        .replace(/\{\{DEPLOYED_AT\}\}/g, DEPLOYED_AT)
+        .replace(/\{\{ROS_VERSION\}\}/g, effRos || '')
+        .replace(/\{\{SYNC_INTERVAL\}\}/g, String(syncMin))
+        .replace(/\{\{FETCH_DELAY\}\}/g, String(rosConfig.delayAfterFetch))
+        .replace(/\{\{WRITE_DELAY\}\}/g, String(rosConfig.delayAfterFileWrite))
+        .replace(/\{\{MAX_RETRIES\}\}/g, String(rosConfig.contentRetryCount))
+
+      console.log(`[serve ${VERSION}] ${scriptType} (${script.length}b)`)
+
+      return new Response(script, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Length': String(new TextEncoder().encode(script).length),
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+        },
+      })
+    }
+    // ===== END SERVE MODE =====
+
+    // Validate authorization (POST bootstrap mode)
     const authHeader = req.headers.get('Authorization')
     if (!authHeader?.startsWith('Bearer ')) {
       return new Response(
@@ -278,7 +379,7 @@ function generateBootstrapScript(
   embarcacao: Embarcacao,
   supabaseUrl: string
 ): string {
-  const scriptsUrl = `${supabaseUrl}/functions/v1/mt-scripts`
+  const scriptsUrl = `${supabaseUrl}/functions/v1/mikrotik-script-generator?mode=serve`
   const networkParts = hotspot.rede.split('/')
   const networkBase = networkParts[0].replace(/\.\d+$/, '')
   const gateway = `${networkBase}.1`
@@ -531,7 +632,7 @@ ${migrationCommands}
 :local tmpFile ("ns-install-" . $tsStr . ".rsc")
 
 # Construir URL com ros_version detectado em runtime
-:local scriptsUrl ($apiBase . "?type=all&token=" . $tk . "&ros_version=" . $rosV)
+:local scriptsUrl ($apiBase . "&type=all&token=" . $tk . "&ros_version=" . $rosV)
 
 # v7.1.36: Backoff variavel baseado na versao
 :local retryDelay 5s
