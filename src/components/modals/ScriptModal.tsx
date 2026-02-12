@@ -84,9 +84,9 @@ export function ScriptModal({
     }
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (signedUrls?.bootstrap_url) {
-      downloadFromSignedUrl(signedUrls.bootstrap_url, `navspot-bootstrap-v${scriptVersion}.rsc`);
+      await downloadFromSignedUrl(signedUrls.bootstrap_url, `navspot-bootstrap-v${scriptVersion}.rsc`);
       toast({ title: "Download iniciado", description: `Bootstrap v${scriptVersion} via URL assinada.` });
       return;
     }
@@ -122,7 +122,7 @@ export function ScriptModal({
     }
   };
 
-  const handleSignedDownload = (type: 'infra' | 'sync' | 'guardian') => {
+  const handleSignedDownload = async (type: 'infra' | 'sync' | 'guardian') => {
     const urlMap: Record<string, string | undefined> = {
       infra: signedUrls?.infra_url,
       sync: signedUrls?.sync_url,
@@ -142,7 +142,7 @@ export function ScriptModal({
       toast({ title: "URLs expiradas", description: "Regenere os scripts para obter novas URLs.", variant: "destructive" });
       return;
     }
-    downloadFromSignedUrl(url, filenameMap[type]);
+    await downloadFromSignedUrl(url, filenameMap[type]);
     toast({ title: "Download iniciado", description: `${filenameMap[type]} via URL assinada.` });
   };
 
