@@ -349,7 +349,13 @@ async function reconcileUsers(
     console.warn(`[mikrotik-sync] v7.1.29: WARNING - MikroTik not sending registeredUsersCsv field (script update required)`)
     return
   }
-  // Se chegou aqui com string vazia, significa roteador limpo - CONTINUAR
+  // v7.1.63: If registered_users_csv is empty BUT active_users exist,
+  // the script doesn't send registered users properly — skip reconciliation to avoid reset loop
+  if (registeredUsersCsv.trim().length === 0 && activeUsers.length > 0) {
+    console.log(`[mikrotik-sync] v7.1.63: registered_users_csv empty but ${activeUsers.length} active users exist — skipping reconciliation (script does not collect registered users)`)
+    return
+  }
+  // Se chegou aqui com string vazia e sem active users, significa roteador limpo - CONTINUAR
   console.log(`[mikrotik-sync] v7.1.29: MikroTik has ${registeredUsersCsv.trim().length === 0 ? '0' : 'some'} registered users`)
   
   // Parse registered users from MikroTik (lista COMPLETA de cadastrados)
@@ -406,16 +412,18 @@ async function reconcileUsers(
     
     const meta = syncedUsersMap.get(login)!
     
+    // v7.1.63: If user is active (online), they ARE registered — no need to check registered_users
+    if (activeUsersSet.has(login)) {
+      meta.miss_count = 0
+      meta.last_seen = now
+      console.log(`[mikrotik-sync] v7.1.63: User confirmed active (online): ${login}`)
+      continue
+    }
+    
     // Check if user exists in MikroTik registered users
     if (registeredUsersSet.has(login)) {
       // User EXISTS in MikroTik - reset counters, everything is OK
       meta.miss_count = 0
-      
-      // Update last_seen if also active (online)
-      if (activeUsersSet.has(login)) {
-        meta.last_seen = now
-      }
-      
       console.log(`[mikrotik-sync] v6.9.8: User confirmed in MikroTik: ${login}`)
       continue
     }
