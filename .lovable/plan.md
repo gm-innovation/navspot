@@ -1,53 +1,71 @@
 
 
-# Fix v7.6.1: Corrigir MAX_ACTIONS no Template Sync
+# Fix v7.6.2: Deploy mt-scripts + Cookie 30min
 
-## Problema
+## Causa Raiz Identificada
 
-O template `sync` no banco de dados contém `:local MAX_ACTIONS 200`. O underscore no nome da variavel causa `expected end of command (line 23 column 11)` no hAP ax2.
+A Edge Function `mt-scripts` retorna **404 NOT FOUND**. Ela nunca foi deployada com sucesso no servidor. Isso significa que:
 
-## Solucao
+- O bootstrap roda, cria a infraestrutura (bridge, DHCP, hotspot), mas quando chama o **installer** para baixar os scripts...
+- O installer tenta fazer fetch de `mt-scripts?type=sync-raw` e `mt-scripts?type=guardian-raw` → **404**
+- Resultado: **nenhum script é instalado** no roteador (nem sync, nem guardian)
+- Sem sync → sem heartbeat → hotspot "offline" no frontend
+- Sem guardian → sem auto-reparo
 
-Uma unica alteracao cirurgica: renomear `MAX_ACTIONS` para `maxAct` e remover blank lines do template.
+Evidencias:
+- `curl mt-scripts?type=health` → 404
+- `curl mikrotik-sync` → 200 (v7.1.62, funcionando)
+- `/system script print` no roteador mostra apenas `test-fetch` (nenhum navspot-*)
+- `ultima_sincronizacao` parada em 2026-02-11 18:43:27 (ontem)
 
-## Alteracoes
+## Plano de Acao
 
-### 1. SQL Migration - Corrigir template sync
+### 1. Deployar mt-scripts (PRIORIDADE CRITICA)
 
-Substituir o template `sync` na tabela `script_templates`. As unicas diferencas vs o template atual:
+A funcao `supabase/functions/mt-scripts/index.ts` existe no codigo com VERSION 7.6.1 mas precisa ser efetivamente deployada. Vamos forcar o deploy.
 
-1. `MAX_ACTIONS` renomeado para `maxAct` (3 ocorrencias)
-2. Blank lines removidas (corresponder ao estilo do script testado)
+### 2. Alterar cookie lifetime para 30 minutos
 
-### 2. Bump de versao para 7.6.1
-
-- `supabase/functions/mt-scripts/index.ts`: VERSION "7.6.0" -> "7.6.1"
-- `supabase/functions/mikrotik-script-generator/index.ts`: VERSION "7.6.0" -> "7.6.1"
-
-### 3. Deploy e teste
-
-1. Atualizar VERSION nos 2 edge functions
-2. Executar SQL migration
-3. Deploy mt-scripts e mikrotik-script-generator
-4. No MikroTik: `/system script run navspot-guardian` ou `/import navspot-bootstrap-v7.6.1.rsc`
-5. Verificar: `/system script run navspot-sync` -- sem parse error
-
-## Template corrigido (diff minimo)
-
-Apenas 3 linhas mudam no template atual:
-
-```text
-Antes:  :local MAX_ACTIONS 200
-Depois: :local maxAct 200
-
-Antes:  :while ([:find $a ";" $pos] >= 0 && ($cnt < $MAX_ACTIONS)) do={
-Depois: :while ([:find $a ";" $pos] >= 0 && ($cnt < $maxAct)) do={
-
-Antes:  :if ($cnt >= $MAX_ACTIONS) do={
-        :log warning ("NAVSPOT-SYNC: action cap reached (" . $MAX_ACTIONS . "), ...")
-Depois: :if ($cnt >= $maxAct) do={
-        :log warning ("NAVSPOT-SYNC: action cap reached (" . $maxAct . "), ...")
+No `mikrotik-script-generator/index.ts`, linha 462:
+```
+Antes: /ip hotspot profile set [find name="hsprof-navspot"] http-cookie-lifetime=3d
+Depois: /ip hotspot profile set [find name="hsprof-navspot"] http-cookie-lifetime=30m
 ```
 
-Toda a logica permanece identica. Zero mudancas estruturais.
+### 3. Bump para v7.6.2
+
+- `mt-scripts/index.ts`: VERSION "7.6.1" -> "7.6.2"
+- `mikrotik-script-generator/index.ts`: VERSION "7.6.1" -> "7.6.2"
+
+### 4. SQL: Reset flags do hotspot
+
+Para forcar o backend a reinjetar a configuracao do portal no proximo sync:
+
+```sql
+UPDATE hotspots 
+SET initial_config_sent = false, 
+    portal_profile_version = null,
+    telemetry_failures = 0
+WHERE sync_token = 'bba989838d50d36a5fd0d8f0ac45b11bec0020fe8be395789691d4c002f0ad0e';
+```
+
+### 5. Deploy e verificacao
+
+1. Deploy `mt-scripts` e `mikrotik-script-generator`
+2. Executar SQL migration
+3. Testar: `curl mt-scripts?type=health` → deve retornar 200 com v7.6.2
+4. No MikroTik: `/import navspot-bootstrap-v7.6.2.rsc`
+5. Aguardar 2 minutos
+6. Verificar: `/system script print` → deve mostrar navspot-sync e navspot-guardian
+7. Verificar: `/log print where message~"NAVSPOT-SYNC"` → deve mostrar sync com sucesso
+8. Frontend: hotspot deve mudar para "Online"
+9. Testar cookie: desconectar WiFi, reconectar apos 30+ min → deve pedir login
+
+## Resumo
+
+| Item | Mudanca |
+|------|---------|
+| `mt-scripts/index.ts` | VERSION 7.6.2, forcar deploy |
+| `mikrotik-script-generator/index.ts` | VERSION 7.6.2, cookie-lifetime=30m |
+| SQL hotspots | Reset initial_config_sent, portal_profile_version, telemetry_failures |
 
