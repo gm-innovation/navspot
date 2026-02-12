@@ -1,131 +1,113 @@
 
 
-# Split: Dividir mikrotik-script-generator em funcoes menores
+# Plano: Criar `navspot-script-gen` com melhorias de robustez
 
-## Problema
+## Resumo
 
-A Edge Function `mikrotik-script-generator` (294 linhas) excede o limite de 60s do bundler Deno, causando falha silenciosa no deploy (404 permanente). Uma versao minima (16 linhas) deploya sem problemas.
+Criar a funcao `navspot-script-gen` como copia melhorada do `mikrotik-script-generator` atual, com todas as recomendacoes de seguranca, retry, validacao e logging aplicadas. Converter `mikrotik-script-generator` em proxy transparente. Atualizar 3 arquivos do frontend para apontar para o novo nome.
 
-## Estrategia
+## Arquivos a criar/alterar
 
-Criar uma funcao orquestradora leve (`mikrotik-script-generator`) que delega a renderizacao para uma funcao auxiliar (`mikrotik-render-template`). A orquestradora cuida de autenticacao, validacao e upload para Storage. A auxiliar cuida apenas de buscar template + substituir placeholders.
+| Arquivo | Acao |
+|---------|------|
+| `supabase/functions/navspot-script-gen/index.ts` | **CRIAR** (~170 linhas) |
+| `supabase/functions/mikrotik-script-generator/index.ts` | **REESCREVER** como proxy (~15 linhas) |
+| `supabase/config.toml` | Adicionar `[functions.navspot-script-gen]` |
+| `src/hooks/useHotspots.ts` | Trocar invoke para `navspot-script-gen` |
+| `src/services/mikrotikService.ts` | Trocar invoke para `navspot-script-gen` |
+| `src/hooks/useModularScripts.ts` | Trocar URL para `navspot-script-gen` |
 
-**Por que nao 3 funcoes separadas?** O frontend atual chama uma unica funcao POST que gera os 4 scripts de uma vez e retorna URLs assinadas. Manter esse contrato evita mudancas no frontend. O problema do bundler e resolvido simplesmente reduzindo o tamanho de cada funcao individual.
+## Detalhes tecnicos
 
-## Arquitetura
+### 1. `navspot-script-gen` — Melhorias sobre o codigo atual
 
+**Retry com backoff** para fetches criticos (template, upload, sign):
 ```text
-Frontend (POST /mikrotik-script-generator)
-    |
-    v
-mikrotik-script-generator (orquestrador ~80 linhas)
-    |-- Valida auth + hotspot_id
-    |-- Busca dados do hotspot
-    |-- Chama mikrotik-render-template 4x (via fetch interno)
-    |-- Upload 4 .rsc para Storage
-    |-- Retorna signed URLs
-    |
-    v
-mikrotik-render-template (renderizador ~120 linhas)
-    |-- Recebe: template_id + vars (JSON POST)
-    |-- Busca template do banco
-    |-- Substitui placeholders
-    |-- Retorna texto puro
-```
-
-## Arquivos
-
-| Arquivo | Acao | Tamanho |
-|---------|------|---------|
-| `supabase/functions/mikrotik-render-template/index.ts` | **CRIAR** | ~120 linhas |
-| `supabase/functions/mikrotik-script-generator/index.ts` | **REESCREVER** | ~80 linhas |
-| `supabase/config.toml` | Adicionar `[functions.mikrotik-render-template]` | 2 linhas |
-
-**Nenhuma mudanca no frontend** — o contrato da API (POST com hotspot_id, resposta JSON com signed URLs) permanece identico.
-
-## Detalhes Tecnicos
-
-### 1. mikrotik-render-template (NOVA)
-
-Funcao interna (service_role only) que recebe via POST:
-
-```json
-{
-  "template_id": "sync-standalone",
-  "vars": {
-    "{{VERSION}}": "7.8.1",
-    "{{SYNC_TOKEN}}": "abc123...",
-    ...
+async function withRetry(fn, label, maxRetries=2) {
+  for (let i = 0; i <= maxRetries; i++) {
+    try { return await fn() }
+    catch (e) {
+      if (i === maxRetries) throw e
+      await new Promise(r => setTimeout(r, 500 * (i+1)))
+      console.warn('[retry ' + label + '] attempt ' + (i+1))
+    }
   }
 }
 ```
 
-Retorna o script renderizado como `text/plain`. Contem:
-- `normalizeNewlines()`
-- `applyPlaceholders()`
-- `renderTemplate()` (busca do banco + substituicao)
+**Validacoes extras** antes de gerar:
+- `hotspot.sync_token` presente e nao vazio
+- `hotspot.rede` em formato CIDR valido (regex simples)
+- Tamanho do script renderizado nao excede 64KB (seguranca do router)
 
-Validacao: aceita apenas requests com header `Authorization: Bearer <SERVICE_ROLE_KEY>` para evitar uso externo.
+**Logging estruturado**:
+- `generate:start` com hotspot_id
+- `template:fetch` por template
+- `upload:ok` por arquivo
+- `sign:ok` por arquivo
+- `db:update` apos sucesso total
+- Token truncado (4 chars) nos logs
 
-### 2. mikrotik-script-generator (REESCRITA)
+**Idempotencia**: update do hotspot (scripts_version, scripts_storage_path) somente apos upload + signed URLs terem sucesso. Se falhar apos upload, limpar arquivos parciais do storage.
 
-Mantem o mesmo endpoint e contrato. Contem:
-- `isBlockedNetwork()`
-- `deriveVars()` (sem `buildMigrationCommands` e `buildWanConfig` que sao movidos para o render)
-- Rota GET `?mode=health`
-- Rota GET `?mode=serve` (legacy)
-- Rota POST (gerar + upload + signed URLs)
+**Seguranca**:
+- PostgREST e Storage sempre com SERVICE_ROLE_KEY
+- Template IDs validados contra enum conhecido (infra, sync, guardian, etc.)
+- Token de usuario nunca logado inteiro
 
-Para renderizar cada template, faz fetch interno:
+**Signed URL path fix**: O endpoint correto para assinar URLs individuais e `POST /storage/v1/object/sign/{bucket}/{path}` com body `{ expiresIn: 900 }`.
 
-```typescript
-async function renderViaFunction(templateId, vars) {
-  const url = Deno.env.get('SUPABASE_URL') + '/functions/v1/mikrotik-render-template'
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
-    },
-    body: JSON.stringify({ template_id: templateId, vars })
+### 2. `mikrotik-script-generator` — Proxy transparente
+
+```text
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders })
+  const newUrl = req.url.replace('mikrotik-script-generator', 'navspot-script-gen')
+  const forwarded = await fetch(newUrl, {
+    method: req.method,
+    headers: req.headers,
+    body: req.body,
   })
-  if (!res.ok) throw new Error('Render failed: ' + templateId)
-  return await res.text()
-}
+  return new Response(forwarded.body, {
+    status: forwarded.status,
+    headers: forwarded.headers,
+  })
+})
 ```
 
-### 3. deriveVars simplificado
+Preserva metodo, headers (Authorization), body. Retorna response transparentemente sem 3xx redirect.
 
-As funcoes `buildMigrationCommands()` e `buildWanConfig()` sao movidas para `mikrotik-render-template` pois geram strings RouterOS que so sao necessarias durante a renderizacao. O orquestrador passa apenas os parametros basicos (wanInterface, wanType, allLanPorts) como variaveis, e o renderizador constroi os comandos.
+### 3. Frontend (3 arquivos)
 
-**Alternativa mais simples:** manter `deriveVars` completo no orquestrador (incluindo buildMigrationCommands e buildWanConfig) e passar o mapa de vars pronto para o renderizador. Isso evita duplicacao de logica e mantem o renderizador 100% generico.
-
-Vou seguir a alternativa mais simples: `deriveVars` completo no orquestrador, renderizador so faz template + placeholders.
+Substituicao simples de string:
+- `'mikrotik-script-generator'` -> `'navspot-script-gen'` em `useHotspots.ts` e `mikrotikService.ts`
+- URL em `useModularScripts.ts` troca `mikrotik-script-generator` por `navspot-script-gen`
 
 ### 4. config.toml
 
-```toml
-[functions.mikrotik-render-template]
+Adiciona:
+```text
+[functions.navspot-script-gen]
 verify_jwt = false
 ```
 
-## Ordem de Execucao
+## Ordem de execucao
 
-1. Criar `mikrotik-render-template/index.ts`
+1. Criar `navspot-script-gen/index.ts`
 2. Atualizar `config.toml`
-3. Deploy de `mikrotik-render-template`
-4. Testar via curl (POST com template_id + vars)
-5. Reescrever `mikrotik-script-generator/index.ts` (versao leve)
-6. Deploy de `mikrotik-script-generator`
-7. Testar health check
-8. Testar geracao completa via frontend
+3. Deploy de `navspot-script-gen`
+4. Testar health check (GET ?mode=health)
+5. Atualizar 3 arquivos frontend
+6. Converter `mikrotik-script-generator` em proxy
+7. Deploy do proxy
+8. Testar fluxo completo
 
-## Riscos e Mitigacao
+## Riscos e mitigacao
 
 | Risco | Mitigacao |
 |-------|----------|
-| Latencia extra (4 fetches internos) | Chamadas em paralelo via Promise.all — overhead minimo (~50ms cada) |
-| mikrotik-render-template tambem excede bundler | Funcao e muito pequena (~120 linhas, sem dependencias pesadas) |
-| mode=serve legacy quebra | Mantido no orquestrador, delegando para render-template via fetch |
-| Renderizador exposto publicamente | Validacao de service_role_key no header |
+| `navspot-script-gen` tambem da 404 no gateway | Nome novo sem historico de falhas; se falhar, testar com nome ainda mais curto |
+| Proxy do nome antigo nao funciona (gateway corrompido) | Frontend ja aponta para novo nome; proxy e apenas fallback para routers |
+| Retry causa duplicacao de uploads | Storage com upsert=true sobrescreve; idempotente |
+| Latencia dos 4 fetches ao render-template | Mantido em paralelo via Promise.all |
 
