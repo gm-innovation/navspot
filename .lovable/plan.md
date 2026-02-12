@@ -1,71 +1,62 @@
 
 
-# Fix: Download de scripts abre no navegador em vez de salvar
+# Fix: Escapar `$` em scripts standalone para RouterOS
 
-## Problema
+## Problema Raiz
 
-A funcao `downloadFromSignedUrl` usa o atributo HTML `download` em um link apontando para uma URL cross-origin (Supabase Storage). Navegadores ignoram o atributo `download` quando a URL e de outro dominio -- resultado: o arquivo abre no navegador em vez de acionar o dialogo de "Salvar como".
+Quando o `sync` template e injetado dentro do `sync-standalone` como `source="..."`, os caracteres `$` das variaveis RouterOS (`$navspotSyncLock`, `$tk`, `$ac`, `$post`, `$res`, `$body`) nao sao escapados. O RouterOS expande variaveis dentro de strings com aspas duplas no momento do `add`, resultando em variaveis vazias e o script fica invalido (flag `I - invalid`).
+
+Exemplo do que acontece:
+
+```text
+Esperado:  :if ([:len $navspotSyncLock] = 0) do={...}
+Gerado:    :if ([:len ] = 0) do={...}
+```
 
 ## Solucao
 
-Alterar `downloadFromSignedUrl` em `src/hooks/useModularScripts.ts` para:
+Adicionar `.replace(/\$/g, '\\$')` na cadeia de escaping da funcao `renderTemplate`, na linha que processa o `innerContent` (conteudo injetado dentro de `source="..."`).
 
-1. Fazer `fetch()` do conteudo da URL assinada
-2. Converter a resposta em `Blob`
-3. Criar uma URL local via `URL.createObjectURL(blob)`
-4. Usar essa URL local (mesmo dominio) com o atributo `download` -- que agora funciona corretamente
-5. Revogar a URL local apos o download
-
-## Arquivo alterado
+## Arquivo Alterado
 
 | Arquivo | Mudanca |
 |---------|---------|
-| `src/hooks/useModularScripts.ts` | Reescrever `downloadFromSignedUrl` para usar fetch + blob |
+| `supabase/functions/mikrotik-script-generator/index.ts` | Adicionar escape de `$` na linha 105 |
 
-## Codigo da correcao
+## Mudanca Exata
 
-A funcao `downloadFromSignedUrl` sera alterada de:
-
-```typescript
-export function downloadFromSignedUrl(url: string, filename: string) {
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.target = '_blank';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-}
+Linha 105 atual:
+```javascript
+innerContent = ic.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\r\\n')
 ```
 
-Para:
-
-```typescript
-export async function downloadFromSignedUrl(url: string, filename: string) {
-  try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const blob = await response.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(blobUrl);
-  } catch (error) {
-    // Fallback: abrir em nova aba se fetch falhar
-    window.open(url, '_blank');
-  }
-}
+Linha 105 corrigida:
+```javascript
+innerContent = ic.replace(/\\/g, '\\\\').replace(/\$/g, '\\$').replace(/"/g, '\\"').replace(/\n/g, '\\r\\n')
 ```
 
-Tambem sera necessario ajustar as chamadas em `ScriptModal.tsx` para usar `await` (a funcao passa a ser async), adicionando tratamento de erro adequado.
+A ordem importa: escapar `\` primeiro, depois `$`, depois `"`, depois newlines.
+
+## Resultado Esperado
+
+Apos a correcao, o script gerado tera:
+
+```text
+:if ([:len \$navspotSyncLock] = 0) do={ :set navspotSyncLock "0" }
+:if (\$navspotSyncLock = "1") do={ :log info "NAVSPOT-SYNC: locked"; :return }
+:local tk "bba989..."
+:local post ("{\"sync_token\":\"" . \$tk . "\"...")
+```
+
+E o RouterOS vai armazenar corretamente como:
+
+```text
+:if ([:len $navspotSyncLock] = 0) do={ :set navspotSyncLock "0" }
+```
 
 ## Impacto
 
-- Nenhuma mudanca de backend
-- Nenhuma mudanca de banco
-- Correcao puramente frontend (2 arquivos)
+- Corrige o mesmo problema no `guardian-standalone` (que tambem injeta conteudo via `source="..."`)
+- Nenhuma mudanca de banco necessaria — os templates estao corretos, o problema e apenas no escaping
+- Apos deploy, basta regenerar os scripts e reimportar no router
 
