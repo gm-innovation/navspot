@@ -1,71 +1,91 @@
 
 
-# Fix v7.6.2: Deploy mt-scripts + Cookie 30min
+# v7.6.3: Unificar Entrega de Scripts em um Unico Endpoint
 
-## Causa Raiz Identificada
+## Problema
 
-A Edge Function `mt-scripts` retorna **404 NOT FOUND**. Ela nunca foi deployada com sucesso no servidor. Isso significa que:
+Ambas as Edge Functions `mt-scripts` e `mikrotik-script-generator` estao retornando **404** no gateway. O `mt-scripts` nunca conseguiu ser deployado com sucesso (problema persistente de registro). Enquanto isso, o bootstrap gerado aponta para `mt-scripts` para baixar os scripts sync/guardian, criando um deadlock: sem scripts no roteador, sem sync, sem heartbeat, hotspot permanentemente offline.
 
-- O bootstrap roda, cria a infraestrutura (bridge, DHCP, hotspot), mas quando chama o **installer** para baixar os scripts...
-- O installer tenta fazer fetch de `mt-scripts?type=sync-raw` e `mt-scripts?type=guardian-raw` → **404**
-- Resultado: **nenhum script é instalado** no roteador (nem sync, nem guardian)
-- Sem sync → sem heartbeat → hotspot "offline" no frontend
-- Sem guardian → sem auto-reparo
+## Estrategia
 
-Evidencias:
-- `curl mt-scripts?type=health` → 404
-- `curl mikrotik-sync` → 200 (v7.1.62, funcionando)
-- `/system script print` no roteador mostra apenas `test-fetch` (nenhum navspot-*)
-- `ultima_sincronizacao` parada em 2026-02-11 18:43:27 (ontem)
+Eliminar a dependencia do `mt-scripts` completamente, movendo sua logica para dentro do `mikrotik-script-generator`. Isso reduz de 2 funcoes para 1, eliminando o ponto de falha.
 
-## Plano de Acao
+### Como funciona
 
-### 1. Deployar mt-scripts (PRIORIDADE CRITICA)
+O `mikrotik-script-generator` passa a ter dois modos de operacao:
 
-A funcao `supabase/functions/mt-scripts/index.ts` existe no codigo com VERSION 7.6.1 mas precisa ser efetivamente deployada. Vamos forcar o deploy.
+1. **Modo bootstrap** (POST com body `{hotspot_id}`) - comportamento atual, gera o .rsc de provisionamento. Requer autenticacao JWT.
+2. **Modo serve** (GET com `?mode=serve&type=sync-raw&token=xxx`) - entrega scripts sync/guardian/installer a partir dos templates do banco. SEM autenticacao (chamado pelo roteador).
+3. **Modo health** (GET com `?mode=health`) - retorna versao e status para diagnostico.
 
-### 2. Alterar cookie lifetime para 30 minutos
+## Alteracoes Tecnicas
 
-No `mikrotik-script-generator/index.ts`, linha 462:
+### 1. `supabase/functions/mikrotik-script-generator/index.ts`
+
+Adicionar no inicio do handler (antes do check de auth) um bloco que intercepta requests GET com `mode=serve` ou `mode=health`:
+
+```text
+GET ?mode=health → JSON {version, status, deployed_at}
+GET ?mode=serve&type=sync-raw&token=XXX → text/plain com script sync
+GET ?mode=serve&type=guardian-raw&token=XXX → text/plain com script guardian
+GET ?mode=serve&type=all&token=XXX → text/plain com script installer
+POST (sem mode) → fluxo atual de bootstrap (com auth JWT)
 ```
-Antes: /ip hotspot profile set [find name="hsprof-navspot"] http-cookie-lifetime=3d
-Depois: /ip hotspot profile set [find name="hsprof-navspot"] http-cookie-lifetime=30m
+
+A logica de serve e identica ao que ja existe no `mt-scripts/index.ts`:
+- Valida token contra tabela `hotspots`
+- Busca template na tabela `script_templates`
+- Substitui placeholders (VERSION, SYNC_TOKEN, SYNC_URL, etc)
+- Retorna text/plain com Cache-Control no-cache
+
+### 2. URL do bootstrap
+
+Na funcao `generateBootstrapScript` (linha 281), alterar:
+
+```text
+Antes: const scriptsUrl = `${supabaseUrl}/functions/v1/mt-scripts`
+Depois: const scriptsUrl = `${supabaseUrl}/functions/v1/mikrotik-script-generator?mode=serve`
 ```
 
-### 3. Bump para v7.6.2
+E no template RouterOS (linha 534), a URL construida pelo roteador fica:
 
-- `mt-scripts/index.ts`: VERSION "7.6.1" -> "7.6.2"
-- `mikrotik-script-generator/index.ts`: VERSION "7.6.1" -> "7.6.2"
-
-### 4. SQL: Reset flags do hotspot
-
-Para forcar o backend a reinjetar a configuracao do portal no proximo sync:
-
-```sql
-UPDATE hotspots 
-SET initial_config_sent = false, 
-    portal_profile_version = null,
-    telemetry_failures = 0
-WHERE sync_token = 'bba989838d50d36a5fd0d8f0ac45b11bec0020fe8be395789691d4c002f0ad0e';
+```text
+Antes: apiBase?type=all&token=XXX&ros_version=7
+Depois: apiBase&type=all&token=XXX&ros_version=7
 ```
+
+Note que como `mode=serve` ja esta no apiBase, os parametros adicionais usam `&` em vez de `?`.
+
+### 3. Remover `mt-scripts`
+
+- Deletar o diretorio `supabase/functions/mt-scripts/`
+- Remover `[functions.mt-scripts]` do `supabase/config.toml`
+- Executar `delete_edge_functions` para limpar do servidor
+
+### 4. Bump de versao para 7.6.3
+
+- `mikrotik-script-generator/index.ts`: VERSION "7.6.2" -> "7.6.3"
 
 ### 5. Deploy e verificacao
 
-1. Deploy `mt-scripts` e `mikrotik-script-generator`
-2. Executar SQL migration
-3. Testar: `curl mt-scripts?type=health` → deve retornar 200 com v7.6.2
-4. No MikroTik: `/import navspot-bootstrap-v7.6.2.rsc`
-5. Aguardar 2 minutos
-6. Verificar: `/system script print` → deve mostrar navspot-sync e navspot-guardian
-7. Verificar: `/log print where message~"NAVSPOT-SYNC"` → deve mostrar sync com sucesso
-8. Frontend: hotspot deve mudar para "Online"
-9. Testar cookie: desconectar WiFi, reconectar apos 30+ min → deve pedir login
+1. Editar `mikrotik-script-generator/index.ts` com a logica de serve
+2. Deletar `mt-scripts`
+3. Deploy `mikrotik-script-generator`
+4. Testar: `curl mikrotik-script-generator?mode=health` → deve retornar 200
+5. Testar: `curl mikrotik-script-generator?mode=serve&type=sync-raw&token=XXX` → deve retornar script
+6. No MikroTik: `/import navspot-bootstrap-v7.6.3.rsc`
+7. Verificar: `/system script print` → navspot-sync e navspot-guardian presentes
+8. Verificar: `/log print where message~"NAVSPOT-SYNC"` → sync rodando
 
 ## Resumo
 
 | Item | Mudanca |
 |------|---------|
-| `mt-scripts/index.ts` | VERSION 7.6.2, forcar deploy |
-| `mikrotik-script-generator/index.ts` | VERSION 7.6.2, cookie-lifetime=30m |
-| SQL hotspots | Reset initial_config_sent, portal_profile_version, telemetry_failures |
+| `mikrotik-script-generator/index.ts` | VERSION 7.6.3, adicionar modo serve + health no GET, atualizar URL do bootstrap |
+| `mt-scripts/` | Deletar completamente |
+| `config.toml` | Remover secao mt-scripts (automatico) |
+
+## Risco
+
+Zero risco de regressao: toda a logica de `mt-scripts` e copiada integralmente para `mikrotik-script-generator`. O bootstrap gerado aponta para o novo endpoint unificado. O `mikrotik-sync` (heartbeat) nao e afetado.
 
