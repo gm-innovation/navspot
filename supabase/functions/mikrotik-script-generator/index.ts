@@ -5,28 +5,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.7.1"
+const VERSION = "7.8.0"
 const DEPLOYED_AT = new Date().toISOString()
 
 function normalizeNewlines(script: string): string {
-  return script.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-}
-
-function validateBalance(script: string): void {
-  const openBraces = (script.match(/{/g) || []).length;
-  const closeBraces = (script.match(/}/g) || []).length;
-  if (openBraces !== closeBraces) {
-    throw new Error(`Unbalanced braces: ${openBraces} open, ${closeBraces} close`);
-  }
-  const quotes = (script.match(/"/g) || []).length;
-  if (quotes % 2 !== 0) {
-    throw new Error(`Unbalanced quotes: ${quotes} (odd number)`);
-  }
-  const openParens = (script.match(/\(/g) || []).length;
-  const closeParens = (script.match(/\)/g) || []).length;
-  if (openParens !== closeParens) {
-    throw new Error(`Unbalanced parentheses: ${openParens} open, ${closeParens} close`);
-  }
+  return script.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 }
 
 function isBlockedNetwork(cidr: string): { blocked: boolean; reason: string } {
@@ -47,18 +30,7 @@ interface Hotspot {
 
 interface Embarcacao { id: string; nome: string; empresa_id: string }
 
-function validateRouterOSScript(script: string, context: string): void {
-  const lines = script.split('\n')
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].length > 160 && !lines[i].trim().startsWith('#')) {
-      console.error(`[${context} ${VERSION}] Long line #${i + 1} (${lines[i].length} chars)`)
-      throw new Error('Script validation failed: Line >160 chars')
-    }
-  }
-  console.log(`[${context} ${VERSION}] Script validation passed`)
-}
-
-function deriveBootstrapVars(hotspot: Hotspot, embarcacao: Embarcacao, supabaseUrl: string) {
+function deriveVars(hotspot: Hotspot, embarcacao: Embarcacao, supabaseUrl: string) {
   const scriptsUrl = `${supabaseUrl}/functions/v1/mikrotik-script-generator?mode=serve`
   const networkParts = hotspot.rede.split('/')
   const networkBase = networkParts[0].replace(/\.\d+$/, '')
@@ -69,6 +41,11 @@ function deriveBootstrapVars(hotspot: Hotspot, embarcacao: Embarcacao, supabaseU
   const wanInterface = hotspot.wan_interface || 'ether1'
   const wanType = hotspot.wan_type || 'dhcp'
   const supabaseHost = new URL(supabaseUrl).hostname
+  const syncUrl = `${supabaseUrl}/functions/v1/mikrotik-sync`
+  const recoveryUrl = `${supabaseUrl}/functions/v1/mikrotik-recovery-download`
+  const apiBase = `${supabaseUrl}/functions/v1`
+  const syncMin = hotspot.sync_interval_minutes || 5
+  const effRos = hotspot.ros_version === 'auto' ? '7' : (hotspot.ros_version || '7')
   const allLanPorts = ['ether3', 'ether4', 'ether5'].filter(p => p !== wanInterface)
   const migrationOrder = [...allLanPorts].sort((a, b) => b.localeCompare(a))
   const migrationCommands = migrationOrder.map((port) => {
@@ -82,6 +59,9 @@ function deriveBootstrapVars(hotspot: Hotspot, embarcacao: Embarcacao, supabaseU
 /ip dhcp-client add interface=${wanInterface} disabled=no comment="navspot-wan"
 :log info "NAVSPOT: DHCP client em ${wanInterface}"`
     : `:log info "NAVSPOT: WAN ${wanInterface} configurada como ${wanType} (manual)"`
+  const rosConfig = effRos === '7'
+    ? { delayAfterFetch: 500, delayAfterFileWrite: 300, contentRetryCount: 1 }
+    : { delayAfterFetch: 2500, delayAfterFileWrite: 1500, contentRetryCount: 3 }
   return {
     '{{VERSION}}': VERSION, '{{DEPLOYED_AT}}': DEPLOYED_AT, '{{WAN_INTERFACE}}': wanInterface,
     '{{WAN_CONFIG}}': wanConfig, '{{WAN_TYPE}}': wanType, '{{NETWORK_BASE}}': networkBase,
@@ -89,6 +69,11 @@ function deriveBootstrapVars(hotspot: Hotspot, embarcacao: Embarcacao, supabaseU
     '{{POOL_END}}': poolEnd, '{{EMBARCACAO_NOME}}': embarcacao.nome,
     '{{MIGRATION_COMMANDS}}': migrationCommands, '{{SCRIPTS_URL}}': scriptsUrl,
     '{{SYNC_TOKEN}}': hotspot.sync_token, '{{SUPABASE_HOST}}': supabaseHost,
+    '{{SYNC_URL}}': syncUrl, '{{RECOVERY_URL}}': recoveryUrl, '{{API_BASE}}': apiBase,
+    '{{SYNC_INTERVAL}}': String(syncMin), '{{ROS_VERSION}}': effRos,
+    '{{FETCH_DELAY}}': String(rosConfig.delayAfterFetch),
+    '{{WRITE_DELAY}}': String(rosConfig.delayAfterFileWrite),
+    '{{MAX_RETRIES}}': String(rosConfig.contentRetryCount),
   }
 }
 
@@ -104,6 +89,32 @@ function applyPlaceholders(template: string, vars: Record<string, string>): stri
   return result
 }
 
+async function renderTemplate(
+  supabase: any, templateId: string, vars: Record<string, string>,
+  innerTemplateId?: string, syncToken?: string
+): Promise<string> {
+  // For standalone templates, we need to inject inner content
+  let innerContent = ''
+  if (innerTemplateId) {
+    const { data: innerTpl } = await supabase.from('script_templates').select('content').eq('id', innerTemplateId).single()
+    if (innerTpl) {
+      let ic = innerTpl.content
+      for (const [key, value] of Object.entries(vars)) {
+        ic = ic.replaceAll(key, value)
+      }
+      innerContent = ic.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\r\\n')
+    }
+  }
+  const { data: tpl, error } = await supabase.from('script_templates').select('content').eq('id', templateId).single()
+  if (error || !tpl) throw new Error(`Template '${templateId}' not found`)
+  let script = tpl.content
+  if (innerContent) {
+    script = script.replace(/\{\{SYNC_SOURCE\}\}/g, innerContent).replace(/\{\{GUARDIAN_SOURCE\}\}/g, innerContent)
+  }
+  script = applyPlaceholders(script, vars)
+  return normalizeNewlines(script)
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders })
@@ -111,110 +122,53 @@ Deno.serve(async (req) => {
   try {
     const url = new URL(req.url)
     const mode = url.searchParams.get('mode')
+
     // Health check
     if (req.method === 'GET' && mode === 'health') {
       return new Response(
-        JSON.stringify({ version: VERSION, status: 'ok', deployed_at: DEPLOYED_AT }),
+        JSON.stringify({ version: VERSION, status: 'ok', deployed_at: DEPLOYED_AT, storage_first: true }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Navspot-Version': VERSION } }
       )
     }
-    // Serve mode (GET - no auth)
+
+    // Legacy serve mode - redirect to signed URL (backward compat)
     if (req.method === 'GET' && mode === 'serve') {
       const scriptType = url.searchParams.get('type') || 'all'
       const syncToken = url.searchParams.get('token')
-      const rosVersion = url.searchParams.get('ros_version') || '6'
+      const rosVersion = url.searchParams.get('ros_version') || '7'
       if (!syncToken) {
         return new Response('# Error: token required', { status: 400, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8' } })
       }
-      console.log(`[serve ${VERSION}] type=${scriptType}, token=${syncToken.slice(0,4)}...${syncToken.slice(-4)}, ros=${rosVersion}`)
-      const supabaseServe = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
-      const { data: hotspot, error: hotspotError } = await supabaseServe
+      console.log(`[serve-legacy ${VERSION}] type=${scriptType}, token=${syncToken.slice(0,4)}...`)
+      const supabaseService = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
+      const { data: hotspot, error: hErr } = await supabaseService
         .from('hotspots')
         .select('id, nome, sync_token, sync_interval_minutes, ros_version, wan_interface, wan_type, rede, embarcacoes!inner(id, nome, empresa_id)')
-        .eq('sync_token', syncToken)
-        .single()
-      if (hotspotError || !hotspot) {
+        .eq('sync_token', syncToken).single()
+      if (hErr || !hotspot) {
         return new Response('# Error: Invalid sync token', { status: 404, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8' } })
       }
-      const effRos = hotspot.ros_version === 'auto' ? rosVersion : (hotspot.ros_version || rosVersion)
-      const rosConfigs: Record<string, { delayAfterFetch: number; delayAfterFileWrite: number; contentRetryCount: number }> = {
-        '6': { delayAfterFetch: 2500, delayAfterFileWrite: 1500, contentRetryCount: 3 },
-        '7': { delayAfterFetch: 500, delayAfterFileWrite: 300, contentRetryCount: 1 },
-      }
-      const rosConfig = rosConfigs[effRos] || rosConfigs['6']
-      const sUrl = Deno.env.get('SUPABASE_URL')!
-      const syncUrl = `${sUrl}/functions/v1/mikrotik-sync`
-      const recoveryUrl = `${sUrl}/functions/v1/mikrotik-recovery-download`
-      const apiBase = `${sUrl}/functions/v1`
-      const syncMin = hotspot.sync_interval_minutes || 5
-      // Infra type (standalone infrastructure script)
-      if (scriptType === 'infra') {
-        const embarcacao = (hotspot as any).embarcacoes as Embarcacao
-        const vars = deriveBootstrapVars(hotspot as unknown as Hotspot, embarcacao, sUrl)
-        const { data: tpl, error: tplError } = await supabaseServe.from('script_templates').select('content').eq('id', 'infra').single()
-        if (tplError || !tpl) {
-          return new Response('# Error: Infra template not found', { status: 500, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8', 'X-Navspot-Version': VERSION } })
-        }
-        let script = applyPlaceholders(tpl.content, vars)
-        script = normalizeNewlines(script)
-        console.log(`[serve ${VERSION}] type=infra tpl=infra (${script.length}b)`)
-        return new Response(script, { status: 200, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': String(new TextEncoder().encode(script).length), 'Cache-Control': 'no-store, max-age=0', 'X-Navspot-Version': VERSION } })
-      }
-      // Bootstrap type (ultra-thin fetch+import)
-      if (scriptType === 'bootstrap') {
-        const embarcacao = (hotspot as any).embarcacoes as Embarcacao
-        const vars = deriveBootstrapVars(hotspot as unknown as Hotspot, embarcacao, sUrl)
-        const { data: tpl, error: tplError } = await supabaseServe.from('script_templates').select('content').eq('id', 'bootstrap').single()
-        if (tplError || !tpl) {
-          return new Response('# Error: Bootstrap template not found', { status: 500, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8', 'X-Navspot-Version': VERSION } })
-        }
-        let script = applyPlaceholders(tpl.content, vars)
-        script = normalizeNewlines(script)
-        console.log(`[serve ${VERSION}] type=bootstrap tpl=bootstrap (${script.length}b)`)
-        return new Response(script, { status: 200, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': String(new TextEncoder().encode(script).length), 'Cache-Control': 'no-store, max-age=0', 'X-Navspot-Version': VERSION } })
-      }
-      // Other template types
+      const embarcacao = (hotspot as any).embarcacoes as Embarcacao
+      const vars = deriveVars(hotspot as unknown as Hotspot, embarcacao, Deno.env.get('SUPABASE_URL')!)
+
+      // Map type to template + inner
       let templateId: string
-      let isStandalone = false
+      let innerTemplateId: string | undefined
       switch (scriptType) {
+        case 'infra': templateId = 'infra'; break
+        case 'bootstrap': templateId = 'bootstrap'; break
         case 'sync-raw': templateId = 'sync'; break
         case 'guardian-raw': templateId = 'guardian'; break
-        case 'sync-standalone': templateId = 'sync-standalone'; isStandalone = true; break
-        case 'guardian-standalone': templateId = 'guardian-standalone'; isStandalone = true; break
+        case 'sync-standalone': templateId = 'sync-standalone'; innerTemplateId = 'sync'; break
+        case 'guardian-standalone': templateId = 'guardian-standalone'; innerTemplateId = 'guardian'; break
         default: templateId = 'installer'; break
       }
-      let innerContent = ''
-      if (isStandalone) {
-        const innerTemplateId = scriptType === 'sync-standalone' ? 'sync' : 'guardian'
-        const { data: innerTpl } = await supabaseServe.from('script_templates').select('content').eq('id', innerTemplateId).single()
-        if (innerTpl) {
-          innerContent = innerTpl.content
-            .replace(/\{\{VERSION\}\}/g, VERSION).replace(/\{\{SYNC_TOKEN\}\}/g, syncToken || '')
-            .replace(/\{\{SYNC_URL\}\}/g, syncUrl || '').replace(/\{\{RECOVERY_URL\}\}/g, recoveryUrl || '')
-            .replace(/\{\{API_BASE\}\}/g, apiBase || '').replace(/\{\{DEPLOYED_AT\}\}/g, DEPLOYED_AT)
-            .replace(/\{\{ROS_VERSION\}\}/g, effRos || '').replace(/\{\{SYNC_INTERVAL\}\}/g, String(syncMin))
-          innerContent = innerContent.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\r\\n')
-        }
-      }
-      const { data: tpl, error: tplError } = await supabaseServe.from('script_templates').select('content').eq('id', templateId).single()
-      if (tplError || !tpl) {
-        return new Response('# Error: Template not found', { status: 500, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8', 'X-Navspot-Version': VERSION } })
-      }
-      let script = tpl.content
-        .replace(/\{\{VERSION\}\}/g, VERSION).replace(/\{\{SYNC_TOKEN\}\}/g, syncToken || '')
-        .replace(/\{\{SYNC_URL\}\}/g, syncUrl || '').replace(/\{\{RECOVERY_URL\}\}/g, recoveryUrl || '')
-        .replace(/\{\{API_BASE\}\}/g, apiBase || '').replace(/\{\{DEPLOYED_AT\}\}/g, DEPLOYED_AT)
-        .replace(/\{\{ROS_VERSION\}\}/g, effRos || '').replace(/\{\{SYNC_INTERVAL\}\}/g, String(syncMin))
-        .replace(/\{\{FETCH_DELAY\}\}/g, String(rosConfig.delayAfterFetch))
-        .replace(/\{\{WRITE_DELAY\}\}/g, String(rosConfig.delayAfterFileWrite))
-        .replace(/\{\{MAX_RETRIES\}\}/g, String(rosConfig.contentRetryCount))
-      if (isStandalone && innerContent) {
-        script = script.replace(/\{\{SYNC_SOURCE\}\}/g, innerContent).replace(/\{\{GUARDIAN_SOURCE\}\}/g, innerContent)
-      }
-      console.log(`[serve ${VERSION}] type=${scriptType} tpl=${templateId} (${script.length}b)`)
-      return new Response(script, { status: 200, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': String(new TextEncoder().encode(script).length), 'Cache-Control': 'no-store, max-age=0', 'X-Navspot-Version': VERSION } })
+      const script = await renderTemplate(supabaseService, templateId, vars, innerTemplateId, syncToken)
+      console.log(`[serve-legacy ${VERSION}] type=${scriptType} (${script.length}b)`)
+      return new Response(script, { status: 200, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store, max-age=0', 'X-Navspot-Version': VERSION } })
     }
-    // POST: Generate bootstrap (authenticated)
+
+    // POST: Generate + upload to storage + return signed URLs
     const authHeader = req.headers.get('Authorization')
     if (!authHeader?.startsWith('Bearer ')) {
       return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
@@ -228,7 +182,9 @@ Deno.serve(async (req) => {
     if (!hotspot_id) {
       return new Response(JSON.stringify({ success: false, error: 'hotspot_id is required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
-    console.log(`[script-generator ${VERSION}] Generating bootstrap for hotspot: ${hotspot_id}`)
+    console.log(`[generate ${VERSION}] hotspot: ${hotspot_id}`)
+
+    // Fetch hotspot data using user's auth
     const { data: hotspot, error: hotspotError } = await supabase
       .from('hotspots')
       .select('id, nome, interface_wifi, wan_interface, wan_type, rede, sync_token, sync_interval_minutes, max_usuarios, ros_version, script_versao, embarcacoes!inner(id, nome, empresa_id)')
@@ -240,28 +196,80 @@ Deno.serve(async (req) => {
     if (networkValidation.blocked) {
       return new Response(JSON.stringify({ success: false, error: networkValidation.reason }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
+
     const embarcacao = hotspot.embarcacoes as unknown as Embarcacao
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
     const supabaseService = createClient(supabaseUrl, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
-    const { data: tpl, error: tplError } = await supabaseService.from('script_templates').select('content').eq('id', 'bootstrap').single()
-    if (tplError || !tpl) {
-      return new Response(JSON.stringify({ success: false, error: 'Bootstrap template not found' }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+    const vars = deriveVars(hotspot as unknown as Hotspot, embarcacao, supabaseUrl)
+
+    // Render all 3 scripts in parallel
+    const [infraScript, syncScript, guardianScript, bootstrapScript] = await Promise.all([
+      renderTemplate(supabaseService, 'infra', vars),
+      renderTemplate(supabaseService, 'sync-standalone', vars, 'sync'),
+      renderTemplate(supabaseService, 'guardian-standalone', vars, 'guardian'),
+      renderTemplate(supabaseService, 'bootstrap', vars),
+    ])
+
+    // Upload to storage
+    const storagePath = `${hotspot_id}/${VERSION}`
+    const uploads = [
+      { path: `${storagePath}/infra.rsc`, content: infraScript },
+      { path: `${storagePath}/sync.rsc`, content: syncScript },
+      { path: `${storagePath}/guardian.rsc`, content: guardianScript },
+      { path: `${storagePath}/bootstrap.rsc`, content: bootstrapScript },
+    ]
+
+    for (const upload of uploads) {
+      const { error: uploadError } = await supabaseService.storage
+        .from('hotspot-scripts')
+        .upload(upload.path, new TextEncoder().encode(upload.content), {
+          contentType: 'text/plain; charset=utf-8',
+          upsert: true,
+        })
+      if (uploadError) {
+        console.error(`[generate ${VERSION}] Upload failed ${upload.path}:`, uploadError)
+        throw new Error(`Upload failed: ${upload.path}`)
+      }
     }
-    const vars = deriveBootstrapVars(hotspot as unknown as Hotspot, embarcacao, supabaseUrl)
-    let bootstrapScript = applyPlaceholders(tpl.content, vars)
-    bootstrapScript = normalizeNewlines(bootstrapScript)
-    validateBalance(bootstrapScript)
-    validateRouterOSScript(bootstrapScript, 'script-generator')
-    const { error: updateError } = await supabase.from('hotspots').update({ script_gerado: bootstrapScript, script_versao: hotspot.script_versao ? hotspot.script_versao + 1 : 1 }).eq('id', hotspot_id)
-    if (updateError) { console.error(`[script-generator ${VERSION}] Failed to save:`, updateError) }
-    if (!bootstrapScript.includes('/tool fetch') || !bootstrapScript.includes('/import $tmpFile')) {
-      throw new Error('Bootstrap nao contem fetch+import pattern')
+    console.log(`[generate ${VERSION}] Uploaded 4 scripts to ${storagePath}`)
+
+    // Generate signed URLs (15 min TTL)
+    const signedUrls: Record<string, string> = {}
+    for (const upload of uploads) {
+      const { data: signedData, error: signError } = await supabaseService.storage
+        .from('hotspot-scripts')
+        .createSignedUrl(upload.path, 900) // 15 min
+      if (signError || !signedData) {
+        throw new Error(`Signed URL failed: ${upload.path}`)
+      }
+      const filename = upload.path.split('/').pop()!.replace('.rsc', '')
+      signedUrls[`${filename}_url`] = signedData.signedUrl
     }
-    let sanitized = bootstrapScript.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\t/g, '  ').replace(/\n{3,}/g, '\n\n')
-    console.log(`[script-generator ${VERSION}] Bootstrap generated for ${hotspot.nome} (${sanitized.length}b)`)
-    return new Response(sanitized, { status: 200, headers: { ...corsHeaders, 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="navspot-bootstrap-v${VERSION}.rsc"`, 'X-Navspot-Version': VERSION, 'Cache-Control': 'no-store, max-age=0' } })
+
+    // Update hotspot metadata
+    const { error: updateError } = await supabase.from('hotspots').update({
+      scripts_version: VERSION,
+      scripts_generated_at: new Date().toISOString(),
+      scripts_storage_path: storagePath,
+      script_gerado: bootstrapScript,
+      script_versao: hotspot.script_versao ? hotspot.script_versao + 1 : 1,
+    }).eq('id', hotspot_id)
+    if (updateError) console.error(`[generate ${VERSION}] Metadata update failed:`, updateError)
+
+    console.log(`[generate ${VERSION}] Done for ${hotspot.nome} — infra=${infraScript.length}b sync=${syncScript.length}b guardian=${guardianScript.length}b bootstrap=${bootstrapScript.length}b`)
+
+    return new Response(JSON.stringify({
+      success: true,
+      version: VERSION,
+      ...signedUrls,
+      expires_in_seconds: 900,
+      storage_path: storagePath,
+    }), {
+      status: 200,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json', 'X-Navspot-Version': VERSION },
+    })
   } catch (error) {
-    console.error(`[script-generator ${VERSION}] Error:`, error)
+    console.error(`[generate ${VERSION}] Error:`, error)
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Internal server error' }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
   }
 })

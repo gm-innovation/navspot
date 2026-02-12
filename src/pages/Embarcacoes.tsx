@@ -61,7 +61,7 @@ export default function Embarcacoes() {
   const [embarcacaoToDelete, setEmbarcacaoToDelete] = useState<EmbarcacaoWithStats | null>(null);
   const [scriptModalOpen, setScriptModalOpen] = useState(false);
   const [bootstrapScript, setBootstrapScript] = useState("");
-  const [finalizeScript, setFinalizeScript] = useState("");
+  const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
   const [currentHotspotName, setCurrentHotspotName] = useState("");
   const [currentHotspotId, setCurrentHotspotId] = useState("");
   const [currentScriptVersion, setCurrentScriptVersion] = useState("7.1.47");
@@ -138,9 +138,14 @@ export default function Embarcacoes() {
     
     generateScript.mutate(hotspot.id, {
       onSuccess: (data) => {
-        setBootstrapScript(data.bootstrap_script || "# Script não gerado");
-        setFinalizeScript(data.finalize_script || "# Script não gerado");
-        setCurrentScriptVersion(data.version || "7.1.42");
+        setBootstrapScript(data.bootstrap_script || "");
+        setSignedUrls({
+          infra_url: data.infra_url || '',
+          sync_url: data.sync_url || '',
+          guardian_url: data.guardian_url || '',
+          bootstrap_url: data.bootstrap_url || '',
+        });
+        setCurrentScriptVersion(data.version || "7.8.0");
         setScriptModalOpen(true);
         setGeneratingFor(null);
       },
@@ -154,9 +159,14 @@ export default function Embarcacoes() {
     if (currentHotspotId) {
       generateScript.mutate(currentHotspotId, {
         onSuccess: (data) => {
-          setBootstrapScript(data.bootstrap_script || "# Script não gerado");
-          setFinalizeScript(data.finalize_script || "# Script não gerado");
-          setCurrentScriptVersion(data.version || "7.1.42");
+          setBootstrapScript(data.bootstrap_script || "");
+          setSignedUrls({
+            infra_url: data.infra_url || '',
+            sync_url: data.sync_url || '',
+            guardian_url: data.guardian_url || '',
+            bootstrap_url: data.bootstrap_url || '',
+          });
+          setCurrentScriptVersion(data.version || "7.8.0");
         },
       });
     }
@@ -452,11 +462,11 @@ export default function Embarcacoes() {
         open={scriptModalOpen}
         onOpenChange={setScriptModalOpen}
         bootstrapScript={bootstrapScript}
-        finalizeScript={finalizeScript}
         hotspotName={currentHotspotName}
         hotspotId={currentHotspotId}
         scriptVersion={currentScriptVersion}
         syncToken={currentSyncToken}
+        signedUrls={signedUrls}
         onRegenerate={handleRegenerateScript}
         isRegenerating={generateScript.isPending}
       />

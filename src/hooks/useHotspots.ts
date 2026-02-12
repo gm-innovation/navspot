@@ -158,47 +158,71 @@ export function useDeleteHotspot() {
   });
 }
 
+export interface GeneratedScripts {
+  success: boolean;
+  version: string;
+  infra_url: string;
+  sync_url: string;
+  guardian_url: string;
+  bootstrap_url: string;
+  expires_in_seconds: number;
+  storage_path: string;
+  // Legacy compat
+  bootstrap_script?: string;
+}
+
 export function useGenerateHotspotScript() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (hotspotId: string) => {
+    mutationFn: async (hotspotId: string): Promise<GeneratedScripts> => {
       const { data, error } = await supabase.functions.invoke('mikrotik-script-generator', {
         body: { hotspot_id: hotspotId },
       });
 
       if (error) throw error;
 
-      // Detectar formato da resposta (text/plain vs JSON legado)
+      // v7.8.0 storage-first response (JSON with signed URLs)
+      if (data?.success && data?.infra_url) {
+        return data as GeneratedScripts;
+      }
+
+      // Legacy fallback: text/plain response
       let scriptText: string;
       if (typeof data === 'string') {
         scriptText = data;
       } else if (data && typeof data.text === 'function') {
         scriptText = await data.text();
       } else if (data?.bootstrap_script) {
-        // Fallback JSON antigo
-        return data;
+        return {
+          success: true,
+          version: data.version || '7.7.0',
+          infra_url: '', sync_url: '', guardian_url: '', bootstrap_url: '',
+          expires_in_seconds: 0, storage_path: '',
+          bootstrap_script: data.bootstrap_script,
+        };
       } else {
         throw new Error('Formato de resposta inesperado');
       }
 
       return {
+        success: true,
+        version: scriptText.match(/v(\d+\.\d+\.\d+)/)?.[1] || '7.7.0',
+        infra_url: '', sync_url: '', guardian_url: '', bootstrap_url: '',
+        expires_in_seconds: 0, storage_path: '',
         bootstrap_script: scriptText,
-        finalize_script: '',
-        version: scriptText.match(/v(\d+\.\d+\.\d+)/)?.[1] || '7.2.0',
       };
     },
-    onSuccess: (data) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['hotspots'] });
       toast({
-        title: 'Script gerado',
-        description: 'O script MikroTik foi gerado com sucesso.',
+        title: 'Scripts gerados',
+        description: 'Scripts pré-renderizados e prontos para download.',
       });
-      return data;
     },
     onError: (error) => {
       toast({
-        title: 'Erro ao gerar script',
+        title: 'Erro ao gerar scripts',
         description: error.message,
         variant: 'destructive',
       });
