@@ -1,115 +1,87 @@
 
 
-# v7.7.1: Externalizar Bootstrap para o Banco de Dados
+# v7.7.1: Atualizar Templates com Modelos Corrigidos do Usuario
 
-## Objetivo
+## Situacao Atual no Banco
 
-Mover o conteudo da funcao `generateBootstrapScript` (linhas 421-740, ~320 linhas de RouterOS inline) para um template `bootstrap` na tabela `script_templates`. Isso reduz o arquivo da Edge Function de ~740 para ~300 linhas, eliminando o risco de timeout do bundler Deno.
+Os templates ja existem e estao funcionais:
 
-## Situacao Atual
+| Template | Tamanho | Status |
+|----------|---------|--------|
+| `bootstrap` | 12.7KB | Template ULTRA-THIN com fetch/import (funcional) |
+| `sync` | 3.1KB | 6 handlers completos (configure_hotspot_profile, create_user, create_profile, remove_user, disable_user, enable_user) |
+| `guardian` | 1.9KB | Recovery automatico via fetch de recovery.rsc |
+| `sync-standalone` | 1.4KB | Wrapper que injeta `{{SYNC_SOURCE}}` via Edge Function |
+| `guardian-standalone` | 946B | Wrapper que injeta `{{GUARDIAN_SOURCE}}` via Edge Function |
+| `installer` | 6.1KB | Instalador completo (fetch + import sync + guardian) |
 
-- `generateBootstrapScript()` constroi o script RouterOS inteiro via template literals TypeScript
-- O script tem partes dinamicas (portas LAN, WAN config, network base) que precisam ser parametrizadas
-- Templates `sync`, `guardian`, `installer`, `sync-standalone`, `guardian-standalone` ja estao no banco
-- O bootstrap e o unico template que ainda vive inline no codigo
+## Comparacao: Modelos do Usuario vs Templates do Banco
 
-## Desafio Principal
+### 1. infra.rsc (usuario) vs bootstrap (banco)
 
-O bootstrap atual usa logica TypeScript para gerar conteudo dinamico:
-- `allLanPorts` filtra portas baseado na WAN interface
-- `migrationCommands` gera N blocos de migracao por porta
-- `wanConfig` muda conforme `wan_type` (dhcp vs manual)
-- Variaveis como `networkBase`, `gateway`, `poolStart`, `poolEnd` sao derivadas de `hotspot.rede`
+O modelo `infra.rsc` do usuario e uma versao simplificada e limpa da infraestrutura. O `bootstrap` atual (12.7KB) e um script ULTRA-THIN que faz fetch/import dos scripts sync e guardian automaticamente.
 
-Essas derivacoes precisam ser movidas para o handler TypeScript (pre-processamento) e injetadas como placeholders.
+**Decisao recomendada:** Criar um **novo template `infra`** no banco, baseado no modelo do usuario, para uso na aba Modular. O `bootstrap` continua existindo para o fluxo automatico. Sao complementares, nao substitutos.
 
-## Plano Tecnico
+Ajustes necessarios no modelo do usuario para virar template:
+- Substituir token hardcoded por `{{SYNC_TOKEN}}`
+- Substituir IPs hardcoded por placeholders (`{{GATEWAY}}`, `{{NETWORK_CIDR}}`, `{{POOL_START}}`, `{{POOL_END}}`)
+- Adicionar `{{VERSION}}` nos logs
+- Adicionar `{{SUPABASE_HOST}}` no walled garden
 
-### 1. Novo template `bootstrap` na tabela `script_templates` (SQL)
+### 2. sync-standalone.rsc (usuario) vs sync-standalone (banco)
 
-Conteudo: todo o RouterOS que hoje esta entre as linhas 455-738, com placeholders:
+O template `sync-standalone` do banco ja funciona corretamente: ele usa `{{SYNC_SOURCE}}` como placeholder, e a Edge Function injeta o conteudo escapado do template `sync` (que tem os 6 handlers completos).
 
-```text
-Placeholders existentes (ja usados em outros templates):
-  {{VERSION}}, {{SYNC_TOKEN}}, {{DEPLOYED_AT}}
+O modelo do usuario tem apenas 3 handlers (remove_user, disable_user, enable_user) - faltam `configure_hotspot_profile`, `create_user` e `create_profile`.
 
-Novos placeholders especificos do bootstrap:
-  {{WAN_INTERFACE}}     - ex: ether1
-  {{WAN_CONFIG}}        - bloco completo de config WAN (dhcp-client ou log manual)
-  {{NETWORK_BASE}}      - ex: 10.10.10
-  {{NETWORK_CIDR}}      - ex: 10.10.10.0/24
-  {{GATEWAY}}           - ex: 10.10.10.1
-  {{POOL_START}}        - ex: 10.10.10.10
-  {{POOL_END}}          - ex: 10.10.10.254
-  {{EMBARCACAO_NOME}}   - nome da embarcacao
-  {{MIGRATION_COMMANDS}} - bloco de migracao de portas LAN (gerado pelo handler)
-  {{SCRIPTS_URL}}       - URL do endpoint serve
-  {{SUPABASE_HOST}}     - hostname para DNS resolve check
-```
+**Decisao:** Manter o template `sync-standalone` do banco como esta. Ele ja e mais completo e correto. Nenhuma mudanca necessaria.
 
-O template sera inserido via SQL migration usando dollar quoting ($ts$...$ts$).
+### 3. guardian-standalone.rsc (usuario) vs guardian-standalone (banco)
 
-### 2. Modificar Edge Function (handler POST)
+O template `guardian-standalone` do banco ja funciona: usa `{{GUARDIAN_SOURCE}}` e a Edge Function injeta o conteudo do template `guardian` (que inclui recovery automatico via fetch).
 
-Substituir a chamada `generateBootstrapScript()` por:
+O modelo do usuario e mais simples (sem recovery), o que e uma escolha valida mas reduz a capacidade de auto-reparo.
 
-1. Calcular as variaveis derivadas (networkBase, gateway, poolStart, etc) - manter essa logica em TypeScript (~30 linhas)
-2. Gerar `migrationCommands` e `wanConfig` como strings - manter essa logica (~15 linhas)
-3. Buscar template `bootstrap` do banco via service_role
-4. Aplicar todas as substituicoes de placeholders
-5. Executar `normalizeNewlines`, `validateBalance`, `validateRouterOSScript` no resultado
+**Decisao:** Manter o template `guardian-standalone` do banco como esta. Ele ja tem recovery integrado.
 
-A funcao `generateBootstrapScript` e as helpers `isBlockedNetwork`, `normalizeNewlines`, `validateBalance`, `validateRouterOSScript` permanecem no arquivo. Apenas o corpo do template RouterOS sai.
+## Plano de Implementacao
 
-Resultado: o arquivo passa de ~740 linhas para ~350 linhas (handlers + logica de derivacao + helpers).
+### Unica mudanca necessaria: Criar template `infra` no banco
 
-### 3. Adicionar tipo `bootstrap` no serve mode
+Inserir um novo registro na tabela `script_templates` com id=`infra`, baseado no modelo do usuario, parametrizado com placeholders.
 
-Para permitir download direto do bootstrap via modular (sem JWT):
+O conteudo sera:
+- Cleanup idempotente de instalacoes anteriores
+- Bridge + IP com guardrail de conflito
+- Pool DHCP + servidor DHCP
+- NAT masquerade
+- Hotspot profile (cookie 30m, login-by cookie+http-pap)
+- Hotspot server
+- Walled garden (gstatic, supabase, jsdelivr, fonts)
+- Salvar token em arquivo
 
-```text
-GET ?mode=serve&type=bootstrap&token=XXX
-```
+### Atualizar Edge Function
 
-O handler serve precisa da mesma logica de derivacao (calcular networkBase, gateway, etc a partir do hotspot). Adicionar esse case no switch de `scriptType`.
+Adicionar `type=infra` como tipo proprio (nao alias de bootstrap):
+- Buscar template `infra` do banco
+- Aplicar placeholders de rede derivados do hotspot
+- Retornar como text/plain
 
-### 4. Atualizar frontend
+### Nenhuma mudanca no frontend
 
-No hook `useGenerateHotspotScript` (useHotspots.ts): nenhuma mudanca necessaria - o POST continua funcionando igual, so o backend muda internamente.
-
-Na aba Modular do ScriptModal: o botao "Infraestrutura" ja chama `type=infra`. Podemos manter `infra` como alias para `bootstrap` ou atualizar para `type=bootstrap`.
-
-### 5. Validacao de seguranca
-
-- O template no banco usa dollar quoting para preservar caracteres especiais
-- Placeholders sao sanitizados (sem input do usuario direto)
-- `validateRouterOSScript` roda apos substituicao para garantir integridade
+A aba Modular ja chama `type=infra` - so precisa do template no banco e do handler no serve mode.
 
 ## Arquivos Alterados
 
 | Arquivo | Mudanca |
 |---------|---------|
-| SQL migration | INSERT template `bootstrap` com ~280 linhas de RouterOS |
-| `mikrotik-script-generator/index.ts` | Remover corpo de `generateBootstrapScript`, buscar template do banco, adicionar type=bootstrap no serve |
-| Nenhuma mudanca no frontend | POST continua igual, serve mode ja suporta infra |
+| SQL (via insert tool) | INSERT template `infra` na tabela `script_templates` |
+| `mikrotik-script-generator/index.ts` | Separar `infra` de `bootstrap` no serve mode |
 
-## Ordem de Execucao
+## Resumo
 
-1. Criar migration SQL com o template `bootstrap`
-2. Refatorar `generateBootstrapScript` para buscar template + aplicar placeholders
-3. Adicionar `type=bootstrap` no serve mode (alias de infra)
-4. Deploy da Edge Function
-5. Testar: `curl ?mode=health` confirma deploy OK
-6. Testar: POST para gerar bootstrap via painel
-7. Testar: `curl ?mode=serve&type=bootstrap&token=XXX` retorna script valido
-8. Importar no MikroTik e verificar execucao
-
-## Riscos e Mitigacao
-
-| Risco | Mitigacao |
-|-------|----------|
-| Placeholders nao substituidos (aparecem literais no .rsc) | Validacao pos-render: verificar se nenhum `{{` resta no script final |
-| Dollar quoting quebra no SQL | Usar tag unica ($bs$...$bs$) e testar a migration |
-| Logica de derivacao incorreta | Manter os mesmos calculos TypeScript, so mudar onde o template vive |
-| Deploy timeout persiste | Arquivo final tera ~350 linhas (vs 740), bem abaixo do limite |
+- Os templates `sync-standalone` e `guardian-standalone` do banco ja estao **mais completos** que os modelos do usuario (6 handlers vs 3, recovery automatico vs sem recovery)
+- O modelo `infra.rsc` do usuario e **util e complementar** ao bootstrap - sera adicionado como template novo
+- Nenhum template existente precisa ser substituido
 
