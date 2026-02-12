@@ -1,107 +1,131 @@
 
-# v7.8.1: Upload Direto para Storage (Sem Escaping)
 
-## Problema Atual
+# Split: Dividir mikrotik-script-generator em funcoes menores
 
-O sistema atual usa um processo em 2 passos problemático:
-1. Busca o template `sync` (codigo RouterOS puro com `$var`)
-2. Escapa `$`, `"`, `\` e injeta dentro de `source="..."` do template `sync-standalone`
+## Problema
 
-Esse processo de escaping e fragil e ja causou o flag `I - invalid` no router. O arquivo `.rsc` que o usuario validou no hardware funciona perfeitamente porque ja contem todos os escapes corretos nativamente.
+A Edge Function `mikrotik-script-generator` (294 linhas) excede o limite de 60s do bundler Deno, causando falha silenciosa no deploy (404 permanente). Uma versao minima (16 linhas) deploya sem problemas.
 
-## Solucao: Templates Completos Pre-Escapados
+## Estrategia
 
-Substituir os templates `sync-standalone` e `guardian-standalone` no banco por arquivos `.rsc` completos e auto-contidos, com todos os escapes RouterOS ja embutidos. A Edge Function so precisa substituir `{{SYNC_TOKEN}}`, `{{SYNC_URL}}`, `{{RECOVERY_URL}}` e `{{VERSION}}` — sem nenhum escaping adicional.
+Criar uma funcao orquestradora leve (`mikrotik-script-generator`) que delega a renderizacao para uma funcao auxiliar (`mikrotik-render-template`). A orquestradora cuida de autenticacao, validacao e upload para Storage. A auxiliar cuida apenas de buscar template + substituir placeholders.
 
-## Plano de Execucao
+**Por que nao 3 funcoes separadas?** O frontend atual chama uma unica funcao POST que gera os 4 scripts de uma vez e retorna URLs assinadas. Manter esse contrato evita mudancas no frontend. O problema do bundler e resolvido simplesmente reduzindo o tamanho de cada funcao individual.
 
-### 1. Atualizar template `sync-standalone` no banco (SQL migration)
+## Arquitetura
 
-Substituir o conteudo atual (que usa `{{SYNC_SOURCE}}`) pelo arquivo `.rsc` completo baseado no arquivo validado pelo usuario, mas com placeholders:
+```text
+Frontend (POST /mikrotik-script-generator)
+    |
+    v
+mikrotik-script-generator (orquestrador ~80 linhas)
+    |-- Valida auth + hotspot_id
+    |-- Busca dados do hotspot
+    |-- Chama mikrotik-render-template 4x (via fetch interno)
+    |-- Upload 4 .rsc para Storage
+    |-- Retorna signed URLs
+    |
+    v
+mikrotik-render-template (renderizador ~120 linhas)
+    |-- Recebe: template_id + vars (JSON POST)
+    |-- Busca template do banco
+    |-- Substitui placeholders
+    |-- Retorna texto puro
+```
 
-- `{{SYNC_TOKEN}}` no lugar do token hardcoded
-- `{{SYNC_URL}}` no lugar da URL do mikrotik-sync
-- `{{VERSION}}` no lugar da versao
-- `{{SYNC_INTERVAL}}` no lugar do intervalo
+## Arquivos
 
-O arquivo ja contera todos os escapes RouterOS corretos (`\"`, `\$`, `\\\"`) nativamente.
+| Arquivo | Acao | Tamanho |
+|---------|------|---------|
+| `supabase/functions/mikrotik-render-template/index.ts` | **CRIAR** | ~120 linhas |
+| `supabase/functions/mikrotik-script-generator/index.ts` | **REESCREVER** | ~80 linhas |
+| `supabase/config.toml` | Adicionar `[functions.mikrotik-render-template]` | 2 linhas |
 
-### 2. Atualizar template `guardian-standalone` no banco (SQL migration)
-
-Mesmo principio: criar o `.rsc` completo com o conteudo do guardian ja pre-escapado para `source="..."`, usando `{{SYNC_TOKEN}}`, `{{RECOVERY_URL}}` e `{{VERSION}}` como placeholders.
-
-### 3. Simplificar a Edge Function `mikrotik-script-generator`
-
-Remover a logica de `innerTemplateId` e todo o bloco de escaping (linhas 97-106). Para sync-standalone e guardian-standalone, a Edge Function agora apenas:
-
-1. Busca o template do banco
-2. Faz `replaceAll` dos placeholders
-3. Faz upload direto para Storage
-
-Sem `.replace(/\$/g, '\\$')`, sem `.replace(/"/g, '\\"')` — nada disso.
-
-### 4. Preservar encoding
-
-O upload para Storage usa `new TextEncoder().encode(content)` que ja garante UTF-8 sem BOM. A funcao `normalizeNewlines` ja garante LF.
-
-## Arquivos Alterados
-
-| Arquivo | Mudanca |
-|---------|---------|
-| SQL migration | UPDATE `sync-standalone` e `guardian-standalone` na tabela `script_templates` com conteudo .rsc completo |
-| `supabase/functions/mikrotik-script-generator/index.ts` | Remover logica de `innerTemplateId`/escaping; simplificar `renderTemplate` |
+**Nenhuma mudanca no frontend** — o contrato da API (POST com hotspot_id, resposta JSON com signed URLs) permanece identico.
 
 ## Detalhes Tecnicos
 
-### Template sync-standalone (novo conteudo)
+### 1. mikrotik-render-template (NOVA)
 
-Sera o arquivo do usuario com 3 substituicoes:
-- Linha do token: `\"{{SYNC_TOKEN}}\"` em vez do hash hardcoded
-- Linha do URL: `\"{{SYNC_URL}}\"` em vez da URL hardcoded
-- Versao: `{{VERSION}}` onde aparece
-- Intervalo do scheduler: `{{SYNC_INTERVAL}}m`
+Funcao interna (service_role only) que recebe via POST:
 
-O wrapper (remove antigo, add scheduler, netwatch, primeiro sync) sera mantido exatamente como esta no arquivo do usuario, porem adicionando as partes do standalone atual (scheduler, netwatch, primeiro sync).
-
-### Template guardian-standalone (novo conteudo)
-
-Mesma abordagem: o conteudo do guardian sera pre-escapado manualmente para funcionar dentro de `source="..."`, com placeholders `{{SYNC_TOKEN}}`, `{{RECOVERY_URL}}` e `{{VERSION}}`.
-
-### Edge Function simplificada
-
-A funcao `renderTemplate` perde os parametros `innerTemplateId` e `syncToken`. Fica apenas:
-
-```typescript
-async function renderTemplate(supabase, templateId, vars) {
-  const { data: tpl, error } = await supabase
-    .from('script_templates').select('content')
-    .eq('id', templateId).single()
-  if (error || !tpl) throw new Error(`Template '${templateId}' not found`)
-  let script = applyPlaceholders(tpl.content, vars)
-  return normalizeNewlines(script)
+```json
+{
+  "template_id": "sync-standalone",
+  "vars": {
+    "{{VERSION}}": "7.8.1",
+    "{{SYNC_TOKEN}}": "abc123...",
+    ...
+  }
 }
 ```
 
-As chamadas mudam de:
+Retorna o script renderizado como `text/plain`. Contem:
+- `normalizeNewlines()`
+- `applyPlaceholders()`
+- `renderTemplate()` (busca do banco + substituicao)
+
+Validacao: aceita apenas requests com header `Authorization: Bearer <SERVICE_ROLE_KEY>` para evitar uso externo.
+
+### 2. mikrotik-script-generator (REESCRITA)
+
+Mantem o mesmo endpoint e contrato. Contem:
+- `isBlockedNetwork()`
+- `deriveVars()` (sem `buildMigrationCommands` e `buildWanConfig` que sao movidos para o render)
+- Rota GET `?mode=health`
+- Rota GET `?mode=serve` (legacy)
+- Rota POST (gerar + upload + signed URLs)
+
+Para renderizar cada template, faz fetch interno:
+
 ```typescript
-renderTemplate(supabaseService, 'sync-standalone', vars, 'sync')
+async function renderViaFunction(templateId, vars) {
+  const url = Deno.env.get('SUPABASE_URL') + '/functions/v1/mikrotik-render-template'
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+    },
+    body: JSON.stringify({ template_id: templateId, vars })
+  })
+  if (!res.ok) throw new Error('Render failed: ' + templateId)
+  return await res.text()
+}
 ```
-Para:
-```typescript
-renderTemplate(supabaseService, 'sync-standalone', vars)
+
+### 3. deriveVars simplificado
+
+As funcoes `buildMigrationCommands()` e `buildWanConfig()` sao movidas para `mikrotik-render-template` pois geram strings RouterOS que so sao necessarias durante a renderizacao. O orquestrador passa apenas os parametros basicos (wanInterface, wanType, allLanPorts) como variaveis, e o renderizador constroi os comandos.
+
+**Alternativa mais simples:** manter `deriveVars` completo no orquestrador (incluindo buildMigrationCommands e buildWanConfig) e passar o mapa de vars pronto para o renderizador. Isso evita duplicacao de logica e mantem o renderizador 100% generico.
+
+Vou seguir a alternativa mais simples: `deriveVars` completo no orquestrador, renderizador so faz template + placeholders.
+
+### 4. config.toml
+
+```toml
+[functions.mikrotik-render-template]
+verify_jwt = false
 ```
 
 ## Ordem de Execucao
 
-1. SQL migration: atualizar os 2 templates no banco
-2. Simplificar Edge Function (remover escaping)
-3. Deploy da Edge Function
-4. Testar: gerar scripts, baixar, importar no router, verificar que nao ha flag `I - invalid`
+1. Criar `mikrotik-render-template/index.ts`
+2. Atualizar `config.toml`
+3. Deploy de `mikrotik-render-template`
+4. Testar via curl (POST com template_id + vars)
+5. Reescrever `mikrotik-script-generator/index.ts` (versao leve)
+6. Deploy de `mikrotik-script-generator`
+7. Testar health check
+8. Testar geracao completa via frontend
 
 ## Riscos e Mitigacao
 
 | Risco | Mitigacao |
 |-------|----------|
-| Escaping manual incorreto no template guardian | Construir a partir do guardian atual, aplicando os mesmos padroes do sync validado |
-| Templates antigos em uso pelo mode=serve legado | mode=serve tambem usa renderTemplate, que agora funciona igual — sem inner injection |
-| Placeholders nao encontrados | `applyPlaceholders` ja lanca erro se sobrar `{{...}}` |
+| Latencia extra (4 fetches internos) | Chamadas em paralelo via Promise.all — overhead minimo (~50ms cada) |
+| mikrotik-render-template tambem excede bundler | Funcao e muito pequena (~120 linhas, sem dependencias pesadas) |
+| mode=serve legacy quebra | Mantido no orquestrador, delegando para render-template via fetch |
+| Renderizador exposto publicamente | Validacao de service_role_key no header |
+
