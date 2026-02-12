@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.6.1"
+const VERSION = "7.6.2"
 const DEPLOYED_AT = new Date().toISOString()
 
 /**
@@ -459,7 +459,7 @@ ${migrationCommands}
 :do { /ip hotspot profile add name="hsprof-navspot" hotspot-address=${gateway} } on-error={}
 # v7.1.47: Garantir login-by correto desde o inicio (sem aspas!)
 /ip hotspot profile set [find name="hsprof-navspot"] login-by=cookie,http-pap,http-chap
-/ip hotspot profile set [find name="hsprof-navspot"] http-cookie-lifetime=3d
+/ip hotspot profile set [find name="hsprof-navspot"] http-cookie-lifetime=30m
 :log info "NAVSPOT v${VERSION}: login-by=cookie,http-pap,http-chap aplicado"
 :do { /ip hotspot add name="hs-navspot" interface=bridge1 address-pool="hs-pool-navspot" profile="hsprof-navspot" disabled=no } on-error={}
 :log info "NAVSPOT v${VERSION}: Hotspot criado (aguardando config via sync)"
