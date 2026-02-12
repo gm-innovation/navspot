@@ -489,6 +489,9 @@ export type Database = {
           ros_version: string | null
           script_gerado: string | null
           script_versao: number
+          scripts_generated_at: string | null
+          scripts_storage_path: string | null
+          scripts_version: string | null
           status: string
           sync_interval_minutes: number
           sync_token: string
@@ -518,6 +521,9 @@ export type Database = {
           ros_version?: string | null
           script_gerado?: string | null
           script_versao?: number
+          scripts_generated_at?: string | null
+          scripts_storage_path?: string | null
+          scripts_version?: string | null
           status?: string
           sync_interval_minutes?: number
           sync_token?: string
@@ -547,6 +553,9 @@ export type Database = {
           ros_version?: string | null
           script_gerado?: string | null
           script_versao?: number
+          scripts_generated_at?: string | null
+          scripts_storage_path?: string | null
+          scripts_version?: string | null
           status?: string
           sync_interval_minutes?: number
           sync_token?: string
