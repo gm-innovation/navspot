@@ -1,6 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-const VERSION = "7.6.1"
+const VERSION = "7.6.2"
 const DEPLOYED_AT = new Date().toISOString()
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
