@@ -1,63 +1,101 @@
 
-# Fix: Cache de perfis impede re-sincronizacao
 
-## Problema
+# Fix Guardian v7.8.6: Deploy + Health URL + Crash-Safe Version Check
 
-O erro no roteador e claro: **"login failed: unknown user profile"** -- o perfil `tripulacao-googlemarine` nao existe no hardware.
+## Problemas Confirmados
 
-Porem o backend acha que esta tudo certo:
-1. `synced_profiles = ["tripulacao-googlemarine"]` (cache diz que o perfil ja foi enviado)
-2. `registered_profiles_csv = ""` (roteador reporta 0 perfis)
-3. Backend entra no fallback de cache (linha 1535-1541) e pula: "Profile in cache, skipping"
-4. Log diz "All profiles confirmed synced" -- falso
+1. **Edge Function retorna 404**: O `navspot-script-gen` nao esta registrado no gateway. Confirmado via teste direto.
+2. **URL do health check errada**: O template usa `{{SCRIPTS_URL}}&type=health` que resolve para `mode=serve&type=health`, caindo no handler errado.
+3. **Guardian crasha silenciosamente**: O parsing complexo de JSON (`[:find $hbody "\"version\":\""]`) causa crash no RouterOS 7 que nao e capturado pelo `on-error`.
+4. **Sem logging de debug**: Quando o health check falha, nao ha visibilidade sobre o conteudo recebido.
 
-**Causa raiz**: O sistema "fire-and-forget" marca a acao como `executado` e atualiza o cache no momento do envio. Se o roteador falha ao processar (bug do parser antigo), o cache fica inconsistente permanentemente.
+## Alteracoes
 
-## Correcao
+### 1. Version bump para 7.8.6
 
-### Parte 1: Codigo - Invalidar cache quando roteador reporta 0 perfis
+Arquivo: `supabase/functions/navspot-script-gen/index.ts`
+- Mudar VERSION de `"7.8.5"` para `"7.8.6"`
 
-No `mikrotik-sync/index.ts`, antes do loop de perfis (entre linhas 1517-1520), adicionar logica:
+### 2. Template `guardian` (tabela `script_templates`)
 
-Se `registeredProfilesCsv` esta vazio **E** `syncedProfiles` tem itens, o cache esta mentindo. Limpar o cache para forcar reenvio.
+Reescrever com as seguintes correcoes:
 
-```typescript
-// v7.8.7: Invalidate cache when router reports 0 profiles but cache is non-empty
-// This means a previous action was sent but never processed by the router
-if (registeredProfilesCsv.length === 0 && syncedProfiles.length > 0) {
-  console.warn(`[mikrotik-sync] v7.8.7: Cache/router mismatch - cache has ${syncedProfiles.length} profiles but router reports 0. Clearing cache to force re-sync`)
-  syncedProfiles.length = 0 // Clear in-memory to force re-injection below
-  await supabase
-    .from('hotspots')
-    .update({ synced_profiles: [] })
-    .eq('id', hotspot.id)
+**a) Lock reset** (mantido como esta)
+
+**b) Component checks** (mantidos)
+
+**c) Health check com URL correta e crash-safe**:
+- Usar `{{API_BASE}}/navspot-script-gen?mode=health` em vez de `{{SCRIPTS_URL}}&type=health`
+- Substituir parsing complexo de JSON por verificacao simples: `[:find $hbody "{{VERSION}}"]`
+- Se a string `{{VERSION}}` (ex: "7.8.6") NAO aparece no body, a versao mudou
+- Adicionar log do conteudo recebido para facilitar debug
+
+```text
+# Version check (crash-safe)
+:do {
+:local hresp [/tool fetch url="{{API_BASE}}/navspot-script-gen?mode=health" as-value output=user]
+:local hbody ($hresp->"data")
+:log info ("NAVSPOT-GUARDIAN: health=" . $hbody)
+:if ([:find $hbody "{{VERSION}}"] < 0) do={
+:log warning "NAVSPOT-GUARDIAN: Versao diferente detectada"
+:set needsRepair 1
+:set missing ($missing . "version ")
+}
+} on-error={
+:log warning "NAVSPOT-GUARDIAN: Health check falhou"
 }
 ```
 
-Isso garante que na proxima iteracao do loop, o perfil sera re-injetado automaticamente sem intervencao manual.
+### 3. Template `guardian-standalone` (tabela `script_templates`)
 
-### Parte 2: SQL imediato - Desbloquear agora
+Mesmas correcoes do template `guardian`, com escaping correto para RouterOS:
+- `\"` para aspas dentro do source
+- `\$` para variaveis
+- URL correta: `{{API_BASE}}/navspot-script-gen?mode=health`
+- Verificacao simplificada: `[:find \$hbody \"{{VERSION}}\"]`
+- Log de debug do conteudo recebido
 
-Limpar o cache novamente para que o fix funcione antes mesmo do deploy do codigo:
+### 4. Deploy forcado
 
-```sql
-UPDATE hotspots 
-SET synced_profiles = '[]'::jsonb
-WHERE id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1';
+Executar delete + redeploy do `navspot-script-gen` para resolver o 404 persistente no gateway.
+
+### 5. Verificacao pos-deploy
+
+Testar via curl que `navspot-script-gen?mode=health` retorna:
+```text
+{"version":"7.8.6","status":"ok","deployed_at":"...","function":"navspot-script-gen"}
 ```
 
-Nao precisa inserir nova acao -- o codigo de reconciliacao vai re-injetar o perfil automaticamente quando ver cache vazio.
+## Ordem de Execucao
 
-## Arquivo modificado
+1. Bump versao no `index.ts` para 7.8.6
+2. UPDATE template `guardian` no banco com URL correta + version check simplificado + log de debug
+3. UPDATE template `guardian-standalone` no banco com mesmas correcoes (escapadas)
+4. Delete + redeploy da edge function `navspot-script-gen`
+5. Testar health check via curl
+6. Gerar scripts novamente pelo painel e importar `guardian.rsc` no roteador
 
-| Arquivo | Mudanca |
-|---------|---------|
-| `supabase/functions/mikrotik-sync/index.ts` | Adicionar invalidacao de cache (entre linhas 1517-1520) |
-| SQL (hotspots) | Limpar synced_profiles para desbloqueio imediato |
+## Secao Tecnica: Por que o parsing complexo crasha
 
-## Resultado esperado
+No RouterOS 7.x, a expressao:
+```text
+:local vs [:find $hbody "\"version\":\""]
+```
+Envolve aspas escapadas dentro de aspas, que o parser do hAP ax2 nao interpreta corretamente. Isso causa um crash silencioso que nao e capturado nem pelo bloco `on-error`. A solucao e usar:
+```text
+:if ([:find $hbody "{{VERSION}}"] < 0) do={...}
+```
+Onde `{{VERSION}}` e substituido pelo valor literal (ex: "7.8.6") no momento da geracao do script, eliminando qualquer ambiguidade de escaping.
 
-1. Cache limpo -> proximo sync detecta perfil ausente -> envia `create_profile` no payload
-2. Template corrigido parseia o perfil corretamente
-3. Login do `alexandre.silva` funciona
-4. Futuras inconsistencias de cache sao auto-corrigidas pelo novo guard
+## Acao Imediata (Manual)
+
+Enquanto as correcoes sao aplicadas, restaurar o sync executando no MikroTik:
+
+```text
+/tool fetch url="https://focqrhkozhdefohroqyi.supabase.co/functions/v1/mikrotik-recovery-download" http-method=post http-data="{\"sync_token\":\"bba989838d50d36a5fd0d8f0ac45b11bec0020fe8be395789691d4c002f0ad0e\"}" http-header-field="Content-Type: application/json" check-certificate=no dst-path="navspot-recovery.rsc"
+```
+Depois:
+```text
+/import navspot-recovery.rsc
+```
+

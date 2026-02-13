@@ -1205,9 +1205,7 @@ Deno.serve(async (req) => {
 
       console.log(`[mikrotik-sync] v7.1.60: Skipping portal repair - telemetry unreliable (login_by="${hotspotLoginBy}", failures=${newFailures})`)
 
-      // v7.8.6: Only force repair if portal was NEVER configured
-      const currentPPV = (hotspot as any).portal_profile_version
-      if (newFailures >= 3 && !currentPPV) {
+      if (newFailures >= 3) {
         console.warn(`[mikrotik-sync] v7.1.61: FORCE REPAIR - ${newFailures} consecutive telemetry failures, injecting portal config to break deadlock (hotspot=${hotspot.nome})`)
 
         const hotspotSlug = hotspot.nome.toLowerCase()
@@ -1228,23 +1226,17 @@ Deno.serve(async (req) => {
           payload: { login_url: forceLoginUrl, dns_name: forceDnsName }
         })
 
+        // Reset counter + portal_profile_version + mark force-repair timestamp
         const { error: resetError } = await supabase
           .from('hotspots')
-          .update({ telemetry_failures: 0, last_force_repair_at: new Date().toISOString() })
+          .update({ telemetry_failures: 0, portal_profile_version: null, last_force_repair_at: new Date().toISOString() })
           .eq('id', hotspot.id)
 
         if (resetError) {
           console.error(`[mikrotik-sync] v7.1.60d: Failed to reset telemetry_failures: ${resetError.message}`)
         } else {
-          console.log(`[mikrotik-sync] v7.1.60d: Reset telemetry_failures to 0, last_force_repair_at set after force repair (portal_profile_version preserved)`)
+          console.log(`[mikrotik-sync] v7.1.60d: Reset telemetry_failures to 0, portal_profile_version to null, last_force_repair_at set after force repair`)
         }
-      } else if (newFailures >= 3) {
-        // Portal already configured - just reset counter, don't inject broken action
-        console.log(`[mikrotik-sync] v7.8.6: Skipping force repair - portal already configured (version=${currentPPV}), resetting counter`)
-        await supabase
-          .from('hotspots')
-          .update({ telemetry_failures: 0 })
-          .eq('id', hotspot.id)
       }
     } else {
       // Telemetry reliable -- reset counter if needed
@@ -1285,9 +1277,9 @@ Deno.serve(async (req) => {
       if (currentVersion === REQUIRED_PORTAL_VERSION) {
         await supabase
           .from('hotspots')
-          .update({ portal_profile_version: REQUIRED_PORTAL_VERSION })
+          .update({ portal_profile_version: null })
           .eq('id', hotspot.id)
-        console.log(`[mikrotik-sync] v7.1.46: Kept portal_profile_version as ${REQUIRED_PORTAL_VERSION} (repair injected but version preserved)`)
+        console.log(`[mikrotik-sync] v7.1.46: Reset portal_profile_version to null (awaiting telemetry confirmation)`)
       }
       
       console.log(`[mikrotik-sync] v7.1.46: Injected configure_hotspot_profile for ${hotspot.nome}`)
@@ -1517,17 +1509,6 @@ Deno.serve(async (req) => {
         const syncedProfiles = ((hotspot as Record<string, unknown>).synced_profiles || []) as string[]
         const newProfilesToSync: string[] = []
 
-        // v7.8.7: Invalidate cache when router reports 0 profiles but cache is non-empty
-        // This means a previous action was sent but never processed by the router
-        if (registeredProfilesCsv.length === 0 && syncedProfiles.length > 0) {
-          console.warn(`[mikrotik-sync] v7.8.7: Cache/router mismatch - cache has ${syncedProfiles.length} profiles but router reports 0. Clearing cache to force re-sync`)
-          syncedProfiles.length = 0 // Clear in-memory to force re-injection below
-          await supabase
-            .from('hotspots')
-            .update({ synced_profiles: [] })
-            .eq('id', hotspot.id)
-        }
-
         const profileActions = perfis
           .map(p => {
             const slug = p.nome.toLowerCase()
@@ -1546,12 +1527,11 @@ Deno.serve(async (req) => {
             } else {
               // v6.9.9: Fallback - MikroTik didn't send profiles (old script)
               // Use cached synced_profiles but log warning
-              // v7.8.6: Revert to cache check - always inject was too aggressive
               if (syncedProfiles.includes(slug)) {
-                console.log(`[mikrotik-sync] v7.8.6: Profile in cache, skipping: ${slug}`)
+                console.log(`[mikrotik-sync] v6.9.9: Profile in cache (no MikroTik data), skipping: ${slug}`)
                 return null
               }
-              console.log(`[mikrotik-sync] v7.8.6: Profile not in cache, will sync: ${slug}`)
+              console.warn(`[mikrotik-sync] v6.9.9: No MikroTik profile data, will sync: ${slug}`)
             }
             
             newProfilesToSync.push(slug)
@@ -1804,7 +1784,6 @@ Deno.serve(async (req) => {
           }
           // Update profile is handled via create_user with updated profile
           return `create_user|${p.user || ''}||${p.profile || ''}`
-        case 'create_profile':
         case 'add_user_profile':
           // v6.9.5: Create profile with normalized rate-limit (remove B suffix)
           const normalizeRate = (v: string): string => String(v || '2M/5M')

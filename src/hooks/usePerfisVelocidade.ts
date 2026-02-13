@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Tables, TablesInsert, TablesUpdate } from '@/integrations/supabase/types';
 import { toast } from '@/hooks/use-toast';
-import { createMikrotikAction, createMikrotikActionForEmpresa, toProfileSlug } from '@/hooks/useMikrotikSync';
+import { createMikrotikActionForEmpresa, toProfileSlug } from '@/hooks/useMikrotikSync';
 
 export type PerfilVelocidade = Tables<'perfis_velocidade'>;
 export type PerfilVelocidadeInsert = TablesInsert<'perfis_velocidade'>;
@@ -221,66 +221,6 @@ export function useUpdatePerfilVelocidade() {
         });
       } catch (actionError) {
         console.error('[usePerfisVelocidade] Failed to create MikroTik action:', actionError);
-      }
-
-      // v7.8.7: Auto-unblock tripulantes when quota limit is increased
-      const oldLimitBytes = oldData.limite_dados_mb
-        ? oldData.limite_dados_mb * 1024 * 1024
-        : null;
-      const newLimitBytes = data.limite_dados_mb
-        ? data.limite_dados_mb * 1024 * 1024
-        : null;
-
-      if (newLimitBytes) {
-        const { data: blockedTripulantes } = await supabase
-          .from('tripulantes')
-          .select('id, login_wifi, bytes_consumidos, embarcacao_id')
-          .eq('perfil_id', id)
-          .eq('status', 'bloqueado')
-          .eq('bloqueio_motivo', 'quota_exceeded');
-
-        if (blockedTripulantes && blockedTripulantes.length > 0) {
-          for (const t of blockedTripulantes) {
-            if (t.bytes_consumidos < newLimitBytes) {
-              // Reactivate in database
-              await supabase
-                .from('tripulantes')
-                .update({
-                  status: 'ativo',
-                  bloqueio_motivo: null,
-                  bloqueado_at: null,
-                })
-                .eq('id', t.id);
-
-              // Get devices to unblock on MikroTik
-              const { data: devices } = await supabase
-                .from('dispositivos_registrados')
-                .select('mac_address')
-                .eq('tripulante_id', t.id);
-
-              for (const d of devices || []) {
-                await createMikrotikAction({
-                  embarcacaoId: t.embarcacao_id,
-                  tipo: 'unblock_quota',
-                  payload: { mac: d.mac_address },
-                });
-                // v7.8.6: Force device reconnection to trigger re-authentication
-                await createMikrotikAction({
-                  embarcacaoId: t.embarcacao_id,
-                  tipo: 'kick_device',
-                  payload: { mac: d.mac_address },
-                });
-              }
-              await createMikrotikAction({
-                embarcacaoId: t.embarcacao_id,
-                tipo: 'enable_user',
-                payload: { user: t.login_wifi },
-              });
-
-              console.log(`[usePerfisVelocidade] v7.8.7: Auto-unblocked tripulante ${t.login_wifi} (${t.bytes_consumidos} bytes < ${newLimitBytes} new limit)`);
-            }
-          }
-        }
       }
 
       return data as PerfilVelocidade;
