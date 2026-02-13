@@ -231,7 +231,7 @@ export function useUpdatePerfilVelocidade() {
         ? data.limite_dados_mb * 1024 * 1024
         : null;
 
-      if (newLimitBytes && (!oldLimitBytes || newLimitBytes > oldLimitBytes)) {
+      if (newLimitBytes) {
         const { data: blockedTripulantes } = await supabase
           .from('tripulantes')
           .select('id, login_wifi, bytes_consumidos, embarcacao_id')
