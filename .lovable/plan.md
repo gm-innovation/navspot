@@ -1,55 +1,62 @@
 
 
-# Fix: Perfil preso no cache mas ausente no roteador
+# Fix: Sync parado - Erro de sintaxe no template sync-standalone
 
-## Diagnostico
+## Causa Raiz
 
-Os logs do backend confirmam que o sync esta funcionando (a cada 1 min), mas retorna 0 acoes porque:
+O template `sync-standalone` na tabela `script_templates` tem um erro de sintaxe RouterOS na linha 184:
 
-1. `synced_profiles = ["tripulacao-googlemarine"]` no banco -- cache diz que o perfil ja foi sincronizado
-2. O roteador reporta `registered_profiles_csv: ""` (0 perfis) -- o perfil NAO existe no hardware
-3. O backend ve o cache e pula: "Profile in cache, skipping: tripulacao-googlemarine"
+```text
+Errado:  } else {
+Correto: } else={
+```
 
-O perfil foi marcado como "executado" no banco quando foi ENVIADO, mas o roteador crashou ao processar (bug do parser antigo). Agora o template esta corrigido mas o cache impede o reenvio.
+No RouterOS 7.x, a construcao `if/else` usa a sintaxe `:if (cond) do={ } else={ }`. O uso de `} else {` (sem `=`) causa um erro de parse que impede a execucao do script inteiro. Isso explica:
+
+1. Primeiro sync falhou (log 993: "Primeiro sync falhou (nao-fatal)")
+2. Zero syncs nos ultimos 15+ minutos (scheduler roda mas script crashe a cada tentativa)
+3. Acao `add_user_profile` pendente desde 18:26 nunca processada
 
 ## Correcao
 
-### Parte 1: SQL - Limpar cache e reinserir acao
+### Parte 1: SQL - Corrigir template
+
+Atualizar o template `sync-standalone` substituindo `} else {` por `} else={`:
 
 ```sql
--- Limpar cache de perfis para forcar reenvio
-UPDATE hotspots 
-SET synced_profiles = '[]'::jsonb,
-    telemetry_failures = 0
-WHERE id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1';
-
--- Inserir acao de criacao de perfil (sera processada no proximo sync)
-INSERT INTO acoes_pendentes (hotspot_id, tipo, payload, status) VALUES 
-  ('27a1e1be-4ba7-4496-adb1-9227d3a80ad1', 'add_user_profile', 
-   '{"name":"tripulacao-googlemarine","rate_limit":"3M/3M","shared_users":1,"limit_bytes":0}'::jsonb, 'pendente');
+UPDATE script_templates 
+SET content = REPLACE(content, '} else {', '} else={'),
+    version = '7.8.6'
+WHERE id = 'sync-standalone';
 ```
 
-Nao precisa reinserir `create_user` porque o usuario `alexandre.silva` ja esta confirmado no roteador (logs: "User confirmed in MikroTik: alexandre.silva").
+Nota: a version tambem sera corrigida de '7.8.8' para '7.8.6'.
 
-### Parte 2: Nenhuma mudanca de codigo
+### Parte 2: Reinstalar script no roteador
 
-O template `sync-standalone` ja tem o parser de 4 parametros corrigido (atualizado em 18:08 UTC). O edge function `mikrotik-sync` ja formata corretamente como `create_profile|nome|rate|shared|limit`. Nao ha mudanca de logica necessaria.
+Apos corrigir o template no banco, o usuario precisa **regenerar o script RSC** e reimportar no roteador:
 
-## Fluxo esperado apos o fix
+1. Na pagina de Hotspots, clicar "Gerar Script" para o hotspot afetado
+2. Baixar o arquivo `.rsc` gerado
+3. No roteador: `/import sync.rsc`
 
-1. Proximo sync (em ~1 min): backend ve cache vazio + acao pendente `add_user_profile`
-2. Backend envia `create_profile|tripulacao-googlemarine|3M/3M|1|0` no payload
-3. Template corrigido parseia corretamente: nome=tripulacao-googlemarine, rate=3M/3M, shared=1
-4. Perfil criado no roteador com sucesso
-5. Backend atualiza cache `synced_profiles` com o perfil
-6. Usuario alexandre.silva (ja registrado) pode logar usando o perfil
+OU executar manualmente via Winbox: editar o script `navspot-sync` e corrigir `} else {` para `} else={`.
+
+### Parte 3: Verificar que a acao pendente sera processada
+
+A acao `add_user_profile` (id: af2f8d2c) ja esta pendente. Apos corrigir o script no roteador, o proximo sync (em ~1 min) vai buscar essa acao e criar o perfil `tripulacao-googlemarine` no hardware.
+
+## Resultado esperado
+
+1. Script parseia corretamente no RouterOS
+2. Sync volta a funcionar a cada 1 minuto
+3. Perfil `tripulacao-googlemarine` criado no roteador
+4. Login do `alexandre.silva` funciona
 
 ## Arquivos modificados
 
 | Tipo | Mudanca |
 |------|---------|
-| SQL (hotspots) | Limpar synced_profiles cache |
-| SQL (acoes_pendentes) | Inserir add_user_profile pendente |
+| SQL (script_templates) | Corrigir `} else {` para `} else={` e version para 7.8.6 |
 
-Nenhum arquivo de codigo modificado.
-
+Nenhum arquivo de codigo do projeto sera modificado.
