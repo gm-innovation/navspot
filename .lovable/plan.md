@@ -1,101 +1,83 @@
 
 
-# Fix Guardian v7.8.6: Deploy + Health URL + Crash-Safe Version Check
+# Fix: Cache de perfis invalido apos recovery (v7.8.6)
 
-## Problemas Confirmados
+## Problema
 
-1. **Edge Function retorna 404**: O `navspot-script-gen` nao esta registrado no gateway. Confirmado via teste direto.
-2. **URL do health check errada**: O template usa `{{SCRIPTS_URL}}&type=health` que resolve para `mode=serve&type=health`, caindo no handler errado.
-3. **Guardian crasha silenciosamente**: O parsing complexo de JSON (`[:find $hbody "\"version\":\""]`) causa crash no RouterOS 7 que nao e capturado pelo `on-error`.
-4. **Sem logging de debug**: Quando o health check falha, nao ha visibilidade sobre o conteudo recebido.
+O usuario `alexandre.silva` nao consegue logar no hotspot porque o perfil `tripulacao-googlemarine` nao existe no MikroTik, mas o cache do banco (`synced_profiles`) diz que ja foi sincronizado.
 
-## Alteracoes
+## Acoes
 
-### 1. Version bump para 7.8.6
+### 1. Limpar cache do hotspot (acao imediata)
 
-Arquivo: `supabase/functions/navspot-script-gen/index.ts`
-- Mudar VERSION de `"7.8.5"` para `"7.8.6"`
+Executar SQL via migration tool para limpar o cache de perfis e resetar falhas de telemetria:
 
-### 2. Template `guardian` (tabela `script_templates`)
+```sql
+UPDATE hotspots 
+SET synced_profiles = '[]'::jsonb, telemetry_failures = 0 
+WHERE id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1';
+```
 
-Reescrever com as seguintes correcoes:
+Nota: Como o tool de read-query e somente leitura, usaremos o insert tool para executar este UPDATE.
 
-**a) Lock reset** (mantido como esta)
+### 2. Corrigir logica de reconciliacao no mikrotik-sync
 
-**b) Component checks** (mantidos)
+Arquivo: `supabase/functions/mikrotik-sync/index.ts` (linhas 1527-1534)
 
-**c) Health check com URL correta e crash-safe**:
-- Usar `{{API_BASE}}/navspot-script-gen?mode=health` em vez de `{{SCRIPTS_URL}}&type=health`
-- Substituir parsing complexo de JSON por verificacao simples: `[:find $hbody "{{VERSION}}"]`
-- Se a string `{{VERSION}}` (ex: "7.8.6") NAO aparece no body, a versao mudou
-- Adicionar log do conteudo recebido para facilitar debug
+Substituir o bloco de fallback atual:
 
-```text
-# Version check (crash-safe)
-:do {
-:local hresp [/tool fetch url="{{API_BASE}}/navspot-script-gen?mode=health" as-value output=user]
-:local hbody ($hresp->"data")
-:log info ("NAVSPOT-GUARDIAN: health=" . $hbody)
-:if ([:find $hbody "{{VERSION}}"] < 0) do={
-:log warning "NAVSPOT-GUARDIAN: Versao diferente detectada"
-:set needsRepair 1
-:set missing ($missing . "version ")
-}
-} on-error={
-:log warning "NAVSPOT-GUARDIAN: Health check falhou"
+```typescript
+} else {
+  // v6.9.9: Fallback - MikroTik didn't send profiles (old script)
+  // Use cached synced_profiles but log warning
+  if (syncedProfiles.includes(slug)) {
+    console.log(`[mikrotik-sync] v6.9.9: Profile in cache (no MikroTik data), skipping: ${slug}`)
+    return null
+  }
+  console.warn(`[mikrotik-sync] v6.9.9: No MikroTik profile data, will sync: ${slug}`)
 }
 ```
 
-### 3. Template `guardian-standalone` (tabela `script_templates`)
+Por:
 
-Mesmas correcoes do template `guardian`, com escaping correto para RouterOS:
-- `\"` para aspas dentro do source
-- `\$` para variaveis
-- URL correta: `{{API_BASE}}/navspot-script-gen?mode=health`
-- Verificacao simplificada: `[:find \$hbody \"{{VERSION}}\"]`
-- Log de debug do conteudo recebido
-
-### 4. Deploy forcado
-
-Executar delete + redeploy do `navspot-script-gen` para resolver o 404 persistente no gateway.
-
-### 5. Verificacao pos-deploy
-
-Testar via curl que `navspot-script-gen?mode=health` retorna:
-```text
-{"version":"7.8.6","status":"ok","deployed_at":"...","function":"navspot-script-gen"}
+```typescript
+} else {
+  // v7.8.6: Check if router is in virgin state (no profiles AND no users)
+  const registeredUsersCsv = payload.registered_users_csv || ''
+  if (registeredUsersCsv.trim().length === 0) {
+    // Router has nothing - ignore cache, force profile re-sync
+    console.log(`[mikrotik-sync] v7.8.6: Router in virgin state (no profiles, no users), forcing profile sync: ${slug}`)
+  } else {
+    // Old script sent users but not profiles - trust cache
+    if (syncedProfiles.includes(slug)) {
+      console.log(`[mikrotik-sync] v6.9.9: Profile in cache (no MikroTik data), skipping: ${slug}`)
+      return null
+    }
+    console.warn(`[mikrotik-sync] v6.9.9: No MikroTik profile data, will sync: ${slug}`)
+  }
+}
 ```
 
-## Ordem de Execucao
+A logica: se o roteador nao tem perfis E nao tem usuarios, ele esta em estado virgem (pos-recovery ou install limpo). Nesse caso, ignoramos o cache e forcamos o reenvio de todos os perfis.
 
-1. Bump versao no `index.ts` para 7.8.6
-2. UPDATE template `guardian` no banco com URL correta + version check simplificado + log de debug
-3. UPDATE template `guardian-standalone` no banco com mesmas correcoes (escapadas)
-4. Delete + redeploy da edge function `navspot-script-gen`
-5. Testar health check via curl
-6. Gerar scripts novamente pelo painel e importar `guardian.rsc` no roteador
+### 3. Deploy automatico
 
-## Secao Tecnica: Por que o parsing complexo crasha
+O `mikrotik-sync` sera redeployado automaticamente apos a edicao.
 
-No RouterOS 7.x, a expressao:
-```text
-:local vs [:find $hbody "\"version\":\""]
-```
-Envolve aspas escapadas dentro de aspas, que o parser do hAP ax2 nao interpreta corretamente. Isso causa um crash silencioso que nao e capturado nem pelo bloco `on-error`. A solucao e usar:
-```text
-:if ([:find $hbody "{{VERSION}}"] < 0) do={...}
-```
-Onde `{{VERSION}}` e substituido pelo valor literal (ex: "7.8.6") no momento da geracao do script, eliminando qualquer ambiguidade de escaping.
+## Resultado esperado
 
-## Acao Imediata (Manual)
-
-Enquanto as correcoes sao aplicadas, restaurar o sync executando no MikroTik:
+Apos a limpeza do cache (passo 1), o proximo sync (~1 min) enviara:
 
 ```text
-/tool fetch url="https://focqrhkozhdefohroqyi.supabase.co/functions/v1/mikrotik-recovery-download" http-method=post http-data="{\"sync_token\":\"bba989838d50d36a5fd0d8f0ac45b11bec0020fe8be395789691d4c002f0ad0e\"}" http-header-field="Content-Type: application/json" check-certificate=no dst-path="navspot-recovery.rsc"
+add_user_profile|tripulacao-googlemarine|3M/3M|1|0
+create_user|alexandre.silva|048706|tripulacao-googlemarine
 ```
-Depois:
-```text
-/import navspot-recovery.rsc
-```
+
+O perfil sera criado antes do usuario, permitindo o login.
+
+## Ordem de execucao
+
+1. Limpar `synced_profiles` no banco (resolve o problema agora)
+2. Atualizar logica no `mikrotik-sync/index.ts` (previne recorrencia)
+3. Deploy automatico da edge function
 
