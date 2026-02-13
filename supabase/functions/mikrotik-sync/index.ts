@@ -1205,7 +1205,7 @@ Deno.serve(async (req) => {
 
       console.log(`[mikrotik-sync] v7.1.60: Skipping portal repair - telemetry unreliable (login_by="${hotspotLoginBy}", failures=${newFailures})`)
 
-      // v7.8.8: Only force repair if portal was NEVER configured
+      // v7.8.6: Only force repair if portal was NEVER configured
       const currentPPV = (hotspot as any).portal_profile_version
       if (newFailures >= 3 && !currentPPV) {
         console.warn(`[mikrotik-sync] v7.1.61: FORCE REPAIR - ${newFailures} consecutive telemetry failures, injecting portal config to break deadlock (hotspot=${hotspot.nome})`)
@@ -1240,7 +1240,7 @@ Deno.serve(async (req) => {
         }
       } else if (newFailures >= 3) {
         // Portal already configured - just reset counter, don't inject broken action
-        console.log(`[mikrotik-sync] v7.8.8: Skipping force repair - portal already configured (version=${currentPPV}), resetting counter`)
+        console.log(`[mikrotik-sync] v7.8.6: Skipping force repair - portal already configured (version=${currentPPV}), resetting counter`)
         await supabase
           .from('hotspots')
           .update({ telemetry_failures: 0 })
@@ -1535,12 +1535,12 @@ Deno.serve(async (req) => {
             } else {
               // v6.9.9: Fallback - MikroTik didn't send profiles (old script)
               // Use cached synced_profiles but log warning
-              // v7.8.8: Revert to cache check - always inject was too aggressive
+              // v7.8.6: Revert to cache check - always inject was too aggressive
               if (syncedProfiles.includes(slug)) {
-                console.log(`[mikrotik-sync] v7.8.8: Profile in cache, skipping: ${slug}`)
+                console.log(`[mikrotik-sync] v7.8.6: Profile in cache, skipping: ${slug}`)
                 return null
               }
-              console.log(`[mikrotik-sync] v7.8.8: Profile not in cache, will sync: ${slug}`)
+              console.log(`[mikrotik-sync] v7.8.6: Profile not in cache, will sync: ${slug}`)
             }
             
             newProfilesToSync.push(slug)
