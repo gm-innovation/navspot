@@ -1517,6 +1517,17 @@ Deno.serve(async (req) => {
         const syncedProfiles = ((hotspot as Record<string, unknown>).synced_profiles || []) as string[]
         const newProfilesToSync: string[] = []
 
+        // v7.8.7: Invalidate cache when router reports 0 profiles but cache is non-empty
+        // This means a previous action was sent but never processed by the router
+        if (registeredProfilesCsv.length === 0 && syncedProfiles.length > 0) {
+          console.warn(`[mikrotik-sync] v7.8.7: Cache/router mismatch - cache has ${syncedProfiles.length} profiles but router reports 0. Clearing cache to force re-sync`)
+          syncedProfiles.length = 0 // Clear in-memory to force re-injection below
+          await supabase
+            .from('hotspots')
+            .update({ synced_profiles: [] })
+            .eq('id', hotspot.id)
+        }
+
         const profileActions = perfis
           .map(p => {
             const slug = p.nome.toLowerCase()
