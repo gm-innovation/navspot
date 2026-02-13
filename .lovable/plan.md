@@ -1,62 +1,63 @@
 
+# Fix: Cache de perfis impede re-sincronizacao
 
-# Fix: Sync parado - Erro de sintaxe no template sync-standalone
+## Problema
 
-## Causa Raiz
+O erro no roteador e claro: **"login failed: unknown user profile"** -- o perfil `tripulacao-googlemarine` nao existe no hardware.
 
-O template `sync-standalone` na tabela `script_templates` tem um erro de sintaxe RouterOS na linha 184:
+Porem o backend acha que esta tudo certo:
+1. `synced_profiles = ["tripulacao-googlemarine"]` (cache diz que o perfil ja foi enviado)
+2. `registered_profiles_csv = ""` (roteador reporta 0 perfis)
+3. Backend entra no fallback de cache (linha 1535-1541) e pula: "Profile in cache, skipping"
+4. Log diz "All profiles confirmed synced" -- falso
 
-```text
-Errado:  } else {
-Correto: } else={
-```
-
-No RouterOS 7.x, a construcao `if/else` usa a sintaxe `:if (cond) do={ } else={ }`. O uso de `} else {` (sem `=`) causa um erro de parse que impede a execucao do script inteiro. Isso explica:
-
-1. Primeiro sync falhou (log 993: "Primeiro sync falhou (nao-fatal)")
-2. Zero syncs nos ultimos 15+ minutos (scheduler roda mas script crashe a cada tentativa)
-3. Acao `add_user_profile` pendente desde 18:26 nunca processada
+**Causa raiz**: O sistema "fire-and-forget" marca a acao como `executado` e atualiza o cache no momento do envio. Se o roteador falha ao processar (bug do parser antigo), o cache fica inconsistente permanentemente.
 
 ## Correcao
 
-### Parte 1: SQL - Corrigir template
+### Parte 1: Codigo - Invalidar cache quando roteador reporta 0 perfis
 
-Atualizar o template `sync-standalone` substituindo `} else {` por `} else={`:
+No `mikrotik-sync/index.ts`, antes do loop de perfis (entre linhas 1517-1520), adicionar logica:
 
-```sql
-UPDATE script_templates 
-SET content = REPLACE(content, '} else {', '} else={'),
-    version = '7.8.6'
-WHERE id = 'sync-standalone';
+Se `registeredProfilesCsv` esta vazio **E** `syncedProfiles` tem itens, o cache esta mentindo. Limpar o cache para forcar reenvio.
+
+```typescript
+// v7.8.7: Invalidate cache when router reports 0 profiles but cache is non-empty
+// This means a previous action was sent but never processed by the router
+if (registeredProfilesCsv.length === 0 && syncedProfiles.length > 0) {
+  console.warn(`[mikrotik-sync] v7.8.7: Cache/router mismatch - cache has ${syncedProfiles.length} profiles but router reports 0. Clearing cache to force re-sync`)
+  syncedProfiles.length = 0 // Clear in-memory to force re-injection below
+  await supabase
+    .from('hotspots')
+    .update({ synced_profiles: [] })
+    .eq('id', hotspot.id)
+}
 ```
 
-Nota: a version tambem sera corrigida de '7.8.8' para '7.8.6'.
+Isso garante que na proxima iteracao do loop, o perfil sera re-injetado automaticamente sem intervencao manual.
 
-### Parte 2: Reinstalar script no roteador
+### Parte 2: SQL imediato - Desbloquear agora
 
-Apos corrigir o template no banco, o usuario precisa **regenerar o script RSC** e reimportar no roteador:
+Limpar o cache novamente para que o fix funcione antes mesmo do deploy do codigo:
 
-1. Na pagina de Hotspots, clicar "Gerar Script" para o hotspot afetado
-2. Baixar o arquivo `.rsc` gerado
-3. No roteador: `/import sync.rsc`
+```sql
+UPDATE hotspots 
+SET synced_profiles = '[]'::jsonb
+WHERE id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1';
+```
 
-OU executar manualmente via Winbox: editar o script `navspot-sync` e corrigir `} else {` para `} else={`.
+Nao precisa inserir nova acao -- o codigo de reconciliacao vai re-injetar o perfil automaticamente quando ver cache vazio.
 
-### Parte 3: Verificar que a acao pendente sera processada
+## Arquivo modificado
 
-A acao `add_user_profile` (id: af2f8d2c) ja esta pendente. Apos corrigir o script no roteador, o proximo sync (em ~1 min) vai buscar essa acao e criar o perfil `tripulacao-googlemarine` no hardware.
+| Arquivo | Mudanca |
+|---------|---------|
+| `supabase/functions/mikrotik-sync/index.ts` | Adicionar invalidacao de cache (entre linhas 1517-1520) |
+| SQL (hotspots) | Limpar synced_profiles para desbloqueio imediato |
 
 ## Resultado esperado
 
-1. Script parseia corretamente no RouterOS
-2. Sync volta a funcionar a cada 1 minuto
-3. Perfil `tripulacao-googlemarine` criado no roteador
-4. Login do `alexandre.silva` funciona
-
-## Arquivos modificados
-
-| Tipo | Mudanca |
-|------|---------|
-| SQL (script_templates) | Corrigir `} else {` para `} else={` e version para 7.8.6 |
-
-Nenhum arquivo de codigo do projeto sera modificado.
+1. Cache limpo -> proximo sync detecta perfil ausente -> envia `create_profile` no payload
+2. Template corrigido parseia o perfil corretamente
+3. Login do `alexandre.silva` funciona
+4. Futuras inconsistencias de cache sao auto-corrigidas pelo novo guard
