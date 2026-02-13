@@ -264,7 +264,7 @@ export function useUpdatePerfilVelocidade() {
                   tipo: 'unblock_quota',
                   payload: { mac: d.mac_address },
                 });
-                // v7.8.8: Force device reconnection to trigger re-authentication
+                // v7.8.6: Force device reconnection to trigger re-authentication
                 await createMikrotikAction({
                   embarcacaoId: t.embarcacao_id,
                   tipo: 'kick_device',
