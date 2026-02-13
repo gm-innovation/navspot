@@ -1525,13 +1525,19 @@ Deno.serve(async (req) => {
               // Profile NOT in MikroTik - needs sync
               console.log(`[mikrotik-sync] v6.9.9: Profile missing from MikroTik, will sync: ${slug}`)
             } else {
-              // v6.9.9: Fallback - MikroTik didn't send profiles (old script)
-              // Use cached synced_profiles but log warning
-              if (syncedProfiles.includes(slug)) {
-                console.log(`[mikrotik-sync] v6.9.9: Profile in cache (no MikroTik data), skipping: ${slug}`)
-                return null
+              // v7.8.6: Check if router is in virgin state (no profiles AND no users)
+              const registeredUsersCsv = payload.registered_users_csv || ''
+              if (registeredUsersCsv.trim().length === 0) {
+                // Router has nothing - ignore cache, force profile re-sync
+                console.log(`[mikrotik-sync] v7.8.6: Router in virgin state (no profiles, no users), forcing profile sync: ${slug}`)
+              } else {
+                // Old script sent users but not profiles - trust cache
+                if (syncedProfiles.includes(slug)) {
+                  console.log(`[mikrotik-sync] v6.9.9: Profile in cache (no MikroTik data), skipping: ${slug}`)
+                  return null
+                }
+                console.warn(`[mikrotik-sync] v6.9.9: No MikroTik profile data, will sync: ${slug}`)
               }
-              console.warn(`[mikrotik-sync] v6.9.9: No MikroTik profile data, will sync: ${slug}`)
             }
             
             newProfilesToSync.push(slug)
