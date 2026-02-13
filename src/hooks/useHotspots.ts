@@ -176,7 +176,7 @@ export function useGenerateHotspotScript() {
 
   return useMutation({
     mutationFn: async (hotspotId: string): Promise<GeneratedScripts> => {
-      const { data, error } = await supabase.functions.invoke('navspot-script-gen', {
+      const { data, error } = await supabase.functions.invoke('mt-gen', {
         body: { hotspot_id: hotspotId },
       });
 

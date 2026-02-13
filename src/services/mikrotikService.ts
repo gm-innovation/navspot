@@ -69,7 +69,7 @@ export async function queueConfigUpdate(
  * Generate a new RSC script for a hotspot
  */
 export async function generateScript(hotspotId: string): Promise<ScriptGeneratorResult> {
-  const { data, error } = await supabase.functions.invoke('navspot-script-gen', {
+  const { data, error } = await supabase.functions.invoke('mt-gen', {
     body: { hotspot_id: hotspotId },
   });
 
