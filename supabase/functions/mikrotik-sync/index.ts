@@ -1535,9 +1535,12 @@ Deno.serve(async (req) => {
             } else {
               // v6.9.9: Fallback - MikroTik didn't send profiles (old script)
               // Use cached synced_profiles but log warning
-              // v7.8.7: Without MikroTik confirmation, always re-inject (idempotent)
-              // Cache cannot be trusted if router never confirmed via registered_profiles_csv
-              console.log(`[mikrotik-sync] v7.8.7: No MikroTik profile data, always injecting: ${slug}`)
+              // v7.8.8: Revert to cache check - always inject was too aggressive
+              if (syncedProfiles.includes(slug)) {
+                console.log(`[mikrotik-sync] v7.8.8: Profile in cache, skipping: ${slug}`)
+                return null
+              }
+              console.log(`[mikrotik-sync] v7.8.8: Profile not in cache, will sync: ${slug}`)
             }
             
             newProfilesToSync.push(slug)
