@@ -1,95 +1,94 @@
 
+# Fix Definitivo: Quebrando o Loop de Sync
 
-# Fix: Breaking the Infinite Loop — Force Repair + Synced Profiles Cache
+## Diagnostico Final
 
-## Root Cause (3 interlocking problems)
+Identifiquei **3 problemas interligados** que impedem qualquer acao de chegar ao roteador:
 
-### Problem 1: Force Repair resets `portal_profile_version` to null every 3 syncs
-The telemetry from the router always reports `login_by=""` (empty), making it "unreliable". After 3 consecutive unreliable telemetry readings, the force repair logic at line 1232 resets `portal_profile_version` back to `null`. This triggers line 1141 to inject 8 walled garden + 1 configure_hotspot_profile actions on every sync — flooding the pipe with redundant actions and blocking real ones.
+### Problema 1: `configure_hotspot_profile` nao existe no roteador
+O sync script no MikroTik (template `sync-standalone` v7.8.4) tem handlers para: `create_user`, `create_profile`, `remove_user`, `disable_user`, `enable_user`, `update_user`, `update_password`, `kick_session`, `block_quota`, `unblock_quota`.
 
-### Problem 2: `synced_profiles` cache is re-populated immediately after clearing
-When we clear the cache, the SAME sync cycle that detects the missing profile immediately re-adds it to the cache (line 1564-1570). If the router fails to receive that response ("Falha no fetch"), the profile is never created but the cache says it is.
+**NAO tem handler para `configure_hotspot_profile`**. Quando o backend envia essa acao, o roteador nao a reconhece e conta como 0 aplicadas.
 
-### Problem 3: Fire-and-forget marks actions as executed before delivery
-Line 1722-1739 marks ALL actions as `executado` the moment they're included in the JSON response, not when the router confirms receipt.
+### Problema 2: Force Repair injeta acoes invalidas a cada 3 syncs
+A telemetria sempre reporta `login_by=""` (vazio), o que e considerado "nao confiavel". Apos 3 falhas consecutivas, o force repair injeta `configure_hotspot_profile` + `create_whitelist_domain`. O roteador ignora a primeira (sem handler), e a segunda e duplicata. Resultado: pipe ocupado com lixo.
 
-## Fix (2 changes)
+### Problema 3: Cache `synced_profiles` repopula instantaneamente
+Quando limpamos o cache, na mesma rodada de sync o codigo na linha 1564-1570 re-adiciona o perfil ao cache ANTES do roteador confirmar que recebeu. Se o roteador tiver "Falha no fetch", o perfil nunca e criado mas o cache diz que sim.
 
-### 1. Edge Function: Stop force repair from resetting portal_profile_version
-
-In `supabase/functions/mikrotik-sync/index.ts`, line 1232:
-
-**Before:**
-```typescript
-.update({ telemetry_failures: 0, portal_profile_version: null, last_force_repair_at: new Date().toISOString() })
+### Sequencia do loop atual
+```text
+Sync 1: telemetry_failures = 1 (login_by vazio) -> 0 acoes
+Sync 2: telemetry_failures = 2 -> 0 acoes
+Sync 3: telemetry_failures = 3 -> FORCE REPAIR -> injeta configure_hotspot_profile (roteador ignora) -> reset para 0
+Sync 4: telemetry_failures = 1 -> 0 acoes
+... (repete infinitamente)
 ```
 
-**After:**
+## Correcao (3 partes)
+
+### Parte 1: Adicionar handler `configure_hotspot_profile` ao sync template
+
+Atualizar o template `sync-standalone` na tabela `script_templates` para incluir o handler que configura o hotspot profile no MikroTik. Isso permite que a acao de force repair seja realmente aplicada, corrigindo a telemetria e quebrando o loop.
+
+O handler vai:
+- Extrair `login_url` e `dns_name` do pipe
+- Aplicar no hotspot profile (`hsprof-navspot`)
+- Configurar `login-by`, `http-cookie-lifetime` e `login-url`
+
+### Parte 2: Modificar reconciliacao de perfis no edge function
+
+Na funcao `mikrotik-sync`, linha 1527-1533: quando o roteador NAO envia `registered_profiles_csv` (script antigo), **nao confiar no cache**. Em vez de pular o perfil, sempre injetar a acao de criacao (idempotente - o handler no roteador faz remove+add).
+
+**Antes (linha 1530):**
 ```typescript
-.update({ telemetry_failures: 0, last_force_repair_at: new Date().toISOString() })
+if (syncedProfiles.includes(slug)) {
+  console.log(`Profile in cache (no MikroTik data), skipping: ${slug}`)
+  return null
+}
 ```
 
-This stops the infinite loop. The force repair will still inject the configure_hotspot_profile action, but won't reset the version flag, preventing the re-injection on every subsequent sync.
-
-Also at line 1278-1282, when initial config is first sent, the code resets `portal_profile_version` to null. Change this to set it to the required version instead:
-
-**Before:**
+**Depois:**
 ```typescript
-.update({ portal_profile_version: null })
+// v7.8.7: Without MikroTik confirmation, always re-inject (idempotent)
+console.log(`[mikrotik-sync] v7.8.7: No MikroTik profile data, always injecting: ${slug}`)
 ```
 
-**After:**
-```typescript
-.update({ portal_profile_version: REQUIRED_PORTAL_VERSION })
-```
+Isso garante que o perfil sera re-injetado em CADA sync ate que o roteador passe a enviar `registered_profiles_csv`, confirmando que o perfil existe.
 
-### 2. SQL: Fix hotspot state + re-insert actions
+### Parte 3: SQL - Corrigir estado do hotspot
 
 ```sql
--- Fix portal loop + clear profile cache
 UPDATE hotspots 
 SET synced_profiles = '[]'::jsonb,
     portal_profile_version = '7.1.50-http-pap',
     telemetry_failures = 0,
     last_force_repair_at = NOW()
 WHERE id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1';
-
--- Re-insert profile action
-INSERT INTO acoes_pendentes (hotspot_id, tipo, payload, status)
-VALUES (
-  '27a1e1be-4ba7-4496-adb1-9227d3a80ad1',
-  'add_user_profile',
-  '{"name": "tripulacao-googlemarine", "rate_limit": "3M/3M", "shared_users": 1, "limit_bytes": 0}',
-  'pendente'
-);
-
--- Re-insert user action with correct password
-INSERT INTO acoes_pendentes (hotspot_id, tipo, payload, status)
-VALUES (
-  '27a1e1be-4ba7-4496-adb1-9227d3a80ad1',
-  'create_user',
-  '{"user": "alexandre.silva", "password": "048706", "profile": "tripulacao-googlemarine"}',
-  'pendente'
-);
 ```
 
-Setting `last_force_repair_at = NOW()` activates the 2-minute cooldown, preventing force repair from immediately resetting anything.
+E inserir as acoes de perfil + usuario como pendentes (para o proximo sync antes da reconciliacao rodar):
 
-## Expected Result
+```sql
+INSERT INTO acoes_pendentes (hotspot_id, tipo, payload, status) VALUES 
+  ('27a1e1be-4ba7-4496-adb1-9227d3a80ad1', 'add_user_profile', 
+   '{"name":"tripulacao-googlemarine","rate_limit":"3M/3M","shared_users":1,"limit_bytes":0}', 'pendente'),
+  ('27a1e1be-4ba7-4496-adb1-9227d3a80ad1', 'create_user', 
+   '{"user":"alexandre.silva","password":"048706","profile":"tripulacao-googlemarine"}', 'pendente');
+```
 
-On the next sync (~30s after deploy):
-1. No walled garden flood (portal_profile_version is set + force repair cooldown active)
-2. Only 2 real actions in the pipe: create_profile + create_user
-3. Profile `tripulacao-googlemarine` is created on MikroTik
-4. User `alexandre.silva` is linked to the profile
-5. Login works
+## Resultado esperado
 
-## Changes Summary
+1. O handler `configure_hotspot_profile` passa a funcionar no roteador, corrigindo a telemetria (`login_by` passa a reportar valores corretos)
+2. A reconciliacao de perfis deixa de confiar no cache e sempre envia o perfil como upsert
+3. Mesmo que o roteador tenha "Falha no fetch" em uma rodada, o proximo sync re-envia o perfil
+4. O usuario `alexandre.silva` pode fazer login
 
-| Type | File/Location | Change |
-|------|--------------|--------|
-| Edge Function | mikrotik-sync line 1232 | Remove `portal_profile_version: null` from force repair update |
-| Edge Function | mikrotik-sync line 1280 | Change `portal_profile_version: null` to `REQUIRED_PORTAL_VERSION` |
-| SQL Migration | hotspots table | Set portal_profile_version, clear synced_profiles, activate cooldown |
-| SQL Migration | acoes_pendentes | Insert 2 actions (profile + user) |
+## Arquivos modificados
 
+| Tipo | Arquivo/Local | Mudanca |
+|------|--------------|---------|
+| SQL (script_templates) | sync-standalone | Adicionar handler `configure_hotspot_profile` |
+| Edge Function | mikrotik-sync linhas 1527-1533 | Remover cache check, sempre injetar perfis |
+| SQL | hotspots | Reset synced_profiles, portal_profile_version, cooldown |
+| SQL | acoes_pendentes | Inserir 2 acoes (perfil + usuario) |
