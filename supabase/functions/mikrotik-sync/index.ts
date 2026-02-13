@@ -1205,7 +1205,9 @@ Deno.serve(async (req) => {
 
       console.log(`[mikrotik-sync] v7.1.60: Skipping portal repair - telemetry unreliable (login_by="${hotspotLoginBy}", failures=${newFailures})`)
 
-      if (newFailures >= 3) {
+      // v7.8.8: Only force repair if portal was NEVER configured
+      const currentPPV = (hotspot as any).portal_profile_version
+      if (newFailures >= 3 && !currentPPV) {
         console.warn(`[mikrotik-sync] v7.1.61: FORCE REPAIR - ${newFailures} consecutive telemetry failures, injecting portal config to break deadlock (hotspot=${hotspot.nome})`)
 
         const hotspotSlug = hotspot.nome.toLowerCase()
@@ -1226,7 +1228,6 @@ Deno.serve(async (req) => {
           payload: { login_url: forceLoginUrl, dns_name: forceDnsName }
         })
 
-        // Reset counter + portal_profile_version + mark force-repair timestamp
         const { error: resetError } = await supabase
           .from('hotspots')
           .update({ telemetry_failures: 0, last_force_repair_at: new Date().toISOString() })
@@ -1237,6 +1238,13 @@ Deno.serve(async (req) => {
         } else {
           console.log(`[mikrotik-sync] v7.1.60d: Reset telemetry_failures to 0, last_force_repair_at set after force repair (portal_profile_version preserved)`)
         }
+      } else if (newFailures >= 3) {
+        // Portal already configured - just reset counter, don't inject broken action
+        console.log(`[mikrotik-sync] v7.8.8: Skipping force repair - portal already configured (version=${currentPPV}), resetting counter`)
+        await supabase
+          .from('hotspots')
+          .update({ telemetry_failures: 0 })
+          .eq('id', hotspot.id)
       }
     } else {
       // Telemetry reliable -- reset counter if needed
