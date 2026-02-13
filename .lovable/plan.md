@@ -1,51 +1,58 @@
 
 
-# Fix: Adicionar `block_quota` e `unblock_quota` ao CHECK constraint
+# Fix: Inserir ações de desbloqueio manualmente no MikroTik
 
 ## Problema
 
-A tabela `acoes_pendentes` tem uma constraint `acoes_pendentes_tipo_check` que lista explicitamente os tipos permitidos. Os tipos `block_quota` e `unblock_quota` nao estao na lista, causando falha silenciosa ao inserir as acoes de desbloqueio.
+O tripulante Alexandre Silva foi marcado como `ativo` no banco de dados, mas as acoes de desbloqueio no MikroTik (`unblock_quota` e `enable_user`) nunca foram criadas porque o CHECK constraint do banco as rejeitou na epoca. Agora o constraint ja foi corrigido, mas como o tripulante ja esta `ativo`, o codigo de auto-unblock nao o encontra mais.
 
-O erro ja aparecia nos logs do console:
-```
-"new row for relation "acoes_pendentes" violates check constraint "acoes_pendentes_tipo_check""
-```
-
-Por isso o MikroTik mostra "Aplicado 0 acoes" -- as acoes nunca foram gravadas no banco.
+Resultado: o banco diz "ativo", mas o MikroTik ainda tem ip-binding (blocked) e firewall filter (reject) ativos, impedindo o acesso a internet.
 
 ## Correcao
 
-Executar uma migracao SQL para atualizar a constraint:
+Executar uma migracao SQL que insere diretamente as acoes pendentes necessarias para o hotspot `27a1e1be-4ba7-4496-adb1-9227d3a80ad1`:
 
 ```sql
-ALTER TABLE acoes_pendentes DROP CONSTRAINT acoes_pendentes_tipo_check;
+-- Desbloquear dispositivo 1 (04:BF:1B:6E:9F:E9)
+INSERT INTO acoes_pendentes (hotspot_id, tipo, payload, status)
+VALUES (
+  '27a1e1be-4ba7-4496-adb1-9227d3a80ad1',
+  'unblock_quota',
+  '{"mac": "04:BF:1B:6E:9F:E9"}'::jsonb,
+  'pendente'
+);
 
-ALTER TABLE acoes_pendentes ADD CONSTRAINT acoes_pendentes_tipo_check
-CHECK (tipo = ANY (ARRAY[
-  'create_user','remove_user','delete_user','disable_user','enable_user',
-  'update_password','kick_session',
-  'create_profile','update_profile','update_profile_config',
-  'update_user_profile','add_user_profile','remove_user_profile','update_profile_quota',
-  'add_walled_garden','remove_walled_garden',
-  'add_whitelist_domain','remove_whitelist_domain',
-  'add_blacklist_domain','remove_blacklist_domain',
-  'create_whitelist_domain','create_blacklist_domain',
-  'add_firewall_filter','remove_firewall_filter',
-  'add_firewall_block','remove_firewall_block','add_firewall_allow',
-  'block_device','unblock_device','kick_device',
-  'configure_hotspot_profile',
-  'block_quota','unblock_quota'
-]));
+-- Desbloquear dispositivo 2 (12:8E:E9:84:F8:5B)
+INSERT INTO acoes_pendentes (hotspot_id, tipo, payload, status)
+VALUES (
+  '27a1e1be-4ba7-4496-adb1-9227d3a80ad1',
+  'unblock_quota',
+  '{"mac": "12:8E:E9:84:F8:5B"}'::jsonb,
+  'pendente'
+);
+
+-- Reativar usuario no hotspot
+INSERT INTO acoes_pendentes (hotspot_id, tipo, payload, status)
+VALUES (
+  '27a1e1be-4ba7-4496-adb1-9227d3a80ad1',
+  'enable_user',
+  '{"user": "alexandre.silva"}'::jsonb,
+  'pendente'
+);
 ```
 
-## Apos a migracao
+## Resultado esperado
 
-Basta salvar o perfil novamente. Dessa vez as acoes `unblock_quota` e `enable_user` serao inseridas com sucesso, e o proximo sync do roteador aplicara o desbloqueio.
+No proximo sync do roteador (a cada ~5 minutos), o MikroTik processara essas 3 acoes:
+1. Remove ip-binding com comentario QUOTA_EXCEDIDA para o MAC 04:BF:1B:6E:9F:E9
+2. Remove ip-binding com comentario QUOTA_EXCEDIDA para o MAC 12:8E:E9:84:F8:5B
+3. Remove firewall filter com comentario BLOCK_QUOTA
+4. Reativa o usuario `alexandre.silva` no hotspot
 
-## Arquivo alterado
+Apos isso, o celular conseguira acessar a internet normalmente.
 
-Nenhum arquivo de codigo precisa mudar -- a logica ja esta correta. Apenas o constraint do banco precisa ser atualizado.
+## Alteracoes
 
-| Alteracao | Detalhe |
-|-----------|---------|
-| Migracao SQL | Adicionar `block_quota` e `unblock_quota` ao CHECK constraint da tabela `acoes_pendentes` |
+| Tipo | Detalhe |
+|------|---------|
+| Migracao SQL | Inserir 3 acoes pendentes (2x unblock_quota + 1x enable_user) |
