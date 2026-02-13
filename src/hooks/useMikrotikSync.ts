@@ -24,7 +24,10 @@ export type MikrotikActionType =
   // Firewall (v4.0 - via API)
   | 'add_firewall_l7'
   | 'add_firewall_filter'
-  | 'remove_firewall_rule';
+  | 'remove_firewall_rule'
+  // Quota management (v7.8.7)
+  | 'block_quota'
+  | 'unblock_quota';
 
 interface CreateActionParams {
   embarcacaoId: string;
