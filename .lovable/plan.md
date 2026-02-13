@@ -1,24 +1,33 @@
 
 
-# Fix: Re-inserir acao de criacao de perfil + reset de cache
+# Fix: Perfil perdido + Deadlock Recovery bloqueando sync
 
-## Problema
+## Diagnostico
 
-1. A acao `add_user_profile` foi marcada como `executado` no backend, mas o roteador teve uma falha de rede naquele exato momento ("Falha no fetch" as 13:10). O perfil **nunca foi criado** no MikroTik.
-2. O campo `synced_profiles` contem `["tripulacao-googlemarine"]`, fazendo a reconciliacao achar que o perfil ja existe.
-3. O campo `portal_profile_version` esta `null`, causando injecao de 9 acoes de deadlock recovery em cada sync (walled garden + configure_hotspot_profile), mas nenhuma acao de perfil.
+Os logs do MikroTik confirmam:
+- 13:17:26 — "Aplicado 0 acoes" (780 bytes recebidos)
+- 13:18:26 — "Falha no fetch" (1206 bytes recebidos — eram as acoes de perfil + usuario)
+- 13:19:26 — "Aplicado 0 acoes" novamente
+
+O backend marcou `add_user_profile` e `create_user` como "executado" as 16:18:29 UTC, mas o roteador nunca as aplicou.
+
+Dois problemas bloqueantes:
+1. `synced_profiles` contem `["tripulacao-googlemarine"]` — reconciliacao pula o perfil
+2. `portal_profile_version = null` — injeta 9 acoes de deadlock recovery a cada sync, ocupando o pipe com walled garden que ja existe no roteador
 
 ## Correcao
 
-### 1. SQL: Reset synced_profiles + inserir nova acao
+### 1. SQL: Corrigir estado do hotspot + re-inserir acoes
 
 ```sql
--- Reset cache para forcar re-sync de perfis
+-- 1. Limpar cache de perfis para forcar re-provisionamento
 UPDATE hotspots 
-SET synced_profiles = '[]'::jsonb 
+SET synced_profiles = '[]'::jsonb,
+    portal_profile_version = '7.1.50-http-pap',
+    telemetry_failures = 0
 WHERE id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1';
 
--- Re-inserir acao de criacao de perfil (a anterior foi perdida no fetch fail)
+-- 2. Re-inserir acao de criacao de perfil
 INSERT INTO acoes_pendentes (hotspot_id, tipo, payload, status)
 VALUES (
   '27a1e1be-4ba7-4496-adb1-9227d3a80ad1',
@@ -27,34 +36,35 @@ VALUES (
   'pendente'
 );
 
--- Tambem re-criar o usuario com o perfil correto para garantir associacao
+-- 3. Re-inserir acao de criacao de usuario
 INSERT INTO acoes_pendentes (hotspot_id, tipo, payload, status)
 VALUES (
   '27a1e1be-4ba7-4496-adb1-9227d3a80ad1',
   'create_user',
-  '{"user": "alexandre.silva", "password": "", "profile": "tripulacao-googlemarine"}'::jsonb,
+  '{"user": "alexandre.silva", "password": "048706", "profile": "tripulacao-googlemarine"}'::jsonb,
   'pendente'
 );
 ```
 
-Nota: O `create_user` com password vazio usara a senha existente no MikroTik (handler nao-destrutivo v7.8.2 faz `set` em vez de `remove+add` se o usuario ja existe).
+**O que cada correcao faz:**
+- `synced_profiles = []` — forca a reconciliacao a detectar o perfil como ausente
+- `portal_profile_version = '7.1.50-http-pap'` — para a injecao de 9 acoes de deadlock recovery a cada sync, liberando o pipe para as acoes reais
+- `telemetry_failures = 0` — reseta o contador para evitar triggers de force-repair
+- Novas acoes `add_user_profile` + `create_user` — re-provisiona perfil e usuario
 
-### 2. Verificar senha do tripulante
+### 2. Nenhuma alteracao de codigo necessaria
 
-Precisamos confirmar a senha WiFi do Alexandre Silva para incluir no payload, caso o handler nao-destrutivo nao preserve a senha.
+A Edge Function ja tem o handler `create_profile` (alias para `add_user_profile`) implementado na correcao anterior. O problema era exclusivamente de estado no banco de dados e timing de rede.
 
 ## Resultado esperado
 
-No proximo sync (~1 min):
-1. Perfil `tripulacao-googlemarine` e criado no MikroTik (3M/3M, 1 shared user)
-2. Usuario `alexandre.silva` e associado ao perfil
-3. Login passa a funcionar
+No proximo sync (~30s):
+1. Sem deadlock recovery (portal_profile_version ja esta setada)
+2. Perfil `tripulacao-googlemarine` enviado como acao real no pipe
+3. Usuario `alexandre.silva` re-criado com perfil correto
+4. Login passa a funcionar
 
-## Alteracoes
+## Risco
 
-| Tipo | Detalhe |
-|------|---------|
-| SQL | Reset `synced_profiles` para `[]` |
-| SQL | Inserir 1 acao `add_user_profile` (pendente) |
-| SQL | Inserir 1 acao `create_user` para alexandre.silva (pendente) |
+Se o roteador tiver outra "Falha no fetch", as acoes serao perdidas novamente. Uma melhoria futura seria implementar confirmacao de execucao pelo roteador (ACK) em vez de marcar como executado no momento do envio.
 
