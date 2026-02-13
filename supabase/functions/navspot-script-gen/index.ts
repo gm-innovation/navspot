@@ -3,7 +3,7 @@ const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
-const VERSION = "7.8.4"
+const VERSION = "7.8.5"
 const DEPLOYED_AT = new Date().toISOString()
 const VALID_TEMPLATES = ['infra', 'sync-standalone', 'guardian-standalone', 'bootstrap', 'installer', 'sync', 'guardian', 'sync-raw', 'guardian-raw']
 const MAX_SCRIPT_SIZE = 65536 // 64KB safety limit for router
