@@ -1,66 +1,97 @@
 
+# Fix: create_profile crash no sync-standalone
 
-# Fix: Desativar Force Repair quando portal ja esta configurado
+## Causa Raiz
 
-## Problema
+O edge function envia o pipe `create_profile` com 4 parametros:
+```
+create_profile|tripulacao-googlemarine|3M/3M|1|0
+```
 
-O bloco de "Force Repair" na linha 1208 injeta `configure_hotspot_profile` e `create_whitelist_domain` a cada 3 syncs com telemetria nao confiavel. O roteador nao tem handler para `configure_hotspot_profile`, o que causa crash no processamento de TODAS as acoes daquele sync -- incluindo as validas como `create_user` e `add_user_profile`.
+O handler `create_profile` no template `sync-standalone` (linhas 69-77) so faz split no primeiro `|` apos o nome, resultando em:
+- nome = `tripulacao-googlemarine`
+- rate-limit = `3M/3M|1|0` (INVALIDO - inclui shared_users e limit_bytes)
 
-## Correcao
+O comando `/ip hotspot user profile add name=$n rate-limit=3M/3M|1|0 shared-users=1` falha porque `3M/3M|1|0` nao e um rate-limit valido. Como o `add` NAO esta protegido com `:do {} on-error={}`, o erro propaga para o bloco externo on-error que mostra "Falha no fetch (Rede ou Backend)".
 
-### Parte 1: Edge Function (mikrotik-sync, linhas 1208-1239)
+Isso matava o processamento de TODAS as acoes daquele sync.
 
-Adicionar guard que verifica `portal_profile_version`. Se ja esta configurado, apenas resetar o contador sem injetar acoes quebradas.
+Antes da mudanca v7.8.7, o cache `synced_profiles` impedia que `create_profile` fosse enviado repetidamente. Agora com o "always inject", o crash acontece em CADA sync.
 
-**Antes (linha 1208):**
+## Correcao (2 opcoes, aplicar ambas)
+
+### Parte 1: Atualizar template sync-standalone
+
+Corrigir o handler `create_profile` para parsear corretamente os 4 parametros E proteger o comando `add`:
+
+```text
+Antes:
+  :local n [:pick $r 0 $p2]
+  :local rt [:pick $r ($p2 + 1) [:len $r]]
+  :do { /ip hotspot user profile remove [find name=$n] } on-error={}
+  /ip hotspot user profile add name=$n rate-limit=$rt shared-users=1
+
+Depois:
+  :local n [:pick $r 0 $p2]
+  :local rt [:pick $r ($p2 + 1) [:len $r]]
+  :local p3 [:find $rt "|"]
+  :local su "1"
+  :if ($p3 >= 0) do={
+    :set su [:pick $rt ($p3 + 1) [:len $rt]]
+    :local p4 [:find $su "|"]
+    :if ($p4 >= 0) do={ :set su [:pick $su 0 $p4] }
+    :set rt [:pick $rt 0 $p3]
+  }
+  :do { /ip hotspot user profile remove [find name=$n] } on-error={}
+  :do { /ip hotspot user profile add name=$n rate-limit=$rt shared-users=$su } on-error={}
+```
+
+Isso extrai corretamente `shared_users=1` e descarta `limit_bytes`, e protege o `add` contra crashes.
+
+### Parte 2: Reverter a mudanca v7.8.7 de "always inject"
+
+A injecao em cada sync e agressiva demais. Reverter para confiar no cache `synced_profiles` MAS com uma protecao: revalidar a cada 10 minutos (em vez de nunca). Porem, como fix imediato, restaurar o cache check:
+
+No edge function `mikrotik-sync`, restaurar linhas 1530-1534 para:
+
 ```typescript
-if (newFailures >= 3) {
-  // injeta configure_hotspot_profile + create_whitelist_domain
-  // ...
+if (syncedProfiles.includes(slug)) {
+  console.log(`[mikrotik-sync] v7.8.8: Profile in cache, skipping: ${slug}`)
+  return null
 }
 ```
 
-**Depois:**
-```typescript
-const currentPPV = (hotspot as any).portal_profile_version
-if (newFailures >= 3 && !currentPPV) {
-  // Portal NUNCA configurado - force repair necessario
-  // ... (codigo existente de injecao)
-} else if (newFailures >= 3) {
-  // Portal ja configurado - apenas resetar contador
-  console.log(`[mikrotik-sync] v7.8.8: Skipping force repair - portal already configured (version=${currentPPV})`)
-  await supabase.from('hotspots').update({ telemetry_failures: 0 }).eq('id', hotspot.id)
-}
-```
+Isso para os crashes imediatos. O perfil ja esta no cache, entao nao sera re-enviado. Se precisar re-provisionar, limpar o cache manualmente via SQL.
 
-### Parte 2: SQL - Resetar estado e re-inserir acoes
+### Parte 3: SQL - Resetar estado
 
 ```sql
--- Resetar hotspot
 UPDATE hotspots 
-SET synced_profiles = '[]'::jsonb,
+SET synced_profiles = '["tripulacao-googlemarine"]'::jsonb,
     telemetry_failures = 0,
     last_force_repair_at = NULL
 WHERE id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1';
 
--- Re-inserir acoes
-INSERT INTO acoes_pendentes (hotspot_id, tipo, payload, status) VALUES 
-  ('27a1e1be-4ba7-4496-adb1-9227d3a80ad1', 'add_user_profile', 
-   '{"name":"tripulacao-googlemarine","rate_limit":"3M/3M","shared_users":1,"limit_bytes":0}', 'pendente'),
-  ('27a1e1be-4ba7-4496-adb1-9227d3a80ad1', 'create_user', 
-   '{"user":"alexandre.silva","password":"048706","profile":"tripulacao-googlemarine"}', 'pendente');
+-- Limpar acoes pendentes antigas que vao falhar
+DELETE FROM acoes_pendentes 
+WHERE hotspot_id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1' 
+AND status = 'pendente';
 ```
+
+Nao inserir novas acoes `create_profile` ate o template ser atualizado no roteador. O usuario `alexandre.silva` ja esta registrado (confirmado nos logs: "registered_users_csv: alexandre.silva").
 
 ## Resultado esperado
 
-- Sem mais "Falha no fetch" causada por acoes nao reconhecidas
-- Perfil e usuario chegam ao roteador sem interferencia
-- Login volta a funcionar
+1. Sem mais crashes - nenhuma acao `create_profile` enviada (cache tem o perfil)
+2. Template atualizado para futuras criacao de perfis
+3. Sync volta a funcionar normalmente (0 acoes, sem erros)
+4. Se o perfil ja existe no roteador E o usuario ja existe, o login deve funcionar imediatamente
 
 ## Arquivos modificados
 
 | Tipo | Arquivo | Mudanca |
 |------|---------|---------|
-| Edge Function | mikrotik-sync (linhas 1208-1239) | Guard para pular force repair quando portal ja configurado |
-| SQL | hotspots + acoes_pendentes | Reset estado + re-inserir acoes pendentes |
-
+| SQL (script_templates) | sync-standalone | Fix parser create_profile (4 params + on-error) |
+| Edge Function | mikrotik-sync linhas 1530-1534 | Reverter "always inject" para cache check |
+| SQL | hotspots | Restaurar cache com perfil, reset counters |
+| SQL | acoes_pendentes | Limpar acoes pendentes que iam crashar |
