@@ -1,70 +1,95 @@
 
 
-# Fix: Perfil perdido + Deadlock Recovery bloqueando sync
+# Fix: Breaking the Infinite Loop — Force Repair + Synced Profiles Cache
 
-## Diagnostico
+## Root Cause (3 interlocking problems)
 
-Os logs do MikroTik confirmam:
-- 13:17:26 — "Aplicado 0 acoes" (780 bytes recebidos)
-- 13:18:26 — "Falha no fetch" (1206 bytes recebidos — eram as acoes de perfil + usuario)
-- 13:19:26 — "Aplicado 0 acoes" novamente
+### Problem 1: Force Repair resets `portal_profile_version` to null every 3 syncs
+The telemetry from the router always reports `login_by=""` (empty), making it "unreliable". After 3 consecutive unreliable telemetry readings, the force repair logic at line 1232 resets `portal_profile_version` back to `null`. This triggers line 1141 to inject 8 walled garden + 1 configure_hotspot_profile actions on every sync — flooding the pipe with redundant actions and blocking real ones.
 
-O backend marcou `add_user_profile` e `create_user` como "executado" as 16:18:29 UTC, mas o roteador nunca as aplicou.
+### Problem 2: `synced_profiles` cache is re-populated immediately after clearing
+When we clear the cache, the SAME sync cycle that detects the missing profile immediately re-adds it to the cache (line 1564-1570). If the router fails to receive that response ("Falha no fetch"), the profile is never created but the cache says it is.
 
-Dois problemas bloqueantes:
-1. `synced_profiles` contem `["tripulacao-googlemarine"]` — reconciliacao pula o perfil
-2. `portal_profile_version = null` — injeta 9 acoes de deadlock recovery a cada sync, ocupando o pipe com walled garden que ja existe no roteador
+### Problem 3: Fire-and-forget marks actions as executed before delivery
+Line 1722-1739 marks ALL actions as `executado` the moment they're included in the JSON response, not when the router confirms receipt.
 
-## Correcao
+## Fix (2 changes)
 
-### 1. SQL: Corrigir estado do hotspot + re-inserir acoes
+### 1. Edge Function: Stop force repair from resetting portal_profile_version
+
+In `supabase/functions/mikrotik-sync/index.ts`, line 1232:
+
+**Before:**
+```typescript
+.update({ telemetry_failures: 0, portal_profile_version: null, last_force_repair_at: new Date().toISOString() })
+```
+
+**After:**
+```typescript
+.update({ telemetry_failures: 0, last_force_repair_at: new Date().toISOString() })
+```
+
+This stops the infinite loop. The force repair will still inject the configure_hotspot_profile action, but won't reset the version flag, preventing the re-injection on every subsequent sync.
+
+Also at line 1278-1282, when initial config is first sent, the code resets `portal_profile_version` to null. Change this to set it to the required version instead:
+
+**Before:**
+```typescript
+.update({ portal_profile_version: null })
+```
+
+**After:**
+```typescript
+.update({ portal_profile_version: REQUIRED_PORTAL_VERSION })
+```
+
+### 2. SQL: Fix hotspot state + re-insert actions
 
 ```sql
--- 1. Limpar cache de perfis para forcar re-provisionamento
+-- Fix portal loop + clear profile cache
 UPDATE hotspots 
 SET synced_profiles = '[]'::jsonb,
     portal_profile_version = '7.1.50-http-pap',
-    telemetry_failures = 0
+    telemetry_failures = 0,
+    last_force_repair_at = NOW()
 WHERE id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1';
 
--- 2. Re-inserir acao de criacao de perfil
+-- Re-insert profile action
 INSERT INTO acoes_pendentes (hotspot_id, tipo, payload, status)
 VALUES (
   '27a1e1be-4ba7-4496-adb1-9227d3a80ad1',
   'add_user_profile',
-  '{"name": "tripulacao-googlemarine", "rate_limit": "3M/3M", "shared_users": 1, "limit_bytes": 0}'::jsonb,
+  '{"name": "tripulacao-googlemarine", "rate_limit": "3M/3M", "shared_users": 1, "limit_bytes": 0}',
   'pendente'
 );
 
--- 3. Re-inserir acao de criacao de usuario
+-- Re-insert user action with correct password
 INSERT INTO acoes_pendentes (hotspot_id, tipo, payload, status)
 VALUES (
   '27a1e1be-4ba7-4496-adb1-9227d3a80ad1',
   'create_user',
-  '{"user": "alexandre.silva", "password": "048706", "profile": "tripulacao-googlemarine"}'::jsonb,
+  '{"user": "alexandre.silva", "password": "048706", "profile": "tripulacao-googlemarine"}',
   'pendente'
 );
 ```
 
-**O que cada correcao faz:**
-- `synced_profiles = []` — forca a reconciliacao a detectar o perfil como ausente
-- `portal_profile_version = '7.1.50-http-pap'` — para a injecao de 9 acoes de deadlock recovery a cada sync, liberando o pipe para as acoes reais
-- `telemetry_failures = 0` — reseta o contador para evitar triggers de force-repair
-- Novas acoes `add_user_profile` + `create_user` — re-provisiona perfil e usuario
+Setting `last_force_repair_at = NOW()` activates the 2-minute cooldown, preventing force repair from immediately resetting anything.
 
-### 2. Nenhuma alteracao de codigo necessaria
+## Expected Result
 
-A Edge Function ja tem o handler `create_profile` (alias para `add_user_profile`) implementado na correcao anterior. O problema era exclusivamente de estado no banco de dados e timing de rede.
+On the next sync (~30s after deploy):
+1. No walled garden flood (portal_profile_version is set + force repair cooldown active)
+2. Only 2 real actions in the pipe: create_profile + create_user
+3. Profile `tripulacao-googlemarine` is created on MikroTik
+4. User `alexandre.silva` is linked to the profile
+5. Login works
 
-## Resultado esperado
+## Changes Summary
 
-No proximo sync (~30s):
-1. Sem deadlock recovery (portal_profile_version ja esta setada)
-2. Perfil `tripulacao-googlemarine` enviado como acao real no pipe
-3. Usuario `alexandre.silva` re-criado com perfil correto
-4. Login passa a funcionar
-
-## Risco
-
-Se o roteador tiver outra "Falha no fetch", as acoes serao perdidas novamente. Uma melhoria futura seria implementar confirmacao de execucao pelo roteador (ACK) em vez de marcar como executado no momento do envio.
+| Type | File/Location | Change |
+|------|--------------|--------|
+| Edge Function | mikrotik-sync line 1232 | Remove `portal_profile_version: null` from force repair update |
+| Edge Function | mikrotik-sync line 1280 | Change `portal_profile_version: null` to `REQUIRED_PORTAL_VERSION` |
+| SQL Migration | hotspots table | Set portal_profile_version, clear synced_profiles, activate cooldown |
+| SQL Migration | acoes_pendentes | Insert 2 actions (profile + user) |
 
