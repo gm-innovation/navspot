@@ -1229,13 +1229,13 @@ Deno.serve(async (req) => {
         // Reset counter + portal_profile_version + mark force-repair timestamp
         const { error: resetError } = await supabase
           .from('hotspots')
-          .update({ telemetry_failures: 0, portal_profile_version: null, last_force_repair_at: new Date().toISOString() })
+          .update({ telemetry_failures: 0, last_force_repair_at: new Date().toISOString() })
           .eq('id', hotspot.id)
 
         if (resetError) {
           console.error(`[mikrotik-sync] v7.1.60d: Failed to reset telemetry_failures: ${resetError.message}`)
         } else {
-          console.log(`[mikrotik-sync] v7.1.60d: Reset telemetry_failures to 0, portal_profile_version to null, last_force_repair_at set after force repair`)
+          console.log(`[mikrotik-sync] v7.1.60d: Reset telemetry_failures to 0, last_force_repair_at set after force repair (portal_profile_version preserved)`)
         }
       }
     } else {
@@ -1277,9 +1277,9 @@ Deno.serve(async (req) => {
       if (currentVersion === REQUIRED_PORTAL_VERSION) {
         await supabase
           .from('hotspots')
-          .update({ portal_profile_version: null })
+          .update({ portal_profile_version: REQUIRED_PORTAL_VERSION })
           .eq('id', hotspot.id)
-        console.log(`[mikrotik-sync] v7.1.46: Reset portal_profile_version to null (awaiting telemetry confirmation)`)
+        console.log(`[mikrotik-sync] v7.1.46: Kept portal_profile_version as ${REQUIRED_PORTAL_VERSION} (repair injected but version preserved)`)
       }
       
       console.log(`[mikrotik-sync] v7.1.46: Injected configure_hotspot_profile for ${hotspot.nome}`)
