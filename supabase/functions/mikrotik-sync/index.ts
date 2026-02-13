@@ -1784,6 +1784,7 @@ Deno.serve(async (req) => {
           }
           // Update profile is handled via create_user with updated profile
           return `create_user|${p.user || ''}||${p.profile || ''}`
+        case 'create_profile':
         case 'add_user_profile':
           // v6.9.5: Create profile with normalized rate-limit (remove B suffix)
           const normalizeRate = (v: string): string => String(v || '2M/5M')
