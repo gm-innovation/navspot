@@ -11,6 +11,7 @@ export interface AcaoPendenteWithDetails extends AcaoPendente {
 
 export interface AcoesPendentesStats {
   pendentes: number;
+  enviadas: number;
   executadas: number;
   erros: number;
 }
@@ -55,6 +56,7 @@ export function useAcoesPendentesStats() {
 
       const stats: AcoesPendentesStats = {
         pendentes: data?.filter(a => a.status === 'pendente').length || 0,
+        enviadas: data?.filter(a => a.status === 'enviado').length || 0,
         executadas: data?.filter(a => a.status === 'executado').length || 0,
         erros: data?.filter(a => a.status === 'erro').length || 0,
       };

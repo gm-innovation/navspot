@@ -16,6 +16,7 @@ export type Database = {
     Tables: {
       acoes_pendentes: {
         Row: {
+          batch_id: string | null
           created_at: string
           erro_mensagem: string | null
           executed_at: string | null
@@ -27,6 +28,7 @@ export type Database = {
           tipo: string
         }
         Insert: {
+          batch_id?: string | null
           created_at?: string
           erro_mensagem?: string | null
           executed_at?: string | null
@@ -38,6 +40,7 @@ export type Database = {
           tipo: string
         }
         Update: {
+          batch_id?: string | null
           created_at?: string
           erro_mensagem?: string | null
           executed_at?: string | null
