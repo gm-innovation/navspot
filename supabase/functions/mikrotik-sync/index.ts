@@ -6,7 +6,7 @@ const corsHeaders = {
 }
 
 // v7.1.51: Reverted cleanup to stable format (unquoted values)
-const VERSION = "7.1.65"
+const VERSION = "7.8.7"
 
 // v7.1.50: Required portal profile version - only marked after telemetry confirms
 const REQUIRED_PORTAL_VERSION = "7.1.50-http-pap"
@@ -85,6 +85,7 @@ interface SyncPayload {
   registered_profiles_csv?: string  // v6.9.9: Lista de perfis do MikroTik para reconciliação
   executed_actions?: string[]
   user_device_counts?: { user: string; count: number; macs: string[] }[]
+  last_batch_applied?: string  // v7.8.7: ACK handshake from MikroTik
 }
 
 interface PendingAction {
@@ -689,6 +690,45 @@ Deno.serve(async (req) => {
       }
     }
 
+    // v7.8.7: ACK handshake - confirm previous batch was applied by MikroTik
+    if (payload.last_batch_applied) {
+      const { error: ackError } = await supabase
+        .from('acoes_pendentes')
+        .update({ status: 'executado' })
+        .eq('batch_id', payload.last_batch_applied)
+        .eq('hotspot_id', hotspot.id)
+        .eq('status', 'enviado')
+
+      if (!ackError) {
+        console.log(`[mikrotik-sync] v7.8.7: Confirmed batch ${payload.last_batch_applied}`)
+      } else {
+        console.error(`[mikrotik-sync] v7.8.7: ACK error for batch ${payload.last_batch_applied}:`, ackError)
+      }
+    }
+
+    // v7.8.7: Retry counter - increment tentativas for unconfirmed 'enviado' actions
+    {
+      const { data: staleActions } = await supabase
+        .from('acoes_pendentes')
+        .select('id, tentativas')
+        .eq('hotspot_id', hotspot.id)
+        .eq('status', 'enviado')
+
+      for (const action of (staleActions || [])) {
+        const newTentativas = (action.tentativas || 0) + 1
+        if (newTentativas >= 3) {
+          await supabase.from('acoes_pendentes')
+            .update({ status: 'erro', tentativas: newTentativas, erro_mensagem: 'ACK timeout (3 attempts)' })
+            .eq('id', action.id)
+          console.warn(`[mikrotik-sync] v7.8.7: Action ${action.id} failed after 3 attempts, moved to erro`)
+        } else {
+          await supabase.from('acoes_pendentes')
+            .update({ tentativas: newTentativas })
+            .eq('id', action.id)
+        }
+      }
+    }
+
     const deviceViolations: DeviceViolation[] = []
     const blockedDevices: BlockedDevice[] = []
 
@@ -819,6 +859,16 @@ Deno.serve(async (req) => {
             // v6.9.11: Use delta for new total calculation
             const newTotal = tripulante.bytes_consumidos + deltaBytes
             const percentage = (newTotal / limitBytes) * 100
+
+            // v7.8.7: Auto-unblock if quota was increased and user is now below limit
+            if (tripulante.status === 'bloqueado' && 
+                tripulante.bloqueio_motivo === 'quota_exceeded' && 
+                percentage < 100) {
+              await supabase.from('tripulantes')
+                .update({ status: 'ativo', bloqueio_motivo: null, bloqueado_at: null })
+                .eq('id', tripulante.id)
+              console.log(`[mikrotik-sync] v7.8.7: Auto-unblocked ${activeUser.user} (now ${Math.round(percentage)}%)`)
+            }
 
             if (percentage >= 100) {
               await createAlertIfNotRecent(supabase, {
@@ -1040,9 +1090,9 @@ Deno.serve(async (req) => {
       .from('acoes_pendentes')
       .select('id, tipo, payload')
       .eq('hotspot_id', hotspot.id)
-      .eq('status', 'pendente')
+      .in('status', ['pendente', 'enviado'])
       .order('created_at', { ascending: true })
-      .limit(50)
+      .limit(15)
 
     if (pendingError) {
       console.error('[mikrotik-sync] Failed to fetch pending actions:', pendingError)
@@ -1725,9 +1775,16 @@ Deno.serve(async (req) => {
     
     console.log(`[mikrotik-sync] v7.0: Action priority order - configure_profile:${configureProfileActions.length}, firewall_allow:${firewallAllowActions.length}, firewall_block:${firewallBlockActions.length}, profiles:${profileActions.length}, users:${userActions.length}, walled_garden:${walledGardenActions.length}, other:${otherActions.length}`)
 
-    // v6.9: Auto-mark as executed after 1 delivery (fire-and-forget pattern)
+    // v7.8.7: Global action cap to prevent MikroTik parser overload
+    const MAX_ACTIONS_PER_SYNC = 15
+    if (expandedActions.length > MAX_ACTIONS_PER_SYNC) {
+      console.warn(`[mikrotik-sync] v7.8.7: Capping actions from ${expandedActions.length} to ${MAX_ACTIONS_PER_SYNC}`)
+      expandedActions = expandedActions.slice(0, MAX_ACTIONS_PER_SYNC)
+    }
+
+    // v7.8.7: Mark as 'enviado' with batch_id (replaces fire-and-forget)
+    const batchId = crypto.randomUUID().slice(0, 8)
     if (expandedActions.length > 0) {
-      // v7.1.58d: Filter by UUID regex to prevent PostgreSQL type errors from synthetic IDs
       const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
       const actionIds = expandedActions
         .filter(a => UUID_REGEX.test(a.id))
@@ -1737,11 +1794,12 @@ Deno.serve(async (req) => {
         await supabase
           .from('acoes_pendentes')
           .update({ 
-            status: 'executado', 
+            status: 'enviado', 
+            batch_id: batchId,
             executed_at: new Date().toISOString() 
           })
           .in('id', actionIds)
-          .then(() => console.log(`[mikrotik-sync] v6.9: Marked ${actionIds.length} actions as executed`))
+          .then(() => console.log(`[mikrotik-sync] v7.8.7: Marked ${actionIds.length} actions as enviado (batch: ${batchId})`))
       }
     }
 
@@ -1844,6 +1902,7 @@ Deno.serve(async (req) => {
     // This would corrupt login-url: ?h=UUID\u0026mac=$(mac) instead of ?h=UUID&mac=$(mac)
     const jsonBody = JSON.stringify({
         pending_actions_pipe: formattedPipe,  // FIRST - RouterOS scans for [[
+        batch_id: batchId,  // v7.8.7: For ACK handshake
         success: true,
         server_time: new Date().toISOString(),
         actions_count: expandedActions.length,
