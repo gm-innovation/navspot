@@ -1,83 +1,176 @@
 
 
-# Fix: Cache de perfis invalido apos recovery (v7.8.6)
+# Hardening mikrotik-sync v7.8.7: Batching + Handshake ACK + Retry Counter + Fix Quota
 
-## Problema
+## Bugs Confirmados
 
-O usuario `alexandre.silva` nao consegue logar no hotspot porque o perfil `tripulacao-googlemarine` nao existe no MikroTik, mas o cache do banco (`synced_profiles`) diz que ja foi sincronizado.
+### Bug 1: Quota bloqueada a 68.9%
+O Alexandre tem 344MB consumidos com limite de 500MB (68.9%), mas esta `bloqueado`. O historico mostra que o `limite_dados_mb` foi aumentado progressivamente (100 -> 200 -> 300 -> 400 -> 500MB). O bloqueio ocorreu quando o limite era menor, mas o sistema **nunca reavalia e desbloqueia** o tripulante quando o limite sobe.
 
-## Acoes
+### Bug 2: Fire-and-forget sem retry
+Acoes sao marcadas como `executado` imediatamente ao enviar, sem confirmacao do MikroTik.
 
-### 1. Limpar cache do hotspot (acao imediata)
+### Bug 3: Sem cap global de acoes
+Acoes sinteticas (kick, block_quota, profiles) sao injetadas alem do `limit(50)` da query.
 
-Executar SQL via migration tool para limpar o cache de perfis e resetar falhas de telemetria:
+## Alteracoes
+
+### 1. Migration SQL
+
+Adicionar coluna `batch_id` e atualizar constraint de status para incluir `enviado`:
 
 ```sql
-UPDATE hotspots 
-SET synced_profiles = '[]'::jsonb, telemetry_failures = 0 
-WHERE id = '27a1e1be-4ba7-4496-adb1-9227d3a80ad1';
+-- Adicionar batch_id para handshake ACK
+ALTER TABLE acoes_pendentes ADD COLUMN IF NOT EXISTS batch_id text;
+
+-- Atualizar constraint para incluir status 'enviado'
+ALTER TABLE acoes_pendentes DROP CONSTRAINT IF EXISTS acoes_pendentes_status_check;
+ALTER TABLE acoes_pendentes ADD CONSTRAINT acoes_pendentes_status_check 
+  CHECK (status IN ('pendente', 'enviado', 'executado', 'erro'));
 ```
 
-Nota: Como o tool de read-query e somente leitura, usaremos o insert tool para executar este UPDATE.
+### 2. Desbloquear Alexandre (acao imediata via SQL)
 
-### 2. Corrigir logica de reconciliacao no mikrotik-sync
+O tripulante esta com 68.9% de quota mas status `bloqueado`. Precisa ser desbloqueado:
 
-Arquivo: `supabase/functions/mikrotik-sync/index.ts` (linhas 1527-1534)
+```sql
+UPDATE tripulantes 
+SET status = 'ativo', bloqueio_motivo = NULL, bloqueado_at = NULL 
+WHERE login_wifi = 'alexandre.silva' AND status = 'bloqueado';
+```
 
-Substituir o bloco de fallback atual:
+### 3. Alteracoes no `mikrotik-sync/index.ts`
+
+**a) Version bump**: `7.1.65` para `7.8.7`
+
+**b) Interface SyncPayload**: Adicionar `last_batch_applied?: string`
+
+**c) Handler ACK (apos linha 690)**: Quando o MikroTik enviar `last_batch_applied`, marcar acoes daquele batch como `executado`:
 
 ```typescript
-} else {
-  // v6.9.9: Fallback - MikroTik didn't send profiles (old script)
-  // Use cached synced_profiles but log warning
-  if (syncedProfiles.includes(slug)) {
-    console.log(`[mikrotik-sync] v6.9.9: Profile in cache (no MikroTik data), skipping: ${slug}`)
-    return null
-  }
-  console.warn(`[mikrotik-sync] v6.9.9: No MikroTik profile data, will sync: ${slug}`)
+if (payload.last_batch_applied) {
+  await supabase
+    .from('acoes_pendentes')
+    .update({ status: 'executado' })
+    .eq('batch_id', payload.last_batch_applied)
+    .eq('hotspot_id', hotspot.id)
+    .eq('status', 'enviado')
+  console.log(`[mikrotik-sync] v7.8.7: Confirmed batch ${payload.last_batch_applied}`)
 }
 ```
 
-Por:
+**d) Retry counter (apos handler ACK)**: Acoes `enviado` sem ACK por 3+ ciclos mudam para `erro`:
 
 ```typescript
-} else {
-  // v7.8.6: Check if router is in virgin state (no profiles AND no users)
-  const registeredUsersCsv = payload.registered_users_csv || ''
-  if (registeredUsersCsv.trim().length === 0) {
-    // Router has nothing - ignore cache, force profile re-sync
-    console.log(`[mikrotik-sync] v7.8.6: Router in virgin state (no profiles, no users), forcing profile sync: ${slug}`)
+// v7.8.7: Increment retry counter for unconfirmed actions
+await supabase
+  .from('acoes_pendentes')
+  .update({ tentativas: supabase.rpc('increment_field', ...) }) // usar raw increment
+  // Simplificado: buscar enviados, incrementar, e marcar erro se tentativas >= 3
+
+const { data: staleActions } = await supabase
+  .from('acoes_pendentes')
+  .select('id, tentativas')
+  .eq('hotspot_id', hotspot.id)
+  .eq('status', 'enviado')
+
+for (const action of (staleActions || [])) {
+  const newTentativas = (action.tentativas || 0) + 1
+  if (newTentativas >= 3) {
+    await supabase.from('acoes_pendentes')
+      .update({ status: 'erro', tentativas: newTentativas, erro_mensagem: 'ACK timeout (3 attempts)' })
+      .eq('id', action.id)
   } else {
-    // Old script sent users but not profiles - trust cache
-    if (syncedProfiles.includes(slug)) {
-      console.log(`[mikrotik-sync] v6.9.9: Profile in cache (no MikroTik data), skipping: ${slug}`)
-      return null
-    }
-    console.warn(`[mikrotik-sync] v6.9.9: No MikroTik profile data, will sync: ${slug}`)
+    await supabase.from('acoes_pendentes')
+      .update({ tentativas: newTentativas })
+      .eq('id', action.id)
   }
 }
 ```
 
-A logica: se o roteador nao tem perfis E nao tem usuarios, ele esta em estado virgem (pos-recovery ou install limpo). Nesse caso, ignoramos o cache e forcamos o reenvio de todos os perfis.
+**e) Query de busca**: Incluir `enviado` para retry, com limite reduzido a 15:
 
-### 3. Deploy automatico
-
-O `mikrotik-sync` sera redeployado automaticamente apos a edicao.
-
-## Resultado esperado
-
-Apos a limpeza do cache (passo 1), o proximo sync (~1 min) enviara:
-
-```text
-add_user_profile|tripulacao-googlemarine|3M/3M|1|0
-create_user|alexandre.silva|048706|tripulacao-googlemarine
+```typescript
+const { data: pendingActions } = await supabase
+  .from('acoes_pendentes')
+  .select('id, tipo, payload')
+  .eq('hotspot_id', hotspot.id)
+  .in('status', ['pendente', 'enviado'])
+  .order('created_at', { ascending: true })
+  .limit(15)
 ```
 
-O perfil sera criado antes do usuario, permitindo o login.
+**f) Marcacao como `enviado` (nao `executado`)**: Gerar `batch_id` e marcar acoes como `enviado`:
 
-## Ordem de execucao
+```typescript
+const batchId = crypto.randomUUID().slice(0, 8)
 
-1. Limpar `synced_profiles` no banco (resolve o problema agora)
-2. Atualizar logica no `mikrotik-sync/index.ts` (previne recorrencia)
-3. Deploy automatico da edge function
+if (actionIds.length > 0) {
+  await supabase
+    .from('acoes_pendentes')
+    .update({ 
+      status: 'enviado', 
+      batch_id: batchId,
+      executed_at: new Date().toISOString() 
+    })
+    .in('id', actionIds)
+}
+```
+
+**g) Cap global de 15 acoes** (antes da marcacao):
+
+```typescript
+const MAX_ACTIONS_PER_SYNC = 15
+if (expandedActions.length > MAX_ACTIONS_PER_SYNC) {
+  console.warn(`[mikrotik-sync] v7.8.7: Capping from ${expandedActions.length} to ${MAX_ACTIONS_PER_SYNC}`)
+  expandedActions = expandedActions.slice(0, MAX_ACTIONS_PER_SYNC)
+}
+```
+
+**h) batch_id no JSON de resposta**:
+
+```typescript
+const jsonBody = JSON.stringify({
+  pending_actions_pipe: formattedPipe,
+  batch_id: batchId,  // v7.8.7: For ACK handshake
+  success: true,
+  ...
+})
+```
+
+**i) Auto-desbloqueio de quota** (no loop de active_users, apos calcular percentage):
+
+Quando um tripulante esta `bloqueado` com `bloqueio_motivo = 'quota_exceeded'` mas o percentage atual e < 100%, desbloquear automaticamente:
+
+```typescript
+// v7.8.7: Auto-unblock if quota was increased and user is now below limit
+if (tripulante.status === 'bloqueado' && 
+    tripulante.bloqueio_motivo === 'quota_exceeded' && 
+    percentage < 100) {
+  await supabase.from('tripulantes')
+    .update({ status: 'ativo', bloqueio_motivo: null, bloqueado_at: null })
+    .eq('id', tripulante.id)
+  console.log(`[mikrotik-sync] v7.8.7: Auto-unblocked ${activeUser.user} (now ${Math.round(percentage)}%)`)
+}
+```
+
+### 4. Prioridade de `unblock_quota`
+
+Ja esta implementada corretamente - `unblock_quota` e colocado na categoria `firewallBlockActions` (posicao 2 na prioridade, antes de profiles e users).
+
+## Ordem de Execucao
+
+1. Migration: adicionar `batch_id`, atualizar constraint de status
+2. SQL: desbloquear Alexandre (status `ativo`)
+3. Atualizar `mikrotik-sync/index.ts` com todas as alteracoes (a-i)
+4. Deploy automatico
+5. (Futuro) Atualizar template `sync` no MikroTik para enviar `last_batch_applied`
+
+## Nota sobre compatibilidade
+
+Ate que o script do MikroTik seja atualizado para enviar `last_batch_applied`, o sistema opera em modo hibrido:
+- Acoes sao marcadas como `enviado` (nao mais `executado`)
+- Sem ACK, o retry counter incrementa a cada sync
+- Apos 3 tentativas sem ACK, a acao vai para `erro` com alerta
+- Isso e MELHOR que o fire-and-forget atual, pois acoes perdidas sao detectadas em vez de silenciadas
 
