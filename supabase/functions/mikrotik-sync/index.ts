@@ -5,8 +5,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.1.51: Reverted cleanup to stable format (unquoted values)
-const VERSION = "7.8.7"
+// v7.8.24: Aligned with MikroTik script v7.8.24 data contract
+const VERSION = "7.8.24"
 
 // v7.1.50: Required portal profile version - only marked after telemetry confirms
 const REQUIRED_PORTAL_VERSION = "7.1.50-http-pap"
@@ -118,32 +118,42 @@ interface BlockedDevice {
   reason: string
 }
 
-// v6.9.10: Parse active_users_csv from MikroTik into ActiveUser array
+// v7.8.24: Flexible CSV parser — supports 2-col (user,mac), 3-col (user,mac,uptime) v7.8.24
+// and 5-col (user,mac,bytes_in,bytes_out,uptime) v7.8.26+
+// CRITICAL: The rigid `parts.length >= 4` guard was causing Error 500 with v7.8.24 script
+// which only sends 3 columns. Now detects format by checking if col[2] is numeric (bytes).
 function parseActiveUsersCsv(csv: string): ActiveUser[] {
   if (!csv || csv.trim().length === 0) {
     return []
   }
-  
+
   const users: ActiveUser[] = []
-  
-  // Format: "user,mac,bytes_in,bytes_out;user2,mac2,bytes_in2,bytes_out2;"
+
+  // Format v7.8.24: "user,mac,uptime;user2,mac2,uptime2;"
+  // Format v7.8.26+: "user,mac,bytes_in,bytes_out,uptime;..."
   const entries = csv.split(';').filter(e => e.trim().length > 0)
-  
+
   for (const entry of entries) {
     const parts = entry.split(',').map(p => p.trim())
-    
-    if (parts.length >= 4) {
-      users.push({
-        user: parts[0],
-        mac: parts[1],
-        uptime: '0', // MikroTik doesn't send uptime in current CSV format
-        bytes_in: parseInt(parts[2], 10) || 0,
-        bytes_out: parseInt(parts[3], 10) || 0,
-        ip: parts[4] || undefined // Optional 5th field
-      })
-    }
+
+    // Need at minimum user + mac (2 columns)
+    if (parts.length < 2) continue
+
+    const col2 = parts[2] || ''
+    // Detect v7.8.26+ format: col[2] is purely numeric (bytes_in)
+    // v7.8.24 format: col[2] is uptime string (e.g. "3m45s" or "00:05:10")
+    const isExtendedFormat = parts.length >= 4 && /^\d+$/.test(col2)
+
+    users.push({
+      user: parts[0],
+      mac: parts[1],
+      uptime: isExtendedFormat ? (parts[4] || '0') : (col2 || '0'),
+      bytes_in: isExtendedFormat ? (parseInt(col2, 10) || 0) : 0,
+      bytes_out: isExtendedFormat ? (parseInt(parts[3], 10) || 0) : 0,
+      ip: parts[5] || undefined
+    })
   }
-  
+
   return users
 }
 
@@ -449,14 +459,27 @@ async function reconcileUsers(
     console.log(`[mikrotik-sync] v6.9.8: Decision for ${login}: neverSynced=${neverSynced}, exceeded=${exceededThreshold}, cooldown=${cooldownElapsed}`)
     
     if ((neverSynced || exceededThreshold) && cooldownElapsed) {
-      // Generate create_user action
+      // v7.8.24: force_reg for pendente_cadastro users — redirects to registration portal
+      // instead of creating user normally, which would bypass the registration flow
+      if (tripulante.status === 'pendente_cadastro') {
+        newActionsToInject.push({
+          id: `auto-force-reg-${login}`,
+          type: 'force_reg',
+          payload: { user: login }
+        })
+        meta.last_synced_at = now
+        console.log(`[mikrotik-sync] v7.8.24: force_reg for pendente_cadastro user: ${login}`)
+        continue
+      }
+
+      // Generate create_user action for active tripulantes
       const perfilNome = (tripulante.perfis_velocidade as { nome?: string } | null)?.nome || ''
       const profileSlug = perfilNome.toLowerCase()
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
         .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') || 'default'
-      
+
       const actionId = `auto-user-${login}`
-      
+
       newActionsToInject.push({
         id: actionId,
         type: 'create_user',
@@ -466,11 +489,11 @@ async function reconcileUsers(
           profile: profileSlug
         }
       })
-      
+
       // Update metadata to record sync and reset counter
       meta.last_synced_at = now
       meta.miss_count = 0
-      
+
       console.log(`[mikrotik-sync] v6.9.8: Re-syncing user (neverSynced=${neverSynced}, exceeded=${exceededThreshold}): ${login}`)
     }
   }
@@ -1749,6 +1772,10 @@ Deno.serve(async (req) => {
       else if (action.type === 'create_user' || action.type === 'add_user' || action.type === 'update_user') {
         userActions.push(action)
       }
+      // v7.8.24: force_reg — same priority as create_user (user management)
+      else if (action.type === 'force_reg') {
+        userActions.push(action)
+      }
       else if (action.type === 'add_whitelist_domain' || action.type === 'add_blacklist_domain') {
         walledGardenActions.push(action)
       }
@@ -1874,10 +1901,15 @@ Deno.serve(async (req) => {
           // v6.9.17: Firewall filter for "bloquear_tudo" mode - whitelist
           return `add_firewall_allow|${p.domain || ''}`
         // v7.1.64: Quota enforcement — triple block / unblock
+        // v7.8.24 FIX: block_quota sends only MAC — script v7.8.24 does split("|")[1] = MAC
+        // Sending MAC|user would result in MikroTik searching for "MAC|user" as MAC address (fails)
         case 'block_quota':
-          return `block_quota|${p.mac || ''}|${p.user || ''}`
+          return `block_quota|${p.mac || ''}`
         case 'unblock_quota':
           return `unblock_quota|${p.mac || ''}`
+        // v7.8.24: force_reg — sets user profile to pending_registration + kicks session
+        case 'force_reg':
+          return `force_reg|${p.user || ''}`
         case 'add_firewall_l7':
           return `create_firewall_rule|${p.order || 0}|${p.list || ''}|${p.type || ''}|${p.profile || ''}|${p.schedule || ''}|${p.action || ''}`
         case 'update_profile_quota':
