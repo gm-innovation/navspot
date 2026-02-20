@@ -2,7 +2,7 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
-const VERSION = "7.8.6";
+const VERSION = "7.8.26";
 const DEPLOYED_AT = new Date().toISOString();
 
 function json(d: unknown, s = 200) {
