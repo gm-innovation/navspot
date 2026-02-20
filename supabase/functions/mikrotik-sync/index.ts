@@ -5,8 +5,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// v7.8.24: Aligned with MikroTik script v7.8.24 data contract
-const VERSION = "7.8.24"
+// v7.8.26: Extended CSV format — user,mac,bytes_in,bytes_out,uptime for real-time consumption
+const VERSION = "7.8.26"
 
 // v7.1.50: Required portal profile version - only marked after telemetry confirms
 const REQUIRED_PORTAL_VERSION = "7.1.50-http-pap"
