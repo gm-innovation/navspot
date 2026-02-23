@@ -18,10 +18,14 @@ const h=await rest("hotspots",{sync_token:"eq."+token,select:"id,nome,interface_
 if(!h)return new Response("invalid token",{status:404,headers:{...H,"Content-Type":"text/plain"}});
 if(body.ros_version)h.ros_version=body.ros_version;
 const v=vars(h,h.embarcacoes);
-if(type==="all"){
-const s0=await tpl("infra",v),s1=await tpl("sync-standalone",v),s2=await tpl("guardian-standalone",v),s3=await tpl("bootstrap",v);
-return new Response(s0+"\n"+s1+"\n"+s2+"\n"+s3,{headers:{...H,"Content-Type":"text/plain; charset=utf-8"}});
-}
+  if(type==="all"){
+  const s0=await tpl("infra",v),s1=await tpl("sync-standalone",v),s2=await tpl("guardian-standalone",v),s3=await tpl("bootstrap",v);
+  return new Response(s0+"\n"+s1+"\n"+s2+"\n"+s3,{headers:{...H,"Content-Type":"text/plain; charset=utf-8"}});
+  }
+  if(type==="recovery"){
+  const s1=await tpl("sync-standalone",v),s2=await tpl("guardian-standalone",v);
+  return new Response(s1+"\n"+s2,{headers:{...H,"Content-Type":"text/plain; charset=utf-8"}});
+  }
 const script=await tpl(type,v);
 return new Response(script,{headers:{...H,"Content-Type":"text/plain; charset=utf-8"}});
 }

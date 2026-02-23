@@ -188,7 +188,7 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 
 # 2. DOWNLOAD AND INSTALL SCRIPTS VIA API
 :log info "NAVSPOT-RECOVERY v${VERSION}: Baixando scripts da API..."
-/tool fetch url="${scriptsUrl}" http-method=post http-data="{\\"mode\\":\\"serve\\",\\"type\\":\\"all\\",\\"token\\":\\"${syncToken}\\",\\"ros_version\\":\\"7\\"}" http-header-field="Content-Type: application/json" check-certificate=no dst-path="ns-install.rsc"
+/tool fetch url="${scriptsUrl}" http-method=post http-data="{\\"mode\\":\\"serve\\",\\"type\\":\\"recovery\\",\\"token\\":\\"${syncToken}\\",\\"ros_version\\":\\"7\\"}" http-header-field="Content-Type: application/json" check-certificate=no dst-path="ns-install.rsc"
 :delay 3s
 
 :local installFile [/file find name~"ns-install.rsc"]
