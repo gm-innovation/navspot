@@ -133,7 +133,7 @@ Deno.serve(async (req) => {
     await sbPatch(SU, "hotspots", SK, "id=eq." + hotspot.id, { initial_config_sent: false, portal_profile_version: null })
     console.log(`[${FN} ${VERSION}] Reset initial_config_sent for ${hotspot.nome}`)
 
-    const scriptsUrl = `${SU}/functions/v1/gen7post?mode=serve`
+    const scriptsUrl = `${SU}/functions/v1/gen7post`
     const recoveryScript = generateRecoveryScript(scriptsUrl, syncToken)
 
     console.log(`[${FN} ${VERSION}] Generated ${recoveryScript.length} bytes for ${hotspot.nome}`)
@@ -188,8 +188,7 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 
 # 2. DOWNLOAD AND INSTALL SCRIPTS VIA API
 :log info "NAVSPOT-RECOVERY v${VERSION}: Baixando scripts da API..."
-:local scriptsUrl "${scriptsUrl}&type=all&token=${syncToken}&ros_version=7"
-/tool fetch url=\\$scriptsUrl check-certificate=no dst-path="ns-install.rsc"
+/tool fetch url="${scriptsUrl}" http-method=post http-data="{\\"mode\\":\\"serve\\",\\"type\\":\\"all\\",\\"token\\":\\"${syncToken}\\",\\"ros_version\\":\\"7\\"}" http-header-field="Content-Type: application/json" check-certificate=no dst-path="ns-install.rsc"
 :delay 3s
 
 :local installFile [/file find name~"ns-install.rsc"]

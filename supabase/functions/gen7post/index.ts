@@ -4,13 +4,31 @@ Deno.serve(async(req)=>{
 if(req.method==="OPTIONS")return new Response(null,{headers:H});
 if(req.method!=="POST")return Response.json({error:"Method not allowed"},{status:405,headers:H});
 const SU=Deno.env.get("SUPABASE_URL")!,SK=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,AK=Deno.env.get("SUPABASE_ANON_KEY")!;
-try{
 const rest=async(t:string,p:Record<string,string>)=>{const r=await fetch(SU+"/rest/v1/"+t+"?"+new URLSearchParams(p),{headers:{apikey:SK,Authorization:"Bearer "+SK,Accept:"application/vnd.pgrst.object+json"}});return r.ok?r.json():null};
 const tpl=async(id:string,v:Record<string,string>)=>{const t=await rest("script_templates",{id:"eq."+id,select:"content"});if(!t?.content)throw new Error("TPL:"+id);let c:string=t.content;for(const[k,val]of Object.entries(v))c=c.replaceAll(k,val);return c.replace(/\r\n/g,"\n").replace(/\r/g,"\n")};
-const vars=(h:any,e:any):Record<string,string>=>{const nb=(h.rede as string).split("/")[0].replace(/\.\d+$/,""),w=h.wan_interface||"ether1",ros=(!h.ros_version||h.ros_version==="auto")?"7":h.ros_version;return{"{{VERSION}}":V,"{{DEPLOYED_AT}}":new Date().toISOString(),"{{WAN_INTERFACE}}":w,"{{WAN_TYPE}}":h.wan_type||"dhcp","{{WAN_CONFIG}}":(h.wan_type||"dhcp")==="dhcp"?"/ip dhcp-client add interface="+w+" disabled=no":"","{{NETWORK_BASE}}":nb,"{{NETWORK_CIDR}}":(h.rede as string).includes("/")?h.rede:h.rede+"/24","{{GATEWAY}}":nb+".1","{{POOL_START}}":nb+".10","{{POOL_END}}":nb+".254","{{EMBARCACAO_NOME}}":e.nome,"{{MIGRATION_COMMANDS}}":"","{{SCRIPTS_URL}}":SU+"/functions/v1/gen7post?mode=serve","{{SYNC_TOKEN}}":h.sync_token,"{{SUPABASE_HOST}}":new URL(SU).hostname,"{{SYNC_URL}}":SU+"/functions/v1/mikrotik-sync","{{RECOVERY_URL}}":SU+"/functions/v1/navspot-recovery","{{API_BASE}}":SU+"/functions/v1","{{SYNC_INTERVAL}}":String(h.sync_interval_minutes||5),"{{ROS_VERSION}}":ros,"{{FETCH_DELAY}}":ros==="7"?"500":"2500","{{WRITE_DELAY}}":ros==="7"?"300":"1500","{{MAX_RETRIES}}":ros==="7"?"1":"3"}};
+const vars=(h:any,e:any):Record<string,string>=>{const nb=(h.rede as string).split("/")[0].replace(/\.\d+$/,""),w=h.wan_interface||"ether1",ros=(!h.ros_version||h.ros_version==="auto")?"7":h.ros_version;return{"{{VERSION}}":V,"{{DEPLOYED_AT}}":new Date().toISOString(),"{{WAN_INTERFACE}}":w,"{{WAN_TYPE}}":h.wan_type||"dhcp","{{WAN_CONFIG}}":(h.wan_type||"dhcp")==="dhcp"?"/ip dhcp-client add interface="+w+" disabled=no":"","{{NETWORK_BASE}}":nb,"{{NETWORK_CIDR}}":(h.rede as string).includes("/")?h.rede:h.rede+"/24","{{GATEWAY}}":nb+".1","{{POOL_START}}":nb+".10","{{POOL_END}}":nb+".254","{{EMBARCACAO_NOME}}":e.nome,"{{MIGRATION_COMMANDS}}":"","{{SCRIPTS_URL}}":SU+"/functions/v1/gen7post","{{SYNC_TOKEN}}":h.sync_token,"{{SUPABASE_HOST}}":new URL(SU).hostname,"{{SYNC_URL}}":SU+"/functions/v1/mikrotik-sync","{{RECOVERY_URL}}":SU+"/functions/v1/navspot-recovery","{{API_BASE}}":SU+"/functions/v1","{{SYNC_INTERVAL}}":String(h.sync_interval_minutes||5),"{{ROS_VERSION}}":ros,"{{FETCH_DELAY}}":ros==="7"?"500":"2500","{{WRITE_DELAY}}":ros==="7"?"300":"1500","{{MAX_RETRIES}}":ros==="7"?"1":"3"}};
+try{
+const body=await req.json();
+// === SERVE MODE (no auth, uses sync_token) ===
+if(body.mode==="health")return Response.json({version:V,status:"ok"},{headers:H});
+if(body.mode==="serve"){
+const token=body.token;const type=body.type||"bootstrap";
+if(!token)return Response.json({error:"token required"},{status:400,headers:H});
+const h=await rest("hotspots",{sync_token:"eq."+token,select:"id,nome,interface_wifi,wan_interface,wan_type,rede,sync_token,sync_interval_minutes,max_usuarios,ros_version,script_versao,embarcacoes!inner(id,nome,empresa_id)"});
+if(!h)return new Response("invalid token",{status:404,headers:{...H,"Content-Type":"text/plain"}});
+if(body.ros_version)h.ros_version=body.ros_version;
+const v=vars(h,h.embarcacoes);
+if(type==="all"){
+const s0=await tpl("infra",v),s1=await tpl("sync-standalone",v),s2=await tpl("guardian-standalone",v),s3=await tpl("bootstrap",v);
+return new Response(s0+"\n"+s1+"\n"+s2+"\n"+s3,{headers:{...H,"Content-Type":"text/plain; charset=utf-8"}});
+}
+const script=await tpl(type,v);
+return new Response(script,{headers:{...H,"Content-Type":"text/plain; charset=utf-8"}});
+}
+// === GENERATE MODE (requires auth) ===
 const ah=req.headers.get("Authorization");if(!ah||!ah.startsWith("Bearer "))return Response.json({success:false,error:"Unauthorized"},{status:401,headers:H});
 const ur=await fetch(SU+"/auth/v1/user",{headers:{apikey:AK,Authorization:ah}});if(!ur.ok)return Response.json({success:false,error:"Invalid token"},{status:401,headers:H});
-const body=await req.json();const hid=body.hotspot_id;if(!hid)return Response.json({success:false,error:"hotspot_id required"},{status:400,headers:H});
+const hid=body.hotspot_id;if(!hid)return Response.json({success:false,error:"hotspot_id required"},{status:400,headers:H});
 const h=await rest("hotspots",{select:"id,nome,interface_wifi,wan_interface,wan_type,rede,sync_token,sync_interval_minutes,max_usuarios,ros_version,script_versao,embarcacoes!inner(id,nome,empresa_id)",id:"eq."+hid});if(!h)return Response.json({success:false,error:"Hotspot not found"},{status:404,headers:H});
 if(!h.sync_token)return Response.json({success:false,error:"sync_token ausente"},{status:400,headers:H});
 const v=vars(h,h.embarcacoes);
