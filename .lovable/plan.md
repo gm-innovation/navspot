@@ -1,75 +1,43 @@
 
 
-# Fix Recovery Script: Wrong Template Type + Bootstrap Self-Destruct
+# Fix Sync Template: Split Multi-Property Set Command
 
-## Problem Analysis
+## Problem
 
-There are **two critical issues** causing recovery to fail:
+The `sync-standalone` template (v7.8.6) has a line in the `configure_hotspot_profile` handler that sets two properties in one command:
 
-### Issue 1: Bootstrap deletes scripts that were just installed
-
-The recovery downloads `type=all` from gen7post, which concatenates **4 templates** in order:
-
-```text
-1. INFRA         --> creates network infrastructure
-2. SYNC-STANDALONE   --> creates navspot-sync script + scheduler
-3. GUARDIAN-STANDALONE --> creates navspot-guardian script + scheduler
-4. BOOTSTRAP     --> DELETES navspot-sync + navspot-guardian, then tries to re-download
+```routeros
+:do { /ip hotspot profile set $hsp login-by=http-pap http-cookie-lifetime=1d } on-error={}
 ```
 
-The bootstrap template starts with a full cleanup (line 366-370 of the output) that **removes the sync and guardian scripts** that were just created by steps 2 and 3. Then bootstrap tries to re-download and import scripts again, but hits a syntax error.
+RouterOS 7 rejects this with "expected end of command" at column 64 (`http-cookie-lifetime` is parsed as a second command rather than a second property).
 
-### Issue 2: Bootstrap postData syntax error (line 529 column 27)
+## Root Cause
 
-The bootstrap template has this line:
-```
-:local postData ("{\"mode\":\"serve\",\"type\":\"all\",\"token\":\"" . $tk . "\",\"ros_version\":\"" . $rosV . "\"}")
-```
+This violates **RouterOS 7 Atomic Commands rule**: inside `:do {}` blocks, each property must be set individually.
 
-The `\"` escaping inside a standalone `.rsc` context causes a RouterOS syntax error. This prevents bootstrap from completing, leaving the router without the scripts it just deleted.
+## Fix
 
-### Net result
-Recovery downloads `type=all` -> sync/guardian scripts are created -> bootstrap deletes them -> bootstrap tries to re-download but crashes on syntax error -> `navspot-sync` doesn't exist.
+**Target:** `script_templates` table, row `id = 'sync-standalone'`
 
-## Solution
-
-**Change the recovery script to fetch only `sync-standalone` and `guardian-standalone`** instead of `type=all`. Recovery already handles its own cleanup and token management -- it does NOT need infra or bootstrap.
-
-### Step 1: Add a new `type=recovery` to gen7post
-
-**File:** `supabase/functions/gen7post/index.ts`
-
-Add a handler for `type=recovery` that returns only sync-standalone + guardian-standalone:
-
-```javascript
-if(type==="recovery"){
-  const s1=await tpl("sync-standalone",v),s2=await tpl("guardian-standalone",v);
-  return new Response(s1+"\n"+s2,{headers:{...H,"Content-Type":"text/plain; charset=utf-8"}});
-}
+Replace template line 171:
+```routeros
+:do { /ip hotspot profile set $hsp login-by=http-pap http-cookie-lifetime=1d } on-error={}
 ```
 
-### Step 2: Update recovery script to use `type=recovery`
-
-**File:** `supabase/functions/navspot-recovery/index.ts`
-
-Change the fetch line in `generateRecoveryScript` from `type=all` to `type=recovery`:
-
-```
-Before: "type":"all"
-After:  "type":"recovery"
+With two separate commands:
+```routeros
+:do { /ip hotspot profile set $hsp login-by=cookie,http-pap,http-chap } on-error={}
+:do { /ip hotspot profile set $hsp http-cookie-lifetime=3d } on-error={}
 ```
 
-This way the downloaded `ns-install.rsc` will contain ONLY the sync and guardian script installers, without the infra or bootstrap sections that conflict with recovery's own logic.
+This also aligns `login-by` with the recovery script's value (`cookie,http-pap,http-chap` and `3d` lifetime) instead of just `http-pap` and `1d`.
 
-### Why this is the correct fix
+## Implementation
 
-- Recovery already handles: token persistence, script cleanup, login-by fix, and initial_config_sent reset
-- Recovery does NOT need infra (network is already configured) or bootstrap (which does a destructive full reinstall)
-- The sync-standalone and guardian-standalone templates use `source=""` blocks where `\"` and `\$` escaping is correct
-- No changes needed to any database templates
+One SQL UPDATE to patch the template content, replacing the single multi-property line with two single-property lines. Bump version to `7.8.7`.
 
-### Files changed
-1. `supabase/functions/gen7post/index.ts` -- add `type=recovery` handler
-2. `supabase/functions/navspot-recovery/index.ts` -- change type from "all" to "recovery"
-3. Deploy both edge functions
+## Verification
+
+After the database update, trigger a new recovery or sync. The `navspot-sync` script should execute without syntax errors.
 
