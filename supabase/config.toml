@@ -9,6 +9,9 @@ verify_jwt = false
 [functions.mt-gen]
 verify_jwt = false
 
+[functions.navspot-gen]
+verify_jwt = false
+
 [functions.mikrotik-render-template]
 verify_jwt = false
 
@@ -19,6 +22,9 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.mt-recovery]
+verify_jwt = false
+
+[functions.navspot-recovery]
 verify_jwt = false
 
 

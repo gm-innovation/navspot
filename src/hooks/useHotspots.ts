@@ -176,7 +176,7 @@ export function useGenerateHotspotScript() {
 
   return useMutation({
     mutationFn: async (hotspotId: string): Promise<GeneratedScripts> => {
-      const { data, error } = await supabase.functions.invoke('mt-gen', {
+      const { data, error } = await supabase.functions.invoke('navspot-gen', {
         body: { hotspot_id: hotspotId },
       });
 
@@ -233,7 +233,7 @@ export function useGenerateHotspotScript() {
 export function useDownloadRecoveryScript() {
   return useMutation({
     mutationFn: async (hotspotId: string) => {
-      const { data, error } = await supabase.functions.invoke('mikrotik-recovery-download', {
+      const { data, error } = await supabase.functions.invoke('navspot-recovery', {
         body: { hotspot_id: hotspotId },
       });
 
