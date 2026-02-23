@@ -1,43 +1,31 @@
 
 
-# Fix: Recovery Script 404 - Wrong Endpoint URL
+# Fix: Edge Functions Not Working (Recovery 404 + mt-gen 404)
 
-## Root Cause
+Two separate issues were identified:
 
-In `supabase/functions/mikrotik-recovery-download/index.ts`, line 167:
+## Issue 1: Recovery Button Calls Wrong Function Name
 
-```text
-const scriptsUrl = `${supabaseUrl}/functions/v1/mt-scripts`
-```
+The frontend (`src/hooks/useHotspots.ts` line 236) still calls `mikrotik-recovery-download`, but this function was renamed to `mt-recovery` in the last change. The function directory no longer exists at the old name.
 
-The endpoint `mt-scripts` does not exist. The correct function name is `mt-gen`. This causes the MikroTik `fetch` to return a 404 when trying to download scripts during recovery.
+**Fix**: Update `useDownloadRecoveryScript` in `src/hooks/useHotspots.ts` to call `mt-recovery` instead of `mikrotik-recovery-download`.
 
-## Fix
+## Issue 2: mt-gen Returns 404 (Gateway Registration Issue)
 
-One-line change in `supabase/functions/mikrotik-recovery-download/index.ts`:
+The `mt-gen` function code exists and is correct, but the Supabase gateway returns 404. This is the known "phantom 404" issue where the gateway loses the function registration.
 
-**Line 167** -- change `mt-scripts` to `mt-gen`:
+**Fix**: Delete and redeploy `mt-gen` to force a clean gateway registration (the known "Function Name Reset" strategy).
 
-```text
-const scriptsUrl = `${supabaseUrl}/functions/v1/mt-gen?mode=serve`
-```
+## Changes
 
-Note: The `?mode=serve` base parameter is added here because the recovery script appends `?type=all&token=...` -- but since the recovery script builds the full URL with `?type=all&token=...&ros_version=7`, we need to ensure the base URL is just the path. Looking at the generated script (line 210):
+| File / Action | Change |
+|---|---|
+| `src/hooks/useHotspots.ts` | Line 236: change `mikrotik-recovery-download` to `mt-recovery` |
+| Edge Function deploy | Delete + redeploy `mt-gen` to fix gateway 404 |
 
-```text
-:local scriptsUrl "${scriptsUrl}?type=all&token=${syncToken}&ros_version=7"
-```
+## Verification
 
-So the fix is simply:
-
-```text
-const scriptsUrl = `${supabaseUrl}/functions/v1/mt-gen?mode=serve`
-```
-
-## Deployment
-
-- Edit `supabase/functions/mikrotik-recovery-download/index.ts` line 167
-- Re-deploy the `mikrotik-recovery-download` Edge Function
-- No database migration needed
-- After deploy, recovery will work immediately -- no need to update existing routers
-
+After changes:
+- "Baixar Recovery" button should work (calls `mt-recovery`)
+- "Regenerar Scripts" should work (calls `mt-gen`)
+- Modular downloads should work (calls `mt-gen?mode=serve`)
