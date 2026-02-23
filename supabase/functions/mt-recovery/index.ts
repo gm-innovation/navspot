@@ -1,27 +1,40 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-/**
- * mikrotik-recovery-download v7.1.0
- * 
- * Ultra-thin recovery endpoint for MikroTik self-healing.
- * v7.1: Uses fetch+import pattern like bootstrap - no embedded scripts!
- *       Resets initial_config_sent=false to force re-configuration.
- * 
- * Called by navspot-guardian when it detects missing components.
- * Also called by authenticated users from admin panel to download recovery scripts.
- */
-
-const VERSION = "7.1.59"
+const VERSION = "7.1.61"
 const DEPLOYED_AT = new Date().toISOString()
 
 function maskToken(token: string): string {
   if (!token || token.length < 10) return '***'
   return `${token.slice(0, 4)}...${token.slice(-4)}`
+}
+
+async function sbRest(url: string, path: string, sk: string, params: Record<string, string> = {}, single = true) {
+  const qs = new URLSearchParams(params).toString()
+  const headers: Record<string, string> = { apikey: sk, Authorization: "Bearer " + sk }
+  if (single) headers["Accept"] = "application/vnd.pgrst.object+json"
+  const r = await fetch(url + "/rest/v1/" + path + (qs ? "?" + qs : ""), { headers })
+  if (!r.ok) return null
+  return await r.json()
+}
+
+async function sbPatch(url: string, path: string, sk: string, filter: string, body: Record<string, unknown>) {
+  await fetch(url + "/rest/v1/" + path + "?" + filter, {
+    method: "PATCH",
+    headers: { apikey: sk, Authorization: "Bearer " + sk, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify(body),
+  })
+}
+
+async function verifyJwt(url: string, ak: string, authHeader: string): Promise<string | null> {
+  const r = await fetch(url + "/auth/v1/user", {
+    headers: { apikey: ak, Authorization: authHeader },
+  })
+  if (!r.ok) return null
+  const user = await r.json()
+  return user?.id || null
 }
 
 Deno.serve(async (req) => {
@@ -30,10 +43,9 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    )
+    const SU = Deno.env.get('SUPABASE_URL')!
+    const SK = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    const AK = Deno.env.get('SUPABASE_ANON_KEY')!
 
     let syncToken: string | null = null
     let hotspotId: string | null = null
@@ -44,11 +56,7 @@ Deno.serve(async (req) => {
         syncToken = body.sync_token || null
         hotspotId = body.hotspot_id || null
       } catch {
-        console.error(`[mikrotik-recovery-download ${VERSION}] Invalid JSON body`)
-        return new Response(
-          'Invalid JSON body',
-          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
-        )
+        return new Response('Invalid JSON body', { status: 400, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } })
       }
     } else if (req.method === 'GET') {
       const url = new URL(req.url)
@@ -62,51 +70,31 @@ Deno.serve(async (req) => {
     if (hotspotId) {
       const authHeader = req.headers.get('Authorization')
       if (!authHeader?.startsWith('Bearer ')) {
-        return new Response(
-          'Authorization required when using hotspot_id',
-          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
-        )
+        return new Response('Authorization required when using hotspot_id', { status: 401, headers: corsHeaders })
       }
 
-      const supabaseAuth = createClient(
-        Deno.env.get('SUPABASE_URL')!,
-        Deno.env.get('SUPABASE_ANON_KEY')!,
-        { global: { headers: { Authorization: authHeader } } }
-      )
-
-      const token = authHeader.replace('Bearer ', '')
-      const { data: claims, error: claimsError } = await supabaseAuth.auth.getClaims(token)
-
-      if (claimsError || !claims?.claims) {
+      const userId = await verifyJwt(SU, AK, authHeader)
+      if (!userId) {
         return new Response('Invalid token', { status: 401, headers: corsHeaders })
       }
 
-      const userId = claims.claims.sub as string
-      console.log(`[mikrotik-recovery-download ${VERSION}] User: ${userId} requesting hotspot: ${hotspotId}`)
+      console.log(`[recovery ${VERSION}] User: ${userId} requesting hotspot: ${hotspotId}`)
 
-      const { data: userRole, error: roleError } = await supabase
-        .from('user_roles')
-        .select('role, empresa_id, embarcacao_id')
-        .eq('user_id', userId)
-        .single()
-
-      if (roleError || !userRole) {
+      const userRole = await sbRest(SU, "user_roles", SK, { user_id: "eq." + userId, select: "role,empresa_id,embarcacao_id" })
+      if (!userRole) {
         return new Response('User role not found', { status: 403, headers: corsHeaders })
       }
 
-      const { data: hotspot, error: hotspotError } = await supabase
-        .from('hotspots')
-        .select(`id, nome, sync_token, sync_interval_minutes, embarcacoes!inner(id, nome, empresa_id)`)
-        .eq('id', hotspotId)
-        .single()
-
-      if (hotspotError || !hotspot) {
+      const hotspot = await sbRest(SU, "hotspots", SK, {
+        id: "eq." + hotspotId,
+        select: "id,nome,sync_token,sync_interval_minutes,embarcacoes!inner(id,nome,empresa_id)",
+      })
+      if (!hotspot) {
         return new Response('Hotspot not found', { status: 404, headers: corsHeaders })
       }
 
-      const embarcacao = hotspot.embarcacoes as unknown as { id: string; empresa_id: string }
+      const embarcacao = hotspot.embarcacoes as { id: string; empresa_id: string }
 
-      // Permission check
       if (userRole.role === 'super_admin') {
         // OK
       } else if (userRole.role === 'empresa_admin') {
@@ -114,13 +102,9 @@ Deno.serve(async (req) => {
           return new Response('Access denied', { status: 403, headers: corsHeaders })
         }
       } else if (userRole.role === 'gerente_embarcacao') {
-        const { data: access } = await supabase
-          .from('gerente_embarcacoes')
-          .select('embarcacao_id')
-          .eq('user_id', userId)
-          .eq('embarcacao_id', embarcacao.id)
-          .maybeSingle()
-
+        const access = await sbRest(SU, "gerente_embarcacoes", SK, {
+          user_id: "eq." + userId, embarcacao_id: "eq." + embarcacao.id, select: "id",
+        })
         if (!access) {
           return new Response('Access denied', { status: 403, headers: corsHeaders })
         }
@@ -132,45 +116,29 @@ Deno.serve(async (req) => {
     }
 
     if (!syncToken) {
-      return new Response(
-        'sync_token or hotspot_id is required',
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
-      )
+      return new Response('sync_token or hotspot_id is required', { status: 400, headers: corsHeaders })
     }
 
-    console.log(`[mikrotik-recovery-download ${VERSION}] Recovery for token: ${maskToken(syncToken)}`)
+    console.log(`[recovery ${VERSION}] Token: ${maskToken(syncToken)}`)
 
-    // Find hotspot
-    const { data: hotspot, error: hotspotError } = await supabase
-      .from('hotspots')
-      .select(`id, nome, sync_token, sync_interval_minutes, embarcacoes!inner(id, nome, empresa_id)`)
-      .eq('sync_token', syncToken)
-      .single()
+    // Find hotspot by sync_token
+    const hotspot = await sbRest(SU, "hotspots", SK, {
+      sync_token: "eq." + syncToken,
+      select: "id,nome,sync_token,sync_interval_minutes",
+    })
 
-    if (hotspotError || !hotspot) {
+    if (!hotspot) {
       return new Response('Invalid sync_token', { status: 404, headers: corsHeaders })
     }
 
-    // v7.1 CRITICAL: Reset initial_config_sent to force re-configuration
-    const { error: resetError } = await supabase
-      .from('hotspots')
-      .update({ initial_config_sent: false, portal_profile_version: null })
-      .eq('id', hotspot.id)
+    // Reset initial_config_sent to force re-configuration
+    await sbPatch(SU, "hotspots", SK, "id=eq." + hotspot.id, { initial_config_sent: false, portal_profile_version: null })
+    console.log(`[recovery ${VERSION}] Reset initial_config_sent for ${hotspot.nome}`)
 
-    if (resetError) {
-      console.error(`[mikrotik-recovery-download ${VERSION}] Failed to reset initial_config_sent:`, resetError)
-    } else {
-      console.log(`[mikrotik-recovery-download ${VERSION}] Reset initial_config_sent=false for ${hotspot.nome}`)
-    }
-
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-    const scriptsUrl = `${supabaseUrl}/functions/v1/mt-scripts`
-
-    console.log(`[mikrotik-recovery-download ${VERSION}] Generating ULTRA-THIN recovery for: ${hotspot.nome}`)
-
+    const scriptsUrl = `${SU}/functions/v1/mt-gen?mode=serve`
     const recoveryScript = generateRecoveryScript(scriptsUrl, syncToken)
 
-    console.log(`[mikrotik-recovery-download ${VERSION}] Recovery generated (${recoveryScript.length} bytes)`)
+    console.log(`[recovery ${VERSION}] Generated ${recoveryScript.length} bytes for ${hotspot.nome}`)
 
     return new Response(recoveryScript, {
       status: 200,
@@ -183,7 +151,7 @@ Deno.serve(async (req) => {
     })
 
   } catch (error) {
-    console.error(`[mikrotik-recovery-download ${VERSION}] Error:`, error)
+    console.error(`[recovery ${VERSION}] Error:`, error)
     return new Response(
       `Error: ${error instanceof Error ? error.message : 'Internal server error'}`,
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'text/plain' } }
@@ -192,7 +160,6 @@ Deno.serve(async (req) => {
 })
 
 function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
-  // v7.1: Recovery ULTRA-MINIMO - usa fetch+import igual ao bootstrap
   return `# =========================================
 # NAVSPOT Recovery Script v${VERSION}
 # Uses fetch+import pattern (no embedded scripts)
@@ -203,7 +170,7 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 # 0. TOKEN (recreate if missing)
 :log info "NAVSPOT-RECOVERY: Verificando token..."
 :local tokenExists [/file find name="navspot-token.txt"]
-:if ([:len $tokenExists] = 0) do={
+:if ([:len \\$tokenExists] = 0) do={
 :log info "NAVSPOT-RECOVERY: Recriando token..."
 /file print file=navspot-token.txt where name="__never__"
 :delay 1s
@@ -223,12 +190,12 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 
 # 2. DOWNLOAD AND INSTALL SCRIPTS VIA API
 :log info "NAVSPOT-RECOVERY v${VERSION}: Baixando scripts da API..."
-:local scriptsUrl "${scriptsUrl}?type=all&token=${syncToken}&ros_version=7"
-/tool fetch url=$scriptsUrl check-certificate=no dst-path="ns-install.rsc"
+:local scriptsUrl "${scriptsUrl}&type=all&token=${syncToken}&ros_version=7"
+/tool fetch url=\\$scriptsUrl check-certificate=no dst-path="ns-install.rsc"
 :delay 3s
 
 :local installFile [/file find name~"ns-install.rsc"]
-:if ([:len $installFile] = 0) do={
+:if ([:len \\$installFile] = 0) do={
 :log error "NAVSPOT-RECOVERY: Falha ao baixar scripts!"
 :error "Abortando recovery - scripts nao baixados"
 }
@@ -239,15 +206,15 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 :do { /file remove "ns-install.rsc" } on-error={}
 :log info "NAVSPOT-RECOVERY v${VERSION}: Scripts instalados!"
 
-# 2.5. CORRIGIR LOGIN-BY IMEDIATAMENTE (v7.1.46 freio de emergencia)
+# 2.5. CORRIGIR LOGIN-BY IMEDIATAMENTE
 :log info "NAVSPOT-RECOVERY v${VERSION}: Aplicando login-by=cookie,http-pap,http-chap..."
 :local hp ""
 :local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={:set hp ""}}
-:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
-:if ([:len $hp]>0) do={
-/ip hotspot profile set $hp login-by=cookie,http-pap,http-chap
-:log info ("NAVSPOT-RECOVERY: login-by corrigido em ".[/ip hotspot profile get $hp name])
+:if ([:len \\$hs]>0) do={:do {:local pN [/ip hotspot get \\$hs profile];:set hp [/ip hotspot profile find name=\\$pN]} on-error={:set hp ""}}
+:if ([:len \\$hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
+:if ([:len \\$hp]>0) do={
+/ip hotspot profile set \\$hp login-by=cookie,http-pap,http-chap
+:log info ("NAVSPOT-RECOVERY: login-by corrigido em ".[/ip hotspot profile get \\$hp name])
 }
 
 # 3. EXECUTAR SYNC PARA RECEBER CONFIGURACAO
