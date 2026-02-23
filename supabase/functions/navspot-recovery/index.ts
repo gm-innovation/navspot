@@ -168,7 +168,7 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 # 0. TOKEN (recreate if missing)
 :log info "NAVSPOT-RECOVERY: Verificando token..."
 :local tokenExists [/file find name="navspot-token.txt"]
-:if ([:len \\$tokenExists] = 0) do={
+:if ([:len $tokenExists] = 0) do={
 :log info "NAVSPOT-RECOVERY: Recriando token..."
 /file print file=navspot-token.txt where name="__never__"
 :delay 1s
@@ -192,7 +192,7 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 :delay 3s
 
 :local installFile [/file find name~"ns-install.rsc"]
-:if ([:len \\$installFile] = 0) do={
+:if ([:len $installFile] = 0) do={
 :log error "NAVSPOT-RECOVERY: Falha ao baixar scripts!"
 :error "Abortando recovery - scripts nao baixados"
 }
@@ -207,11 +207,11 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 :log info "NAVSPOT-RECOVERY v${VERSION}: Aplicando login-by=cookie,http-pap,http-chap..."
 :local hp ""
 :local hs [/ip hotspot find name="hs-navspot"]
-:if ([:len \\$hs]>0) do={:do {:local pN [/ip hotspot get \\$hs profile];:set hp [/ip hotspot profile find name=\\$pN]} on-error={:set hp ""}}
-:if ([:len \\$hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
-:if ([:len \\$hp]>0) do={
-/ip hotspot profile set \\$hp login-by=cookie,http-pap,http-chap
-:log info ("NAVSPOT-RECOVERY: login-by corrigido em ".[/ip hotspot profile get \\$hp name])
+:if ([:len $hs]>0) do={:do {:local pN [/ip hotspot get $hs profile];:set hp [/ip hotspot profile find name=$pN]} on-error={:set hp ""}}
+:if ([:len $hp]=0) do={:set hp [/ip hotspot profile find name="hsprof-navspot"]}
+:if ([:len $hp]>0) do={
+/ip hotspot profile set $hp login-by=cookie,http-pap,http-chap
+:log info ("NAVSPOT-RECOVERY: login-by corrigido em ".[/ip hotspot profile get $hp name])
 }
 
 # 3. EXECUTAR SYNC PARA RECEBER CONFIGURACAO
