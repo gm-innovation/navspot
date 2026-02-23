@@ -6,7 +6,7 @@ verify_jwt = false
 [functions.mikrotik-script-generator]
 verify_jwt = false
 
-[functions.gen7]
+[functions.gen7post]
 verify_jwt = false
 
 [functions.mikrotik-render-template]
@@ -23,9 +23,6 @@ verify_jwt = false
 
 [functions.navspot-recovery]
 verify_jwt = false
-
-
-
 
 [functions.create-user]
 verify_jwt = false

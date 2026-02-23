@@ -133,7 +133,7 @@ Deno.serve(async (req) => {
     await sbPatch(SU, "hotspots", SK, "id=eq." + hotspot.id, { initial_config_sent: false, portal_profile_version: null })
     console.log(`[${FN} ${VERSION}] Reset initial_config_sent for ${hotspot.nome}`)
 
-    const scriptsUrl = `${SU}/functions/v1/gen7?mode=serve`
+    const scriptsUrl = `${SU}/functions/v1/gen7post?mode=serve`
     const recoveryScript = generateRecoveryScript(scriptsUrl, syncToken)
 
     console.log(`[${FN} ${VERSION}] Generated ${recoveryScript.length} bytes for ${hotspot.nome}`)
