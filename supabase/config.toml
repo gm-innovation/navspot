@@ -6,10 +6,7 @@ verify_jwt = false
 [functions.mikrotik-script-generator]
 verify_jwt = false
 
-[functions.mt-gen]
-verify_jwt = false
-
-[functions.navspot-gen]
+[functions.gen7]
 verify_jwt = false
 
 [functions.mikrotik-render-template]

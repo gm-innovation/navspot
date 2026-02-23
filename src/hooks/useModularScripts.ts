@@ -14,7 +14,7 @@ export function useDownloadModularScript() {
   
   return useMutation({
     mutationFn: async ({ type, token, rosVersion = '7' }: { type: string; token: string; rosVersion?: string }) => {
-      const url = `${SUPABASE_URL}/functions/v1/navspot-gen?mode=serve&type=${type}&token=${token}&ros_version=${rosVersion}`;
+      const url = `${SUPABASE_URL}/functions/v1/gen7?mode=serve&type=${type}&token=${token}&ros_version=${rosVersion}`;
       const response = await fetch(url);
       if (!response.ok) {
         const text = await response.text();
