@@ -1,31 +1,54 @@
 
 
-# Fix: Edge Functions Not Working (Recovery 404 + mt-gen 404)
+# Fix: Consolidate Script Generator into Working Recovery Function Pattern
 
-Two separate issues were identified:
+## Diagnosis
 
-## Issue 1: Recovery Button Calls Wrong Function Name
+| Function | Status | Gateway |
+|---|---|---|
+| `navspot-recovery` | Working (400) | Registered |
+| `mt-recovery` | Working (400) | Registered |
+| `navspot-gen` | **404** | NOT registered |
+| `mt-gen` | **404** | NOT registered |
 
-The frontend (`src/hooks/useHotspots.ts` line 236) still calls `mikrotik-recovery-download`, but this function was renamed to `mt-recovery` in the last change. The function directory no longer exists at the old name.
+The script generator logic (`navspot-gen`) has been renamed multiple times (`mikrotik-script-generator` -> `mt-gen` -> `navspot-gen`) but continues to fail with phantom 404s. Meanwhile, `navspot-recovery` and `mt-recovery` (similar complexity, same zero-SDK pattern) work perfectly.
 
-**Fix**: Update `useDownloadRecoveryScript` in `src/hooks/useHotspots.ts` to call `mt-recovery` instead of `mikrotik-recovery-download`.
+**Best alternative**: Stop fighting the gateway. Move the generator logic into a fresh function with a completely new name that has never been used before.
 
-## Issue 2: mt-gen Returns 404 (Gateway Registration Issue)
+## Strategy
 
-The `mt-gen` function code exists and is correct, but the Supabase gateway returns 404. This is the known "phantom 404" issue where the gateway loses the function registration.
+Use a fresh, never-corrupted function name: **`script-gen`**. This avoids all prior gateway registration corruption from `mt-gen`, `navspot-gen`, `mikrotik-script-generator`, etc.
 
-**Fix**: Delete and redeploy `mt-gen` to force a clean gateway registration (the known "Function Name Reset" strategy).
+Additionally, fix the recovery functions to point to the new working endpoint.
 
 ## Changes
 
-| File / Action | Change |
-|---|---|
-| `src/hooks/useHotspots.ts` | Line 236: change `mikrotik-recovery-download` to `mt-recovery` |
-| Edge Function deploy | Delete + redeploy `mt-gen` to fix gateway 404 |
+### 1. Create `supabase/functions/script-gen/index.ts`
+- Copy the exact logic from current `navspot-gen/index.ts` (already working code, just gateway-blocked)
+- Update self-references: `{{SCRIPTS_URL}}` points to `script-gen?mode=serve`
+- Update `{{RECOVERY_URL}}` to point to `navspot-recovery`
+
+### 2. Update `supabase/config.toml`
+- Add `[functions.script-gen]` with `verify_jwt = false`
+
+### 3. Update frontend references
+- `src/hooks/useHotspots.ts` line 179: `navspot-gen` -> `script-gen`
+- `src/hooks/useModularScripts.ts` line 17: `navspot-gen` -> `script-gen`
+- `src/services/mikrotikService.ts` line 72: `navspot-gen` -> `script-gen`
+
+### 4. Fix recovery endpoints
+- `supabase/functions/mt-recovery/index.ts` line 138: change `mt-gen?mode=serve` to `script-gen?mode=serve`
+- `supabase/functions/navspot-recovery/index.ts` line 136: change `navspot-gen?mode=serve` to `script-gen?mode=serve`
+
+### 5. Cleanup
+- Delete `supabase/functions/navspot-gen/` (gateway-corrupted)
+- Delete `supabase/functions/mt-gen/` (gateway-corrupted)
+- Remove their entries from `config.toml`
 
 ## Verification
 
-After changes:
-- "Baixar Recovery" button should work (calls `mt-recovery`)
-- "Regenerar Scripts" should work (calls `mt-gen`)
-- Modular downloads should work (calls `mt-gen?mode=serve`)
+After deploy:
+1. `GET /script-gen?mode=health` should return `{ version: "7.9.1", status: "ok" }`
+2. "Regenerar Scripts" button on the embarcacoes page should work (calls `script-gen` POST)
+3. "Baixar Recovery" should generate a script pointing to `script-gen?mode=serve`
+
