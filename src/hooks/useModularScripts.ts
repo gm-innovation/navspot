@@ -1,10 +1,6 @@
 import { useMutation } from '@tanstack/react-query';
 import { toast } from '@/hooks/use-toast';
 
-interface RegenerateUrlsRequest {
-  hotspotId: string;
-}
-
 /**
  * @deprecated Legacy hook - v7.8.0+ uses signed URLs from useGenerateHotspotScript
  * Kept for backward compatibility during transition period.
@@ -14,8 +10,12 @@ export function useDownloadModularScript() {
   
   return useMutation({
     mutationFn: async ({ type, token, rosVersion = '7' }: { type: string; token: string; rosVersion?: string }) => {
-      const url = `${SUPABASE_URL}/functions/v1/gen7post?mode=serve&type=${type}&token=${token}&ros_version=${rosVersion}`;
-      const response = await fetch(url);
+      const url = `${SUPABASE_URL}/functions/v1/gen7post`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'serve', type, token, ros_version: rosVersion }),
+      });
       if (!response.ok) {
         const text = await response.text();
         throw new Error(text || `HTTP ${response.status}`);
