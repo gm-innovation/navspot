@@ -1,77 +1,57 @@
 
 
-# Fix Sync Template: Apply Inline Guard Pattern to configure_hotspot_profile
+# Fix Sync Template: Use Inline Find Instead of Variable Reference
 
-## Root Cause
+## Problem
 
-The `/ip hotspot profile set $hsp property=value` commands at nesting Level 7 (L7) fail with "expected end of command" because the hAP ax2 parser cannot resolve property assignments on `set $variable` at that depth. The error at column 58 points exactly to `dns-name` — the parser treats `set $hsp` as complete and rejects the property name.
+The error moved from column 58 → 64 → 76 across fixes, proving the set commands are being reached but still failing. The root cause is confirmed: **`set $variable property=value` fails at L7**, but **`set [find ...] property=value` works at L7**. This is proven by the `create_user` handler which successfully runs `set [find name=$un] password=$pw` at the same depth.
 
-**Current nesting trace:**
-```text
-L1: :do {                                       (fetch block)
-L2:   :if ($s >= 0 ...) do={                    (markers)
-L3:     :while (...) do={                       (action loop)
-L4:       :if ($p1 >= 0) do={                   (pipe check)
-L5:         :if ($c = "configure_...") do={     (handler)
-L6:           :if ($p2 >= 0) do={               (args check)
-L7:             :if ([:len $hsp] > 0) do={      (profile guard)
-                  set $hsp dns-name=$dn         <-- FAILS at L7
+Current failing code:
+```routeros
+# At L6 (inside L5's do={}):
+:if ([:len $hsp] > 0) do={/ip hotspot profile set $hsp login-by=cookie,http-pap,http-chap}
+#                          ^^^^^^^^^^^^^^^^^^^^^^^^ set $variable at L7 = FAILS
 ```
 
-The `create_user` handler works at L7 because it uses inline `set [find name=$un]` which the parser resolves differently from `set $variable`.
-
-## Fix: Inline Guard Pattern
-
-Replace the two nested `:if` blocks (L6 + L7) with single-line inline guards, executing set commands at L5:
-
-**Before (fails at L7):**
+Working `create_user` for comparison:
 ```routeros
-:if ($c = "configure_hotspot_profile") do={          # L5
-    :local p2 [:find $r "|"]
-    :if ($p2 >= 0) do={                              # L6
-        :local lu [:pick $r 0 $p2]
-        :local dn [:pick $r ($p2 + 1) [:len $r]]
-        :local hsp [/ip hotspot profile find ...]
-        :if ([:len $hsp] > 0) do={                   # L7
-            /ip hotspot profile set $hsp ...          # FAILS
-        }
-    }
-}
+:do { /ip hotspot user set [find name=$un] password=$pw profile=$pr } on-error={...}
+#                      ^^^^^^^^^^^^^^^^^^^^ set [find ...] at L7 = WORKS
 ```
 
-**After (commands at L5):**
+## Fix
+
+Eliminate the `$hsp` variable entirely. Replace all `set $hsp` calls with `set [find where name~"hsprof"]` inline. Guard with `[:len $lu] > 0` instead of `[:len $hsp] > 0`.
+
+**After:**
 ```routeros
-:if ($c = "configure_hotspot_profile") do={          # L5
+:if ($c = "configure_hotspot_profile") do={
     :local lu ""
     :local dn ""
-    :local hsp ""
     :local p2 [:find $r "|"]
     :if ($p2 >= 0) do={:set lu [:pick $r 0 $p2]; :set dn [:pick $r ($p2 + 1) [:len $r]]}
-    :if ([:len $lu] > 0) do={:set hsp [/ip hotspot profile find where name~"hsprof"]}
-    :if ([:len $hsp] > 0) do={/ip hotspot profile set $hsp login-by=cookie,http-pap,http-chap}
-    :if ([:len $hsp] > 0) do={/ip hotspot profile set $hsp http-cookie-lifetime=3d}
-    :if ([:len $hsp] > 0) do={/ip hotspot profile set $hsp login-url=$lu}
-    :if ([:len $hsp] > 0) do={/ip hotspot profile set $hsp dns-name=$dn}
-    :if ([:len $hsp] > 0) do={:log info ("NAVSPOT-SYNC: profile ok login-url=" . $lu)}
+    :if ([:len $lu] > 0) do={/ip hotspot profile set [find where name~"hsprof"] login-by=cookie,http-pap,http-chap}
+    :if ([:len $lu] > 0) do={/ip hotspot profile set [find where name~"hsprof"] http-cookie-lifetime=3d}
+    :if ([:len $lu] > 0) do={/ip hotspot profile set [find where name~"hsprof"] login-url=$lu}
+    :if ([:len $lu] > 0) do={/ip hotspot profile set [find where name~"hsprof"] dns-name=$dn}
+    :if ([:len $lu] > 0) do={:log info ("NAVSPOT-SYNC: profile ok login-url=" . $lu)}
     :set cnt ($cnt + 1)
 }
 ```
 
-Each command is in a single-line `:if` at L6 — the deepest executable command is at L6, safely within the parser limit.
-
 ## Implementation
 
 One SQL UPDATE to `script_templates` table, row `id = 'sync-standalone'`:
-- Replace the multi-line `configure_hotspot_profile` handler with the inline guard version
-- Bump version to `7.8.9`
-- All variable declarations are hoisted to L5 with empty defaults
-- Each set command is individually guarded by `[:len $hsp] > 0`
+- Replace all `set \$hsp` with `set [find where name~\"hsprof\"]`
+- Remove the `:local hsp` variable and `:set hsp` assignment line
+- Change guard from `[:len \$hsp]` to `[:len \$lu]`
+- Bump version to `7.8.10`
 
-## Technical Details
+## Why This Works
 
-The SQL will replace the block from `:if (\$c = \"configure_hotspot_profile\")` through its closing `}` with the flattened inline-guard version. The escaped syntax inside `source="..."` will use `\$` and `\"` as required.
+The RouterOS 7 parser on hAP ax2 resolves `[find ...]` inline at parse time, treating `set [find ...] property=value` as a single complete command. In contrast, `set $variable property=value` requires the parser to first resolve `$variable`, then continue parsing — which fails at nesting depth L7+.
 
 ## Risk
 
-Low. The inline guard pattern is already validated in memory as the recommended approach for the hAP ax2. Each set command is individually protected. If `$hsp` is empty, all set commands are skipped.
+Low. The `[find where name~"hsprof"]` pattern is deterministic (only one profile matches). If no profile exists, `find` returns empty and `set` errors silently (no crash). The `[:len $lu] > 0` guard prevents execution when no data was parsed.
 
