@@ -1,79 +1,70 @@
 
 
-# Fix update_user Handler: Same `set $variable` at L7 Bug
+# Comprehensive Fix: Strip ALL Escaped Quotes from Command Properties
 
 ## Root Cause
 
-The `configure_hotspot_profile` fix (v7.8.10) resolved that handler, but the `update_user` handler has the **identical** failing pattern at the same nesting depth:
+The error keeps shifting lines (161 → 158 → new line) because there are **multiple** lines in the `sync-standalone` template that use `\"word\"` (escaped quotes around single-word values) inside deeply nested command properties. Each fix removes one occurrence, only to expose the next one.
 
-```text
-L1: :do {                                     (fetch block)
-L2:   :if ($s >= 0 ...) do={                  (markers)
-L3:     :while (...) do={                     (action loop)
-L4:       :if ($p1 >= 0) do={                 (pipe check)
-L5:         :if ($c = "update_user") do={     (handler)
-L6:           :if ($p2 >= 0) do={             (args check)
-L7:             :if ([:len $idx] > 0) do={    (user exists)
-                  set $idx password=...        ← FAILS at L7
-```
+The hAP ax2 RouterOS 7 parser fails to correctly resolve escaped quotes (`\"`) within command property values when they appear inside a `source="..."` block at nesting depth L6/L7. The parser misinterprets the closing `\"` as affecting the command boundary, causing "expected end of command" errors.
 
-The rendered file (line 135 in curl output = ns-install.rsc line ~113):
-```routeros
-/ip hotspot user set \$idx password=\$pw profile=\$pr comment=\"navspot\" disabled=no
-```
+## Fix: Strip ALL Unnecessary Escaped Quotes
 
-## Fix
+In RouterOS, single-word values (no spaces, no special chars) do NOT require quotes. `comment=navspot` is identical to `comment="navspot"`. By removing the escaped quotes, we eliminate the parser confusion entirely.
 
-Replace `set $idx` with `set [find name=$un]` using the same inline-find + `:do {} on-error={}` upsert pattern already proven in `create_user`:
+**Every occurrence to change:**
 
-**Before (fails at L7):**
-```routeros
-:local idx [/ip hotspot user find name=$un]
-:if ([:len $idx] > 0) do={
-    /ip hotspot user set $idx password=$pw profile=$pr comment="navspot" disabled=no
-} else={
-    /ip hotspot user add name=$un password=$pw profile=$pr comment="navspot"
-}
-```
+| Template Line | Before | After |
+|---|---|---|
+| 28 | `comment=\"navspot\"` | `comment=navspot` |
+| 64 | `comment=\"navspot\"` | `comment=navspot` |
+| 86 | `comment=\"navspot\"` | `comment=navspot` |
+| 111 | `comment=\"navspot\"` | `comment=navspot` |
+| 112 | `comment=\"navspot\"` | `comment=navspot` |
+| 149 | `comment=\"QUOTA_EXCEDIDA\"` | `comment=QUOTA_EXCEDIDA` |
+| 151 | `comment=\"BLOCK_QUOTA\"` | `comment=BLOCK_QUOTA` |
+| 156 | `comment=\"QUOTA_EXCEDIDA\"` | `comment=QUOTA_EXCEDIDA` |
+| 157 | `comment=\"BLOCK_QUOTA\"` | `comment=BLOCK_QUOTA` |
+| 166 | `name~\"hsprof\"` | `name~hsprof` |
+| 167 | `name~\"hsprof\"` | `name~hsprof` |
+| 168 | `name~\"hsprof\"` | `name~hsprof` |
+| 169 | `name~\"hsprof\"` | `name~hsprof` |
 
-**After (set [find ...] at L6, works):**
-```routeros
-:do { /ip hotspot user set [find name=$un] password=$pw profile=$pr comment="navspot" disabled=no } on-error={
-    /ip hotspot user add name=$un password=$pw profile=$pr comment="navspot"
-}
-```
-
-This eliminates:
-- The `$idx` variable and its assignment
-- The `:if ([:len $idx] > 0)` guard (replaced by try/catch)
-- Drops the `set` command from L7 to L6
-
-The pattern is identical to the `create_user` handler (line 85-87) which works without issues.
+**NOT changed** (these require quotes):
+- `:local pr \"default\"` — variable assignment, quotes needed
+- `:local bu \"\"` — empty string assignment
+- Log messages like `\"NAVSPOT-SYNC: ...\"` — multi-word strings need quotes
+- JSON body strings — need all escaping intact
 
 ## Implementation
 
 One SQL UPDATE to `script_templates` table, row `id = 'sync-standalone'`:
-- Replace the `update_user` handler's 7-line `$idx` block with 3-line `set [find name=$un]` + `on-error` upsert
-- Bump version to `7.8.11`
+- Replace all `comment=\"navspot\"` → `comment=navspot`
+- Replace all `comment=\"QUOTA_EXCEDIDA\"` → `comment=QUOTA_EXCEDIDA`
+- Replace all `comment=\"BLOCK_QUOTA\"` → `comment=BLOCK_QUOTA`
+- Replace all `name~\"hsprof\"` → `name~hsprof`
+- Bump version to `7.8.12`
 
 ## Technical Details
 
-```text
-Before (lines 111-116 of template):
-  :local idx [/ip hotspot user find name=\$un]
-  :if ([:len \$idx] > 0) do={
-      /ip hotspot user set \$idx password=\$pw ... disabled=no
-  } else={
-      /ip hotspot user add name=\$un password=\$pw ... comment=\"navspot\"
-  }
+The SQL will perform a targeted replacement of the entire template content, changing only the quoted single-word values in command properties while preserving all other escaped quotes (variable assignments, log messages, JSON body).
 
-After:
-  :do { /ip hotspot user set [find name=\$un] password=\$pw profile=\$pr comment=\"navspot\" disabled=no } on-error={
-      /ip hotspot user add name=\$un password=\$pw profile=\$pr comment=\"navspot\"
-  }
+```text
+Before: /ip hotspot user set [find name=\$un] password=\$pw profile=\$pr comment=\"navspot\" disabled=no
+After:  /ip hotspot user set [find name=\$un] password=\$pw profile=\$pr comment=navspot disabled=no
+
+Before: /ip hotspot ip-binding add mac-address=\$bm type=blocked comment=\"QUOTA_EXCEDIDA\"
+After:  /ip hotspot ip-binding add mac-address=\$bm type=blocked comment=QUOTA_EXCEDIDA
+
+Before: /ip hotspot profile set [find where name~\"hsprof\"] login-by=...
+After:  /ip hotspot profile set [find where name~hsprof] login-by=...
 ```
+
+## Why This Works
+
+RouterOS treats unquoted single-word values identically to quoted ones for command properties. `comment=navspot` and `comment="navspot"` produce the same result. By removing the quotes, we eliminate the nested escaping that confuses the import parser at depth L6/L7 inside `source="..."`.
 
 ## Risk
 
-Low. The `create_user` handler already uses this exact `set [find ...] on-error={ add }` pattern at the same depth and works. The `disabled=no` property is preserved to re-enable previously disabled users during updates.
+Very low. All values being unquoted are single words with no spaces or special characters (navspot, QUOTA_EXCEDIDA, BLOCK_QUOTA, hsprof). RouterOS handles these identically with or without quotes. This change affects only the import-time parsing — the runtime behavior is identical.
 
