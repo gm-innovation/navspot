@@ -1,70 +1,54 @@
 
 
-# Comprehensive Fix: Strip ALL Escaped Quotes from Command Properties
+# Fix: Simplify update_user Handler — Too Many Properties on Set Line
 
 ## Root Cause
 
-The error keeps shifting lines (161 → 158 → new line) because there are **multiple** lines in the `sync-standalone` template that use `\"word\"` (escaped quotes around single-word values) inside deeply nested command properties. Each fix removes one occurrence, only to expose the next one.
+The error at **line 158 column 95** points to the `update_user` handler's `:do { /ip hotspot user set ... }` line (my line count is off by ~2 due to infra template rendering differences). This line has **135 characters** and **5 properties** after `set`:
 
-The hAP ax2 RouterOS 7 parser fails to correctly resolve escaped quotes (`\"`) within command property values when they appear inside a `source="..."` block at nesting depth L6/L7. The parser misinterprets the closing `\"` as affecting the command boundary, causing "expected end of command" errors.
+```text
+:do { /ip hotspot user set [find name=\$un] password=\$pw profile=\$pr comment=navspot disabled=no } on-error={
+                                                                                          ^col 95
+```
 
-## Fix: Strip ALL Unnecessary Escaped Quotes
+Column 95 falls right at `comment=navspot` or `disabled=no`. The parser resolves `profile=\$pr` and then fails at the next property — too many properties on a single `set` command at this nesting depth (L6).
 
-In RouterOS, single-word values (no spaces, no special chars) do NOT require quotes. `comment=navspot` is identical to `comment="navspot"`. By removing the escaped quotes, we eliminate the parser confusion entirely.
+**Proof**: The `create_user` handler uses the **exact same pattern** with only 3 properties (`password`, `profile` via find) and **works perfectly**:
+```routeros
+:do { /ip hotspot user set [find name=\$un] password=\$pw profile=\$pr } on-error={
+```
 
-**Every occurrence to change:**
+## Fix
 
-| Template Line | Before | After |
-|---|---|---|
-| 28 | `comment=\"navspot\"` | `comment=navspot` |
-| 64 | `comment=\"navspot\"` | `comment=navspot` |
-| 86 | `comment=\"navspot\"` | `comment=navspot` |
-| 111 | `comment=\"navspot\"` | `comment=navspot` |
-| 112 | `comment=\"navspot\"` | `comment=navspot` |
-| 149 | `comment=\"QUOTA_EXCEDIDA\"` | `comment=QUOTA_EXCEDIDA` |
-| 151 | `comment=\"BLOCK_QUOTA\"` | `comment=BLOCK_QUOTA` |
-| 156 | `comment=\"QUOTA_EXCEDIDA\"` | `comment=QUOTA_EXCEDIDA` |
-| 157 | `comment=\"BLOCK_QUOTA\"` | `comment=BLOCK_QUOTA` |
-| 166 | `name~\"hsprof\"` | `name~hsprof` |
-| 167 | `name~\"hsprof\"` | `name~hsprof` |
-| 168 | `name~\"hsprof\"` | `name~hsprof` |
-| 169 | `name~\"hsprof\"` | `name~hsprof` |
+Make `update_user` identical to `create_user` — only set `password` and `profile`. The `comment` doesn't need updating (already set at creation), and `disabled=no` goes on a separate line:
 
-**NOT changed** (these require quotes):
-- `:local pr \"default\"` — variable assignment, quotes needed
-- `:local bu \"\"` — empty string assignment
-- Log messages like `\"NAVSPOT-SYNC: ...\"` — multi-word strings need quotes
-- JSON body strings — need all escaping intact
+**Before (fails — 5 properties at L6):**
+```routeros
+:do { /ip hotspot user set [find name=\$un] password=\$pw profile=\$pr comment=navspot disabled=no } on-error={
+    /ip hotspot user add name=\$un password=\$pw profile=\$pr comment=navspot
+}
+```
+
+**After (works — 3 properties at L6, matching create_user):**
+```routeros
+:do { /ip hotspot user set [find name=\$un] password=\$pw profile=\$pr } on-error={
+    /ip hotspot user add name=\$un password=\$pw profile=\$pr comment=navspot
+}
+:do { /ip hotspot user set [find name=\$un] disabled=no } on-error={}
+```
 
 ## Implementation
 
 One SQL UPDATE to `script_templates` table, row `id = 'sync-standalone'`:
-- Replace all `comment=\"navspot\"` → `comment=navspot`
-- Replace all `comment=\"QUOTA_EXCEDIDA\"` → `comment=QUOTA_EXCEDIDA`
-- Replace all `comment=\"BLOCK_QUOTA\"` → `comment=BLOCK_QUOTA`
-- Replace all `name~\"hsprof\"` → `name~hsprof`
-- Bump version to `7.8.12`
-
-## Technical Details
-
-The SQL will perform a targeted replacement of the entire template content, changing only the quoted single-word values in command properties while preserving all other escaped quotes (variable assignments, log messages, JSON body).
-
-```text
-Before: /ip hotspot user set [find name=\$un] password=\$pw profile=\$pr comment=\"navspot\" disabled=no
-After:  /ip hotspot user set [find name=\$un] password=\$pw profile=\$pr comment=navspot disabled=no
-
-Before: /ip hotspot ip-binding add mac-address=\$bm type=blocked comment=\"QUOTA_EXCEDIDA\"
-After:  /ip hotspot ip-binding add mac-address=\$bm type=blocked comment=QUOTA_EXCEDIDA
-
-Before: /ip hotspot profile set [find where name~\"hsprof\"] login-by=...
-After:  /ip hotspot profile set [find where name~hsprof] login-by=...
-```
+- Split the `update_user` set into two lines (password+profile, then disabled=no separately)
+- Remove `comment=navspot` from the `set` (already set on creation)
+- Bump version to `7.8.13`
 
 ## Why This Works
 
-RouterOS treats unquoted single-word values identically to quoted ones for command properties. `comment=navspot` and `comment="navspot"` produce the same result. By removing the quotes, we eliminate the nested escaping that confuses the import parser at depth L6/L7 inside `source="..."`.
+The `create_user` handler with 3 properties on `set [find ...]` works at the same depth. The `update_user` handler with 5 properties fails. By reducing to 3 properties (matching `create_user` exactly) and moving `disabled=no` to a separate command, we stay within the parser's tolerance at L6.
 
 ## Risk
 
-Very low. All values being unquoted are single words with no spaces or special characters (navspot, QUOTA_EXCEDIDA, BLOCK_QUOTA, hsprof). RouterOS handles these identically with or without quotes. This change affects only the import-time parsing — the runtime behavior is identical.
+Very low. The `comment=navspot` is set during user creation and never changes — no need to re-set it on update. The `disabled=no` on a separate line uses `on-error={}` so it won't crash if the user doesn't exist (the previous set already handled the user).
 
