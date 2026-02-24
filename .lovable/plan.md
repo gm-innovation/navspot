@@ -1,57 +1,79 @@
 
 
-# Fix Sync Template: Use Inline Find Instead of Variable Reference
+# Fix update_user Handler: Same `set $variable` at L7 Bug
 
-## Problem
+## Root Cause
 
-The error moved from column 58 → 64 → 76 across fixes, proving the set commands are being reached but still failing. The root cause is confirmed: **`set $variable property=value` fails at L7**, but **`set [find ...] property=value` works at L7**. This is proven by the `create_user` handler which successfully runs `set [find name=$un] password=$pw` at the same depth.
+The `configure_hotspot_profile` fix (v7.8.10) resolved that handler, but the `update_user` handler has the **identical** failing pattern at the same nesting depth:
 
-Current failing code:
-```routeros
-# At L6 (inside L5's do={}):
-:if ([:len $hsp] > 0) do={/ip hotspot profile set $hsp login-by=cookie,http-pap,http-chap}
-#                          ^^^^^^^^^^^^^^^^^^^^^^^^ set $variable at L7 = FAILS
+```text
+L1: :do {                                     (fetch block)
+L2:   :if ($s >= 0 ...) do={                  (markers)
+L3:     :while (...) do={                     (action loop)
+L4:       :if ($p1 >= 0) do={                 (pipe check)
+L5:         :if ($c = "update_user") do={     (handler)
+L6:           :if ($p2 >= 0) do={             (args check)
+L7:             :if ([:len $idx] > 0) do={    (user exists)
+                  set $idx password=...        ← FAILS at L7
 ```
 
-Working `create_user` for comparison:
+The rendered file (line 135 in curl output = ns-install.rsc line ~113):
 ```routeros
-:do { /ip hotspot user set [find name=$un] password=$pw profile=$pr } on-error={...}
-#                      ^^^^^^^^^^^^^^^^^^^^ set [find ...] at L7 = WORKS
+/ip hotspot user set \$idx password=\$pw profile=\$pr comment=\"navspot\" disabled=no
 ```
 
 ## Fix
 
-Eliminate the `$hsp` variable entirely. Replace all `set $hsp` calls with `set [find where name~"hsprof"]` inline. Guard with `[:len $lu] > 0` instead of `[:len $hsp] > 0`.
+Replace `set $idx` with `set [find name=$un]` using the same inline-find + `:do {} on-error={}` upsert pattern already proven in `create_user`:
 
-**After:**
+**Before (fails at L7):**
 ```routeros
-:if ($c = "configure_hotspot_profile") do={
-    :local lu ""
-    :local dn ""
-    :local p2 [:find $r "|"]
-    :if ($p2 >= 0) do={:set lu [:pick $r 0 $p2]; :set dn [:pick $r ($p2 + 1) [:len $r]]}
-    :if ([:len $lu] > 0) do={/ip hotspot profile set [find where name~"hsprof"] login-by=cookie,http-pap,http-chap}
-    :if ([:len $lu] > 0) do={/ip hotspot profile set [find where name~"hsprof"] http-cookie-lifetime=3d}
-    :if ([:len $lu] > 0) do={/ip hotspot profile set [find where name~"hsprof"] login-url=$lu}
-    :if ([:len $lu] > 0) do={/ip hotspot profile set [find where name~"hsprof"] dns-name=$dn}
-    :if ([:len $lu] > 0) do={:log info ("NAVSPOT-SYNC: profile ok login-url=" . $lu)}
-    :set cnt ($cnt + 1)
+:local idx [/ip hotspot user find name=$un]
+:if ([:len $idx] > 0) do={
+    /ip hotspot user set $idx password=$pw profile=$pr comment="navspot" disabled=no
+} else={
+    /ip hotspot user add name=$un password=$pw profile=$pr comment="navspot"
 }
 ```
+
+**After (set [find ...] at L6, works):**
+```routeros
+:do { /ip hotspot user set [find name=$un] password=$pw profile=$pr comment="navspot" disabled=no } on-error={
+    /ip hotspot user add name=$un password=$pw profile=$pr comment="navspot"
+}
+```
+
+This eliminates:
+- The `$idx` variable and its assignment
+- The `:if ([:len $idx] > 0)` guard (replaced by try/catch)
+- Drops the `set` command from L7 to L6
+
+The pattern is identical to the `create_user` handler (line 85-87) which works without issues.
 
 ## Implementation
 
 One SQL UPDATE to `script_templates` table, row `id = 'sync-standalone'`:
-- Replace all `set \$hsp` with `set [find where name~\"hsprof\"]`
-- Remove the `:local hsp` variable and `:set hsp` assignment line
-- Change guard from `[:len \$hsp]` to `[:len \$lu]`
-- Bump version to `7.8.10`
+- Replace the `update_user` handler's 7-line `$idx` block with 3-line `set [find name=$un]` + `on-error` upsert
+- Bump version to `7.8.11`
 
-## Why This Works
+## Technical Details
 
-The RouterOS 7 parser on hAP ax2 resolves `[find ...]` inline at parse time, treating `set [find ...] property=value` as a single complete command. In contrast, `set $variable property=value` requires the parser to first resolve `$variable`, then continue parsing — which fails at nesting depth L7+.
+```text
+Before (lines 111-116 of template):
+  :local idx [/ip hotspot user find name=\$un]
+  :if ([:len \$idx] > 0) do={
+      /ip hotspot user set \$idx password=\$pw ... disabled=no
+  } else={
+      /ip hotspot user add name=\$un password=\$pw ... comment=\"navspot\"
+  }
+
+After:
+  :do { /ip hotspot user set [find name=\$un] password=\$pw profile=\$pr comment=\"navspot\" disabled=no } on-error={
+      /ip hotspot user add name=\$un password=\$pw profile=\$pr comment=\"navspot\"
+  }
+```
 
 ## Risk
 
-Low. The `[find where name~"hsprof"]` pattern is deterministic (only one profile matches). If no profile exists, `find` returns empty and `set` errors silently (no crash). The `[:len $lu] > 0` guard prevents execution when no data was parsed.
+Low. The `create_user` handler already uses this exact `set [find ...] on-error={ add }` pattern at the same depth and works. The `disabled=no` property is preserved to re-enable previously disabled users during updates.
 
