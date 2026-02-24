@@ -1,103 +1,76 @@
 
 
-# Fix: Flatten configure_hotspot_profile Handler (L7 → L6)
+# Fix: Move Profile Config Block Outside `:do { fetch }` (L4 → L1)
 
 ## Current State (Database Confirmed)
 
-Lines 164-168 of `sync-standalone` template:
+The `cfgLu` declaration is at **line 43** (inside `:if ($s >= 0)` — L3 scope). The profile config block is at **lines 170-180** (also inside L3). The `/ip hotspot profile set [find ...]` commands run at **L4/L5**, which is too deep for the hAP ax2 parser.
 
-```routeros
-:if (\$c = \"configure_hotspot_profile\") do={           ← L6
-    :local p2 [:find \$r \"|\"]
-    :if (\$p2 >= 0) do={:set cfgLu [:pick \$r 0 \$p2]; :set cfgDn [:pick \$r (\$p2 + 1) [:len \$r]]}   ← L7 FAILS
-    :set cnt (\$cnt + 1)
-}
+```text
+Current nesting of profile block:
+L1: source="..."                                    ← line 11
+  L2: :do { fetch } on-error={}                     ← line 33
+    L3: :if ($s >= 0 && $e > $s) do={}              ← line 39
+      L4: :if ([:len $cfgLu] > 0) do={}             ← line 170
+        L5: :if ($p2 >= 0) do={[:pick]}              ← line 174
+        L5: /ip hotspot profile set [find ...]       ← lines 175-178 ← FAILS
 ```
 
-The `:if (\$p2 >= 0) do={...}` at **L7** with `[:pick]` and `[:len]` inside crashes the hAP ax2 parser. This is exactly what the error at line 165 column 70 points to.
+## Changes Required (SQL UPDATE to `sync-standalone`)
 
-## Changes Required
+### 1. Move `cfgLu` declaration from line 43 to before line 33
 
-### 1. Remove `cfgDn` declaration (line 44)
+Insert `:local cfgLu \"\"` after line 32 (after the JSON post variable), before `:do {`. Remove it from line 43.
+
+This ensures `cfgLu` is visible at the outer scope and its value survives the `:do {} on-error={}` block.
+
+### 2. Remove profile block from inside `:if ($s >= 0)` (lines 170-180)
+
+Delete the entire block:
 ```routeros
-# Before:
-:local cfgLu \"\"
-:local cfgDn \"\"
-
-# After:
-:local cfgLu \"\"
+        :if ([:len \$cfgLu] > 0) do={
+            ...4 profile set commands...
+        }
 ```
 
-### 2. Flatten handler (lines 164-168)
-```routeros
-# Before (L7 — crashes):
-:if (\$c = \"configure_hotspot_profile\") do={
-    :local p2 [:find \$r \"|\"]
-    :if (\$p2 >= 0) do={:set cfgLu [:pick \$r 0 \$p2]; :set cfgDn [:pick \$r (\$p2 + 1) [:len \$r]]}
-    :set cnt (\$cnt + 1)
-}
+### 3. Add profile block after `on-error={}` closes (after line 184)
 
-# After (L6 — safe, single assignment):
-:if (\$c = \"configure_hotspot_profile\") do={
-    :set cfgLu \$r
-    :set cnt (\$cnt + 1)
-}
-```
-
-### 3. Update post-loop block (lines 172-178) to parse pipe there
+Insert between `} on-error={...}` and `:set navspotSyncLock "0"`:
 
 ```routeros
-# Before (uses pre-parsed cfgLu and cfgDn):
-:if ([:len \$cfgLu] > 0) do={
-    /ip hotspot profile set [find where name=hsprof-navspot] login-by=cookie,http-pap,http-chap
-    /ip hotspot profile set [find where name=hsprof-navspot] http-cookie-lifetime=3d
-    /ip hotspot profile set [find where name=hsprof-navspot] login-url=\$cfgLu
-    /ip hotspot profile set [find where name=hsprof-navspot] dns-name=\$cfgDn
-    :log info (\"NAVSPOT-SYNC: profile ok login-url=\" . \$cfgLu)
-}
-
-# After (parses raw cfgLu = "url|dns" here at L4):
 :if ([:len \$cfgLu] > 0) do={
     :local p2 [:find \$cfgLu \"|\"]
     :local lu \$cfgLu
     :local dn \"\"
     :if (\$p2 >= 0) do={:set lu [:pick \$cfgLu 0 \$p2]; :set dn [:pick \$cfgLu (\$p2 + 1) [:len \$cfgLu]]}
-    /ip hotspot profile set [find where name=hsprof-navspot] login-by=cookie,http-pap,http-chap
-    /ip hotspot profile set [find where name=hsprof-navspot] http-cookie-lifetime=3d
-    /ip hotspot profile set [find where name=hsprof-navspot] login-url=\$lu
-    /ip hotspot profile set [find where name=hsprof-navspot] dns-name=\$dn
+    /ip hotspot profile set [find where name=hsprof-navspot] login-by=cookie,http-pap,http-chap http-cookie-lifetime=3d login-url=\$lu dns-name=\$dn
     :log info (\"NAVSPOT-SYNC: profile ok login-url=\" . \$lu)
 }
 ```
 
-The pipe parsing now happens at L5 (inside L4 `:if` → L5 `:if ($p2 >= 0)`), well within the parser limit.
+**New nesting:**
+```text
+L1: source="..."
+  L2: :if ([:len $cfgLu] > 0) do={}        ← SAFE
+    L3: :if ($p2 >= 0) do={[:pick]}          ← SAFE
+    L3: /ip hotspot profile set [find ...]   ← SAFE (L3 + [find] = L4 max)
+```
 
 ### 4. Version bumps
-- Template version comment: `7.8.16`
-- `gen7post/index.ts`: `V = "7.9.6"`
+- Template version comment: `7.8.17`
+- `gen7post/index.ts`: `V = "7.9.7"`
 
-## Implementation
+## Implementation Summary
 
-One SQL UPDATE to `script_templates` where `id = 'sync-standalone'` with the three changes above, plus one line edit to `gen7post/index.ts`.
+One SQL UPDATE to `script_templates` with three structural changes:
+1. Move `cfgLu` declaration to outer scope (before `:do { fetch }`)
+2. Remove profile block from L4 (inside `:if ($s >= 0)`)
+3. Add profile block at L2 (after `on-error={}`)
+4. Consolidate 4 `/ip hotspot profile set` commands into 1
 
-## Technical Details — Nesting Depth Comparison
+One file edit to `gen7post/index.ts`: bump `V` to `"7.9.7"`.
 
-```text
-Post-loop block nesting:
-L1: source="..."
-  L2: :do { fetch } on-error={}
-    L3: :if ($s >= 0) do={}
-      L4: :if ([:len $cfgLu] > 0) do={}
-        L5: :if ($p2 >= 0) do={:set lu ...}   ← SAFE (L5)
-        L4: /ip hotspot profile set ...        ← SAFE (L4)
+## Why This Is the Definitive Fix
 
-vs. Inside-loop (before fix):
-L1: source="..."
-  L2: :do { fetch }
-    L3: :if ($s >= 0) do={}
-      L4: :while () do={}
-        L5: :if ($p1 >= 0) do={}
-          L6: :if ($c = "configure_hotspot_profile") do={}
-            L7: :if ($p2 >= 0) do={:set cfgLu ...}   ← CRASHES
-```
+The previous fixes (v7.8.14–v7.8.16) flattened the handler inside the loop but left the profile block **inside** the `:do { fetch } on-error={}` and `:if ($s >= 0)` wrappers. The parser sums ALL nesting levels — being inside the fetch block adds +2 levels to everything. Moving outside drops from L5 to L3 for the most complex line.
 
