@@ -1,56 +1,77 @@
 
 
-# Fix Sync Template: Nesting Depth Exceeds RouterOS 7 Limit
+# Fix Sync Template: Apply Inline Guard Pattern to configure_hotspot_profile
 
 ## Root Cause
 
-The previous fix (splitting multi-property set) was a misdiagnosis. The actual problem is **nesting depth**. The `configure_hotspot_profile` handler wraps each `/ip hotspot profile set` command inside `:do {} on-error={}` blocks, pushing them to nesting Level 8 (L8). RouterOS 7 on hAP ax2 rejects executable commands beyond L7.
+The `/ip hotspot profile set $hsp property=value` commands at nesting Level 7 (L7) fail with "expected end of command" because the hAP ax2 parser cannot resolve property assignments on `set $variable` at that depth. The error at column 58 points exactly to `dns-name` — the parser treats `set $hsp` as complete and rejects the property name.
 
-**Nesting trace for the failing line:**
+**Current nesting trace:**
 ```text
-L1: :do {                                         (fetch block)
-L2:   :if ($s >= 0 && $e > $s) do={               (markers check)
-L3:     :while (...) do={                          (action loop)
-L4:       :if ($p1 >= 0) do={                      (pipe check)
-L5:         :if ($c = "configure_hotspot_profile") (handler)
-L6:           :if ($p2 >= 0) do={                  (args check)
-L7:             :if ([:len $hsp] > 0) do={         (profile exists)
-L8:               :do { set $hsp dns-name=$dn }    <-- FAILS HERE
+L1: :do {                                       (fetch block)
+L2:   :if ($s >= 0 ...) do={                    (markers)
+L3:     :while (...) do={                       (action loop)
+L4:       :if ($p1 >= 0) do={                   (pipe check)
+L5:         :if ($c = "configure_...") do={     (handler)
+L6:           :if ($p2 >= 0) do={               (args check)
+L7:             :if ([:len $hsp] > 0) do={      (profile guard)
+                  set $hsp dns-name=$dn         <-- FAILS at L7
 ```
 
-For comparison, the `create_user` handler's set command is at L7 (no `:do {} on-error={}` wrapper at that depth) and works fine.
+The `create_user` handler works at L7 because it uses inline `set [find name=$un]` which the parser resolves differently from `set $variable`.
 
-## Fix
+## Fix: Inline Guard Pattern
 
-Remove the `:do {} on-error={}` wrappers from the four `/ip hotspot profile set` commands inside `configure_hotspot_profile`. The `:if ([:len $hsp] > 0)` guard already ensures the profile exists, so the error-catching wrappers are unnecessary. This drops the commands from L8 to L7.
+Replace the two nested `:if` blocks (L6 + L7) with single-line inline guards, executing set commands at L5:
 
-**Before (fails at L8):**
+**Before (fails at L7):**
 ```routeros
-:if ([:len $hsp] > 0) do={                              # L7
-    :do { /ip hotspot profile set $hsp login-by=... } on-error={}   # L8
-    :do { /ip hotspot profile set $hsp http-cookie... } on-error={} # L8
-    :do { /ip hotspot profile set $hsp login-url=... } on-error={}  # L8
-    :do { /ip hotspot profile set $hsp dns-name=... } on-error={}   # L8
+:if ($c = "configure_hotspot_profile") do={          # L5
+    :local p2 [:find $r "|"]
+    :if ($p2 >= 0) do={                              # L6
+        :local lu [:pick $r 0 $p2]
+        :local dn [:pick $r ($p2 + 1) [:len $r]]
+        :local hsp [/ip hotspot profile find ...]
+        :if ([:len $hsp] > 0) do={                   # L7
+            /ip hotspot profile set $hsp ...          # FAILS
+        }
+    }
 }
 ```
 
-**After (works at L7):**
+**After (commands at L5):**
 ```routeros
-:if ([:len $hsp] > 0) do={                              # L7
-    /ip hotspot profile set $hsp login-by=cookie,http-pap,http-chap # L7
-    /ip hotspot profile set $hsp http-cookie-lifetime=3d             # L7
-    /ip hotspot profile set $hsp login-url=$lu                       # L7
-    /ip hotspot profile set $hsp dns-name=$dn                        # L7
+:if ($c = "configure_hotspot_profile") do={          # L5
+    :local lu ""
+    :local dn ""
+    :local hsp ""
+    :local p2 [:find $r "|"]
+    :if ($p2 >= 0) do={:set lu [:pick $r 0 $p2]; :set dn [:pick $r ($p2 + 1) [:len $r]]}
+    :if ([:len $lu] > 0) do={:set hsp [/ip hotspot profile find where name~"hsprof"]}
+    :if ([:len $hsp] > 0) do={/ip hotspot profile set $hsp login-by=cookie,http-pap,http-chap}
+    :if ([:len $hsp] > 0) do={/ip hotspot profile set $hsp http-cookie-lifetime=3d}
+    :if ([:len $hsp] > 0) do={/ip hotspot profile set $hsp login-url=$lu}
+    :if ([:len $hsp] > 0) do={/ip hotspot profile set $hsp dns-name=$dn}
+    :if ([:len $hsp] > 0) do={:log info ("NAVSPOT-SYNC: profile ok login-url=" . $lu)}
+    :set cnt ($cnt + 1)
 }
 ```
+
+Each command is in a single-line `:if` at L6 — the deepest executable command is at L6, safely within the parser limit.
 
 ## Implementation
 
-One SQL UPDATE to the `script_templates` table, row `id = 'sync-standalone'`:
-- Replace the 4 `:do { set ... } on-error={}` lines with 4 direct `set` commands (no wrappers)
-- Bump version to `7.8.8`
+One SQL UPDATE to `script_templates` table, row `id = 'sync-standalone'`:
+- Replace the multi-line `configure_hotspot_profile` handler with the inline guard version
+- Bump version to `7.8.9`
+- All variable declarations are hoisted to L5 with empty defaults
+- Each set command is individually guarded by `[:len $hsp] > 0`
+
+## Technical Details
+
+The SQL will replace the block from `:if (\$c = \"configure_hotspot_profile\")` through its closing `}` with the flattened inline-guard version. The escaped syntax inside `source="..."` will use `\$` and `\"` as required.
 
 ## Risk
 
-Minimal. The `:if ([:len $hsp] > 0)` check already validates the profile exists before running the set commands. If any individual set fails (unlikely), the outer `:do {} on-error={}` at L1 (the main fetch block) catches it.
+Low. The inline guard pattern is already validated in memory as the recommended approach for the hAP ax2. Each set command is individually protected. If `$hsp` is empty, all set commands are skipped.
 
