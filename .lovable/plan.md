@@ -1,67 +1,120 @@
 
 
-# Plano: Corrigir Template `sync` e URL do Guardian
+# Plano: collapseSourceBlocks no gen7post
 
-## Diagnóstico Confirmado
+## Estado confirmado
 
-### Bug 1 — Template `sync` (v7.8.26) com 2 instâncias do padrão problemático
+| Verificação | Resultado |
+|---|---|
+| Banco tem `\n` literais? | Nao — 0 ocorrencias |
+| Banco tem newlines reais? | Sim — posicao 44+ |
+| Padrao de abertura | `source="\n` (aspas + newline) |
+| Padrao de fechamento | `\n"\n` (newline, aspas sozinha, newline) |
+| Templates afetados | `sync-standalone`, `guardian-standalone` |
 
-```text
-Linha: :local val [:pick $ln ($p1 + 1) [:len $ln]]
-Linha: :local pw [:pick $val ($p2 + 1) [:len $val]]
+O banco esta correto. O problema e exclusivamente no RouterOS: o parser do `/import` nao consegue processar blocos `source="..."` multi-linha com 187 linhas. Precisa entregar como linha unica com `\r\n`.
+
+## Abordagem: parser linha-a-linha (nao regex)
+
+Conforme a sua sugestao, a abordagem segura e processar linha a linha em vez de regex fragil:
+
+```typescript
+function collapseSourceBlocks(script: string): string {
+  const lines = script.split("\n");
+  const out: string[] = [];
+  let inSource = false;
+  let sourceLines: string[] = [];
+  let sourcePrefix = "";
+
+  for (const line of lines) {
+    if (!inSource) {
+      if (line.endsWith('source="')) {
+        inSource = true;
+        sourceLines = [];
+        sourcePrefix = line;  // ex: /system script add name="navspot-sync" ... source="
+      } else {
+        out.push(line);
+      }
+    } else {
+      if (line === '"') {
+        // Fecha o bloco — colapsar tudo numa linha
+        const collapsed = sourceLines.join("\\r\\n");
+        out.push(sourcePrefix + collapsed + '"');
+        inSource = false;
+        sourceLines = [];
+        sourcePrefix = "";
+      } else {
+        sourceLines.push(line);
+      }
+    }
+  }
+
+  // Seguranca: se ficou aberto (nao encontrou fechamento), retorna original
+  if (inSource) {
+    return script;
+  }
+
+  return out.join("\n");
+}
 ```
 
-### Bug 2 — Guardian aponta para endpoint legado `mt-gen`
+Deteccao de abertura: qualquer linha que termina exatamente com `source="` (cobre `add` e `set`).
 
-No template `guardian-standalone`, o health check usa:
+Deteccao de fechamento: linha que e exatamente `"` (aspas sozinha).
 
-```text
-/tool fetch url="{{API_BASE}}/mt-gen?mode=health"
+Fallback: se o bloco nunca fecha, retorna o script original sem modificacao.
+
+## Alteracao no gen7post
+
+Uma unica mudanca: adicionar `collapseSourceBlocks` e chama-la no final da funcao `tpl()`.
+
+Na linha 8 do `gen7post/index.ts`, a funcao `tpl` atual:
+
+```typescript
+const tpl=async(id:string,v:Record<string,string>)=>{
+  ...
+  return c.replace(/\r\n/g,"\n").replace(/\r/g,"\n");
+};
 ```
 
-Deveria ser `gen7post` com POST, não `mt-gen` com GET. Isso significa que o guardian nunca consegue verificar a versão corretamente e pode disparar reparos desnecessários.
+Passa a ser:
 
-## Alterações
-
-### 1. SQL UPDATE no template `sync` (v7.8.26 → v7.8.27)
-
-Duas substituições mecânicas:
-
-```text
-ANTES:  :local val [:pick $ln ($p1 + 1) [:len $ln]]
-DEPOIS: :local lnLen [:len $ln]
-        :local val [:pick $ln ($p1 + 1) $lnLen]
-
-ANTES:  :local pw [:pick $val ($p2 + 1) [:len $val]]
-DEPOIS: :local valLen [:len $val]
-        :local pw [:pick $val ($p2 + 1) $valLen]
+```typescript
+const tpl=async(id:string,v:Record<string,string>)=>{
+  ...
+  c = c.replace(/\r\n/g,"\n").replace(/\r/g,"\n");
+  return collapseSourceBlocks(c);
+};
 ```
 
-### 2. SQL UPDATE no template `guardian-standalone` (v7.8.6 → v7.8.7)
+A funcao `collapseSourceBlocks` e adicionada antes do `Deno.serve`.
 
-Corrigir o health check de `mt-gen` (legado, GET) para `gen7post` (atual, POST):
+## O que muda no output
 
-```text
-ANTES:
-/tool fetch url="{{API_BASE}}/mt-gen?mode=health" as-value output=user
-
-DEPOIS:
-/tool fetch url="{{API_BASE}}/gen7post" http-method=post http-data="{\"mode\":\"health\"}" http-header-field="Content-Type: application/json" as-value output=user
+**Antes** (multi-linha — RouterOS falha no /import):
+```
+/system script add name="navspot-sync" policy=read,write,test source="
+:log info \"NAVSPOT-SYNC: START\"
+:global navspotSyncLock
+...
+"
 ```
 
-Dentro do script source (já escapado), o correto será:
-
-```text
-/tool fetch url=\"{{API_BASE}}/gen7post\" http-method=post http-data=\"{\\\"mode\\\":\\\"health\\\"}\" http-header-field=\"Content-Type: application/json\" as-value output=user
+**Depois** (linha unica — RouterOS parseia corretamente):
+```
+/system script add name="navspot-sync" policy=read,write,test source=":log info \"NAVSPOT-SYNC: START\"\r\n:global navspotSyncLock\r\n..."
 ```
 
-### 3. Remoção da edge function `mt-recovery`
+O RouterOS interpreta `\r\n` como newline real ao armazenar o script. O script executado tera quebras de linha normais.
 
-Deletar `supabase/functions/mt-recovery/index.ts` e a função deployada. Essa função legada (v7.1.61) usa `type:"all"` e escaping com `\\$`, podendo causar problemas se chamada acidentalmente.
+## Impacto
 
-## Detalhes Técnicos
+- Modo `serve` (download direto pelo router): afetado — output colapsado
+- Modo `generate` (painel → Storage): afetado — arquivos .rsc no Storage ja vem colapsados
+- Templates no banco: inalterados — continuam legiveis com newlines reais
+- Templates sem `source="`: inalterados — o `infra` nao tem blocos source, passa direto
 
-- O template `sync` é usado apenas pelo antigo endpoint `mikrotik-script-generator`, não pelo `gen7post`. O fix é preventivo para eliminar código bugado do banco.
-- O template `guardian-standalone` é usado ativamente pelo `gen7post` nos modos `serve` (type=all, type=recovery) e `generate`. O health check apontando para `mt-gen` faz com que o guardian falhe silenciosamente no check de versão, pois `mt-gen` pode não existir mais ou retornar dados diferentes.
-- A remoção do `mt-recovery` requer deletar o arquivo e chamar a ferramenta de delete de edge functions.
+## Apos implementacao
+
+Regenerar scripts pelo painel e reimportar no router. Nenhuma alteracao de banco necessaria.
 
