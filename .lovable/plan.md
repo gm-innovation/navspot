@@ -1,62 +1,103 @@
 
 
-# Fix: Replace Regex Match with Exact Match for Profile Name
+# Fix: Flatten configure_hotspot_profile Handler (L7 → L6)
 
-## Root Cause (Definitive)
+## Current State (Database Confirmed)
 
-The error at **line 159 column 95** is precisely at `dns-name=$dn` on this line inside the running navspot-sync script:
+Lines 164-168 of `sync-standalone` template:
 
-```text
-:if ([:len $lu] > 0) do={/ip hotspot profile set [find where name~hsprof] dns-name=$dn}
-                                                                                  ^col 95
+```routeros
+:if (\$c = \"configure_hotspot_profile\") do={           ← L6
+    :local p2 [:find \$r \"|\"]
+    :if (\$p2 >= 0) do={:set cfgLu [:pick \$r 0 \$p2]; :set cfgDn [:pick \$r (\$p2 + 1) [:len \$r]]}   ← L7 FAILS
+    :set cnt (\$cnt + 1)
+}
 ```
 
-The `~` (regex) operator without quotes makes the parser unable to distinguish where the pattern `hsprof` ends and the bracket `]` begins. It interprets `hsprof]` as part of the regex value, consuming the closing `]`, so `[find ...]` never closes. Then `dns-name` appears where the parser expects `]`, causing "expected end of command".
+The `:if (\$p2 >= 0) do={...}` at **L7** with `[:pick]` and `[:len]` inside crashes the hAP ax2 parser. This is exactly what the error at line 165 column 70 points to.
 
-**The v7.8.12 fix of removing `\"` from `name~\"hsprof\"` was incorrect for regex operators.** Quotes are mandatory for regex patterns inside `[find]` brackets because the parser needs delimiters to separate the pattern from the `]`.
+## Changes Required
 
-However, we **can't put the quotes back** because `\"` at this nesting depth (L6) also fails (that was the original problem).
+### 1. Remove `cfgDn` declaration (line 44)
+```routeros
+# Before:
+:local cfgLu \"\"
+:local cfgDn \"\"
 
-## Solution: Use Exact Match Instead of Regex
-
-The hotspot profile is always named `hsprof-navspot` (set in the infra template). There is no need for regex matching. Replace all `name~hsprof` with `name=hsprof-navspot` — an exact match that requires no quotes and has no ambiguity with brackets.
-
-```text
-Before (4 lines, ALL fail):
-  /ip hotspot profile set [find where name~hsprof] login-by=...
-  /ip hotspot profile set [find where name~hsprof] http-cookie-lifetime=3d
-  /ip hotspot profile set [find where name~hsprof] login-url=$lu
-  /ip hotspot profile set [find where name~hsprof] dns-name=$dn
-
-After (4 lines, unambiguous):
-  /ip hotspot profile set [find where name=hsprof-navspot] login-by=...
-  /ip hotspot profile set [find where name=hsprof-navspot] http-cookie-lifetime=3d
-  /ip hotspot profile set [find where name=hsprof-navspot] login-url=$lu
-  /ip hotspot profile set [find where name=hsprof-navspot] dns-name=$dn
+# After:
+:local cfgLu \"\"
 ```
 
-`name=hsprof-navspot` is a single unquoted word (hyphens are allowed in unquoted values). The parser sees `hsprof-navspot]` and correctly identifies `]` as the bracket close because `=` (exact match) doesn't consume special characters like `~` (regex) does.
+### 2. Flatten handler (lines 164-168)
+```routeros
+# Before (L7 — crashes):
+:if (\$c = \"configure_hotspot_profile\") do={
+    :local p2 [:find \$r \"|\"]
+    :if (\$p2 >= 0) do={:set cfgLu [:pick \$r 0 \$p2]; :set cfgDn [:pick \$r (\$p2 + 1) [:len \$r]]}
+    :set cnt (\$cnt + 1)
+}
+
+# After (L6 — safe, single assignment):
+:if (\$c = \"configure_hotspot_profile\") do={
+    :set cfgLu \$r
+    :set cnt (\$cnt + 1)
+}
+```
+
+### 3. Update post-loop block (lines 172-178) to parse pipe there
+
+```routeros
+# Before (uses pre-parsed cfgLu and cfgDn):
+:if ([:len \$cfgLu] > 0) do={
+    /ip hotspot profile set [find where name=hsprof-navspot] login-by=cookie,http-pap,http-chap
+    /ip hotspot profile set [find where name=hsprof-navspot] http-cookie-lifetime=3d
+    /ip hotspot profile set [find where name=hsprof-navspot] login-url=\$cfgLu
+    /ip hotspot profile set [find where name=hsprof-navspot] dns-name=\$cfgDn
+    :log info (\"NAVSPOT-SYNC: profile ok login-url=\" . \$cfgLu)
+}
+
+# After (parses raw cfgLu = "url|dns" here at L4):
+:if ([:len \$cfgLu] > 0) do={
+    :local p2 [:find \$cfgLu \"|\"]
+    :local lu \$cfgLu
+    :local dn \"\"
+    :if (\$p2 >= 0) do={:set lu [:pick \$cfgLu 0 \$p2]; :set dn [:pick \$cfgLu (\$p2 + 1) [:len \$cfgLu]]}
+    /ip hotspot profile set [find where name=hsprof-navspot] login-by=cookie,http-pap,http-chap
+    /ip hotspot profile set [find where name=hsprof-navspot] http-cookie-lifetime=3d
+    /ip hotspot profile set [find where name=hsprof-navspot] login-url=\$lu
+    /ip hotspot profile set [find where name=hsprof-navspot] dns-name=\$dn
+    :log info (\"NAVSPOT-SYNC: profile ok login-url=\" . \$lu)
+}
+```
+
+The pipe parsing now happens at L5 (inside L4 `:if` → L5 `:if ($p2 >= 0)`), well within the parser limit.
+
+### 4. Version bumps
+- Template version comment: `7.8.16`
+- `gen7post/index.ts`: `V = "7.9.6"`
 
 ## Implementation
 
-One SQL UPDATE to `script_templates` table, row `id = 'sync-standalone'`:
-- Replace all 4 occurrences of `name~hsprof` with `name=hsprof-navspot`
-- Bump version to `7.8.14`
+One SQL UPDATE to `script_templates` where `id = 'sync-standalone'` with the three changes above, plus one line edit to `gen7post/index.ts`.
 
-One file update:
-- `supabase/functions/gen7post/index.ts`: bump `V` to `7.9.4`
+## Technical Details — Nesting Depth Comparison
 
-## Technical Details
+```text
+Post-loop block nesting:
+L1: source="..."
+  L2: :do { fetch } on-error={}
+    L3: :if ($s >= 0) do={}
+      L4: :if ([:len $cfgLu] > 0) do={}
+        L5: :if ($p2 >= 0) do={:set lu ...}   ← SAFE (L5)
+        L4: /ip hotspot profile set ...        ← SAFE (L4)
 
-The profile name `hsprof-navspot` is hardcoded in the `infra` template (`/ip hotspot profile add name=$hspName` where `$hspName = "hsprof-navspot"`). It never changes. Using exact match is actually more correct than regex — it prevents accidentally matching other profiles that might contain "hsprof" in their name.
-
-Template lines to change (in sync-standalone):
-- Line 167: `name~hsprof` → `name=hsprof-navspot`
-- Line 168: `name~hsprof` → `name=hsprof-navspot`
-- Line 169: `name~hsprof` → `name=hsprof-navspot`
-- Line 170: `name~hsprof` → `name=hsprof-navspot`
-
-## Risk
-
-Very low. The profile name is deterministic and set by our own infra template. Exact match is safer and more precise than regex.
+vs. Inside-loop (before fix):
+L1: source="..."
+  L2: :do { fetch }
+    L3: :if ($s >= 0) do={}
+      L4: :while () do={}
+        L5: :if ($p1 >= 0) do={}
+          L6: :if ($c = "configure_hotspot_profile") do={}
+            L7: :if ($p2 >= 0) do={:set cfgLu ...}   ← CRASHES
+```
 
