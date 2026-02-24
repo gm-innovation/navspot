@@ -1,6 +1,6 @@
 const H={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type"};
-const V="7.9.10";
-function collapseSourceBlocks(script:string):string{const lines=script.split("\n");const out:string[]=[];let inSource=false;let sourceLines:string[]=[];let sourcePrefix="";for(const line of lines){if(!inSource){if(line.endsWith('source="')){inSource=true;sourceLines=[];sourcePrefix=line;}else{out.push(line);}}else{if(line==='"'){const collapsed=sourceLines.join("\\r\\n");out.push(sourcePrefix+collapsed+'"');inSource=false;sourceLines=[];sourcePrefix="";}else{sourceLines.push(line);}}}if(inSource){return script;}return out.join("\n");}
+const V="7.9.11";
+function collapseSourceBlocks(script:string):string{const lines=script.split("\n");const out:string[]=[];let inSource=false;let sourceLines:string[]=[];let sourcePrefix="";for(const line of lines){if(!inSource){if(line.endsWith('source="')){inSource=true;sourceLines=[];sourcePrefix=line;}else{out.push(line);}}else{if(line==='"'){const collapsed=sourceLines.join("\\n");out.push(sourcePrefix+collapsed+'"');inSource=false;sourceLines=[];sourcePrefix="";}else{sourceLines.push(line);}}}if(inSource){return script;}return out.join("\n");}
 Deno.serve(async(req)=>{
 if(req.method==="OPTIONS")return new Response(null,{headers:H});
 if(req.method!=="POST")return Response.json({error:"Method not allowed"},{status:405,headers:H});
