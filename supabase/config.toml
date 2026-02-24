@@ -18,8 +18,6 @@ verify_jwt = false
 [functions.mikrotik-recovery-download]
 verify_jwt = false
 
-[functions.mt-recovery]
-verify_jwt = false
 
 [functions.navspot-recovery]
 verify_jwt = false
