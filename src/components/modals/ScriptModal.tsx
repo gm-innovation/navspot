@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Copy, Download, Check, RefreshCw, Upload, Shield, RotateCcw, Package, Server, Clock } from "lucide-react";
+import { Copy, Download, Check, RefreshCw, Upload, Shield, RotateCcw, Package, Server, Clock, AlertTriangle } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { useDownloadRecoveryScript } from "@/hooks/useHotspots";
 import { downloadFromSignedUrl } from "@/hooks/useModularScripts";
@@ -23,6 +23,7 @@ interface ScriptModalProps {
   hotspotName: string;
   hotspotId?: string;
   scriptVersion?: string;
+  storedScriptVersion?: string | null;
   onRegenerate?: () => void;
   isRegenerating?: boolean;
   syncToken?: string;
@@ -36,6 +37,7 @@ export function ScriptModal({
   hotspotName,
   hotspotId,
   scriptVersion = "7.8.0",
+  storedScriptVersion,
   onRegenerate,
   isRegenerating,
   syncToken,
@@ -166,6 +168,21 @@ export function ScriptModal({
             <AlertDescription className="text-sm">
               URLs válidas por <strong>{formatTTL(ttlRemaining)}</strong>
               {ttlRemaining <= 0 && " — Expiradas! Regenere os scripts."}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Stale scripts warning */}
+        {storedScriptVersion && storedScriptVersion !== scriptVersion && (
+          <Alert className="bg-yellow-500/10 border-yellow-500/50">
+            <AlertTriangle className="h-4 w-4 text-yellow-600" />
+            <AlertDescription className="text-sm text-yellow-700 dark:text-yellow-400">
+              Scripts no Storage foram gerados com <strong>v{storedScriptVersion}</strong>. A versão atual é <strong>v{scriptVersion}</strong>.{' '}
+              {onRegenerate && (
+                <Button variant="link" className="h-auto p-0 text-yellow-700 dark:text-yellow-400 underline" onClick={onRegenerate} disabled={isRegenerating}>
+                  Regenere para atualizar.
+                </Button>
+              )}
             </AlertDescription>
           </Alert>
         )}

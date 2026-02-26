@@ -465,6 +465,7 @@ export default function Embarcacoes() {
         hotspotName={currentHotspotName}
         hotspotId={currentHotspotId}
         scriptVersion={currentScriptVersion}
+        storedScriptVersion={hotspots?.find(h => h.id === currentHotspotId)?.scripts_version}
         syncToken={currentSyncToken}
         signedUrls={signedUrls}
         onRegenerate={handleRegenerateScript}
