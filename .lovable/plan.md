@@ -1,18 +1,16 @@
 
 
-# Fix: Restore blob-based download for signed URLs
+# Fix: Download robusto que funciona no preview E em produção
 
-## Problem
+## Diagnóstico
 
-`window.open(url, '_blank')` opens the .rsc file as plain text in the browser instead of triggering a download. The Storage signed URL serves the content with `Content-Type: text/plain` and no `Content-Disposition: attachment` header, so the browser just renders it.
+O fetch retorna 200, o blob é criado com sucesso. O problema é que `a.click()` programático é bloqueado silenciosamente pelo sandbox do iframe em contextos variáveis. O código atual é idêntico ao que funcionava antes — o comportamento do sandbox não é determinístico.
 
-The previous blob-based approach (fetch → blob → anchor click with `download` attribute) was working correctly in production (not in the Lovable preview sandbox, but in the real published app). We broke it by replacing it with `window.open`.
+## Solução
 
-## Fix
+Usar `URL.createObjectURL` + `window.open` com o blob URL (não a signed URL direta). Diferente de `window.open` com a signed URL (que renderiza como texto), um blob URL com tipo `application/octet-stream` força o download. Isso funciona mesmo em sandboxes porque `window.open` com blob URL é tratado diferente de `a.click()`.
 
-Revert `downloadFromSignedUrl` to the blob-based approach. The blob pattern forces the browser to treat it as a download because the `download` attribute on the anchor element works for same-origin blob URLs. Keep the `setTimeout` for revocation and `window.open` as fallback only if fetch fails.
-
-### `src/hooks/useModularScripts.ts`
+### `src/hooks/useModularScripts.ts` — `downloadFromSignedUrl`
 
 ```typescript
 export async function downloadFromSignedUrl(url: string, filename: string) {
@@ -20,31 +18,35 @@ export async function downloadFromSignedUrl(url: string, filename: string) {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const blob = await response.blob();
-    const blobUrl = URL.createObjectURL(blob);
+    // Force binary content type to prevent browser rendering as text
+    const downloadBlob = new Blob([blob], { type: 'application/octet-stream' });
+    const blobUrl = URL.createObjectURL(downloadBlob);
+    
+    // Try anchor click first
     const a = document.createElement('a');
     a.href = blobUrl;
     a.download = filename;
+    a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
   } catch (error) {
+    // Fallback: open signed URL directly
     window.open(url, '_blank');
   }
 }
 ```
 
-### `src/components/modals/ScriptModal.tsx` — `handleDownload`
+Mudança chave: o blob é re-criado com `type: 'application/octet-stream'` em vez de herdar `text/plain` do response. Isso garante que mesmo se o browser abrir o blob URL diretamente (fallback), ele trate como download e não como texto.
 
-Revert the signed URL path back to using `downloadFromSignedUrl` instead of `window.open`:
+### `src/components/modals/ScriptModal.tsx` — `handleDownload` (blob inline)
+
+Mesma mudança no blob inline (linhas 93-102):
 
 ```typescript
-if (signedUrls?.bootstrap_url) {
-  await downloadFromSignedUrl(signedUrls.bootstrap_url, `navspot-bootstrap-v${scriptVersion}.rsc`);
-  toast({ ... });
-  return;
-}
+const blob = new Blob([bootstrapScript], { type: "application/octet-stream" });
 ```
 
-The blob download works in the published app (navspot.lovable.app) because it's not sandboxed. The Lovable preview may still block it, but that's expected — the production environment is what matters.
+Trocar `text/plain` por `application/octet-stream` para consistência.
 
