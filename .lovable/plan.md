@@ -1,27 +1,28 @@
 
 
-# Fix: `.trimStart()` no output do `tpl()` para eliminar newline inicial
+# Fix: sanitização agressiva no `tpl()` — remover `\;` e lixo inicial
 
 ## Diagnóstico
-O `tpl()` (linha 10) faz trimStart por linha, mas não remove o `\n` inicial do template inteiro. Resultado: o `source="` do script começa com linha vazia → RouterOS marca como **invalid**.
+O `.trimStart()` adicionado na v7.9.19 remove whitespace, mas não remove combinações de `\;` (backslash + ponto-e-vírgula) que o RouterOS interpreta como comando vazio. Os logs confirmam que o script gravado ainda contém prefixo `\; \n` antes do primeiro comando real.
 
-## Mudança
-Em `supabase/functions/gen7post/index.ts`, linha 10 — adicionar `.trimStart()` ao resultado final do `tpl()`:
+## Mudanças
+
+### 1. `supabase/functions/gen7post/index.ts` — linha 10
+Substituir o `.trimStart()` final por `.replace(/^[\\;\s]+/, "")` que remove qualquer combinação de `\`, `;`, espaços e newlines do início do output:
 
 ```
-// Antes:
-for(const[k,val]of Object.entries(v))c=c.replaceAll(k,val);return c
+// Antes (atual):
+return c.trimStart()
 
 // Depois:
-for(const[k,val]of Object.entries(v))c=c.replaceAll(k,val);return c.trimStart()
+return c.replace(/^[\\;\s]+/, "")
 ```
 
-Isso garante que nenhum template retornado comece com whitespace/newline, independente do conteúdo no banco.
+### 2. Version bump — linha 2
+`const V="7.9.19"` → `const V="7.9.20"` para que o aviso de "scripts desatualizados" funcione e hotspots detectem a mudança.
 
-## Bump de versão
-`const V="7.9.18"` → `const V="7.9.19"` para que hotspots detectem a mudança e o aviso de "scripts desatualizados" funcione.
+### 3. Deploy da edge function
 
 ## Arquivos
-- `supabase/functions/gen7post/index.ts` — 2 alterações (trimStart + version bump)
-- Deploy automático da edge function
+- `supabase/functions/gen7post/index.ts` — 2 alterações (sanitização + version bump)
 
