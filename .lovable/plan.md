@@ -1,46 +1,45 @@
 
-# v7.9.15 — Arquitetura `/import` (elimina `set source=`)
 
-## Problema
-RouterOS re-serializa o conteúdo ao executar `/system script set source=$var`, convertendo newlines em `\; \n`. O problema não está no banco nem no backend — está na abordagem de injeção via variável.
+# v7.9.16 — Fix `tpl()`: strip seletivo + ordem correta
 
-## Mudança de arquitetura
+## Mudanças em `supabase/functions/gen7post/index.ts`
 
-| v7.9.14 | v7.9.15 |
-|---|---|
-| fetch body → `set source=$var` | fetch `.rsc` completo → `/import` |
-| RouterOS re-serializa → corrupção | RouterOS lê arquivo direto → OK |
+### 1. Version bump (linha 2)
+`"7.9.15"` → `"7.9.16"`
 
-## Mudanças implementadas
+### 2. `tpl()` reescrita (linha 37)
+Ordem atual (errada): `replaceAll` → `CRLF` → (sem strip)
 
-### `supabase/functions/gen7post/index.ts`
+Ordem nova (correta):
+1. CRLF normalize
+2. `trimStart()` só fora de blocos `source="..."`
+3. `replaceAll` variáveis
 
-- **Version**: `7.9.15`
-- **GET handler**: `GET /gen7post?type=sync-rsc&token=<TOKEN>` retorna template completo com variáveis substituídas
-- **Novos tipos**: `sync-rsc` e `guardian-rsc` — retornam .rsc completo para `/import`
-- **`replaceSourceWithImport`**: substitui bloco `/system script add ... source="..."` por fetch+import
-- **Removidos**: `extractSourceBody`, `replaceSourceWithFetch`, tipos `sync-source` e `guardian-source`
-- **Serve mode**: `sync-standalone`, `guardian-standalone`, `all`, `recovery` usam `replaceSourceWithImport`
-- **Generate mode**: sync.rsc e guardian.rsc no Storage usam `replaceSourceWithImport`
-
-### Fluxo GET (MikroTik `/tool fetch`)
-
-```
-GET /gen7post?type=sync-rsc&token=<TOKEN>
-  → valida token
-  → tpl("sync-standalone", vars)
-  → retorna text/plain com source= inline
-  → RouterOS /import → lê source do arquivo direto ✅
-```
-
-### Fluxo do installer gerado
-
-```routeros
-/tool fetch url=".../gen7post?type=sync-rsc&token=..." output=file dst-path="navspot-sync-dl.rsc"
-:delay 2s
-/import navspot-sync-dl.rsc
-:do { /file remove "navspot-sync-dl.rsc" } on-error={}
+```typescript
+const tpl=async(id:string,v:Record<string,string>)=>{
+  const t=await rest("script_templates",{id:"eq."+id,select:"content"});
+  if(!t?.content)throw new Error("TPL:"+id);
+  let c:string=t.content;
+  // 1. Normaliza CRLF
+  c=c.replace(/\r\n/g,"\n").replace(/\r/g,"\n");
+  // 2. Strip leading whitespace só fora de source="..."
+  let inSrc=false;
+  c=c.split("\n").map((l:string)=>{
+    if(!inSrc)l=l.trimStart();
+    if(l.includes('source="'))inSrc=true;
+    if(inSrc&&l.trimStart()==='"')inSrc=false;
+    return l;
+  }).join("\n");
+  // 3. Substitui variáveis por último
+  for(const[k,val]of Object.entries(v))c=c.replaceAll(k,val);
+  return c;
+};
 ```
 
-### Nenhuma mudança no frontend
-O frontend continua chamando `gen7post` via POST com `{ hotspot_id }`. Resposta JSON idêntica.
+### 3. `replaceSourceWithImport` — adicionar remove antes do import (linha 14-15)
+Inserir `:do { /system script remove [find name="navspot-${scriptName}"] } on-error={}` antes da linha `/import`.
+
+### 4. `.lovable/plan.md` — atualizar versão e documentar fix
+
+Nenhum outro arquivo muda.
+
