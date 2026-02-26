@@ -1,52 +1,72 @@
 
 
-# Fix: Download robusto que funciona no preview E em produção
+# v7.9.15 — Arquitetura `/import` (elimina `set source=`)
 
-## Diagnóstico
+## Problema
+RouterOS re-serializa o conteúdo ao executar `/system script set source=$var`, convertendo newlines em `\; \n`. O problema não está no banco nem no backend — está na abordagem de injeção via variável.
 
-O fetch retorna 200, o blob é criado com sucesso. O problema é que `a.click()` programático é bloqueado silenciosamente pelo sandbox do iframe em contextos variáveis. O código atual é idêntico ao que funcionava antes — o comportamento do sandbox não é determinístico.
+## Mudança de arquitetura
 
-## Solução
+| v7.9.14 | v7.9.15 |
+|---|---|
+| fetch body → `set source=$var` | fetch `.rsc` completo → `/import` |
+| RouterOS re-serializa → corrupção | RouterOS lê arquivo direto → OK |
 
-Usar `URL.createObjectURL` + `window.open` com o blob URL (não a signed URL direta). Diferente de `window.open` com a signed URL (que renderiza como texto), um blob URL com tipo `application/octet-stream` força o download. Isso funciona mesmo em sandboxes porque `window.open` com blob URL é tratado diferente de `a.click()`.
+## Mudanças
 
-### `src/hooks/useModularScripts.ts` — `downloadFromSignedUrl`
+### 1. `supabase/functions/gen7post/index.ts` — rewrite completo
 
-```typescript
-export async function downloadFromSignedUrl(url: string, filename: string) {
-  try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const blob = await response.blob();
-    // Force binary content type to prevent browser rendering as text
-    const downloadBlob = new Blob([blob], { type: 'application/octet-stream' });
-    const blobUrl = URL.createObjectURL(downloadBlob);
-    
-    // Try anchor click first
-    const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = filename;
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
-  } catch (error) {
-    // Fallback: open signed URL directly
-    window.open(url, '_blank');
+- **Version bump**: `7.9.14` → `7.9.15`
+- **Aceitar GET**: MikroTik `/tool fetch` usa GET com query params `?type=sync-rsc&token=<TOKEN>`
+- **Novos tipos `sync-rsc` e `guardian-rsc`**: retornam o template completo (com `source=` inline) do banco, apenas com variáveis substituídas. Sem `extractSourceBody`, sem manipulação de source
+- **Nova função `replaceSourceWithImport`**: substitui `replaceSourceWithFetch`. Em vez de criar script vazio + fetch body + `set source=`, agora:
+  - Remove o bloco inteiro do `/system script add` com `source="..."`  
+  - Insere bloco que faz `/tool fetch url=".../gen7post?type=<rsc-type>&token=<token>" output=file dst-path="<name>-dl.rsc"` + `/import <name>-dl.rsc` + cleanup
+- **Remover `extractSourceBody`** e **`replaceSourceWithFetch`** — código morto
+- **Remover tipos `sync-source` e `guardian-source`** — substituídos por `sync-rsc` e `guardian-rsc`
+- **Serve mode**: tipos `sync-standalone`, `guardian-standalone`, `all`, `recovery` agora usam `replaceSourceWithImport` em vez de `replaceSourceWithFetch`
+- **Generate mode**: mesma mudança — sync.rsc e guardian.rsc no Storage usam `replaceSourceWithImport`
+- Manter: `health`, `serve` POST (backward compat), `generate` POST, helpers `rest`, `tpl`, `vars`
+
+### 2. `.lovable/plan.md` — atualizar com a nova arquitetura
+
+## Detalhes técnicos
+
+### `replaceSourceWithImport` — lógica
+
+```text
+Input: template com bloco:
+  /system script add name="navspot-sync" ... source="
+  <multiline source content>
+  "
+
+Output: substitui esse bloco por:
+  :log info "NAVSPOT-SYNC-INSTALL: Baixando sync.rsc..."
+  :do {
+      /tool fetch url="<SCRIPTS_URL>?type=sync-rsc&token=<TOKEN>" output=file dst-path="navspot-sync-dl.rsc"
+      :delay 2s
+      /import navspot-sync-dl.rsc
+      :do { /file remove "navspot-sync-dl.rsc" } on-error={}
+      :log info "NAVSPOT-SYNC-INSTALL: sync.rsc importado com sucesso"
+  } on-error={
+      :log error "NAVSPOT-SYNC-INSTALL: Falha ao baixar/importar sync.rsc"
   }
-}
 ```
 
-Mudança chave: o blob é re-criado com `type: 'application/octet-stream'` em vez de herdar `text/plain` do response. Isso garante que mesmo se o browser abrir o blob URL diretamente (fallback), ele trate como download e não como texto.
+A regex encontra o bloco `/system script add name="navspot-<name>"` até a linha que contém apenas `"` (fim do source). Substitui tudo pelo fetch+import.
 
-### `src/components/modals/ScriptModal.tsx` — `handleDownload` (blob inline)
+### GET handler — fluxo
 
-Mesma mudança no blob inline (linhas 93-102):
-
-```typescript
-const blob = new Blob([bootstrapScript], { type: "application/octet-stream" });
+```text
+GET /gen7post?type=sync-rsc&token=<TOKEN>
+  → valida token via rest("hotspots", {sync_token: eq.TOKEN})
+  → monta vars
+  → tpl("sync-standalone", vars) 
+  → retorna o template completo como text/plain (com source= inline)
+  → RouterOS faz /import → lê source do arquivo direto
 ```
 
-Trocar `text/plain` por `application/octet-stream` para consistência.
+### Nenhuma mudança no frontend
+
+O frontend continua chamando `gen7post` via POST com `{ hotspot_id }`. A resposta JSON com signed URLs permanece idêntica. Os arquivos no Storage é que mudam internamente (sync.rsc agora tem fetch+import em vez de fetch body+set source=).
 
