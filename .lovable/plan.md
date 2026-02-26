@@ -1,56 +1,40 @@
 
 
-# Fix: extractSourceBody must unescape source="..." escaping
+# Fix: Strip `\r` from template lines in `extractSourceBody`
 
-## Root cause
+## Problem
 
-The `sync-standalone` template stores the script body inside `source="..."` with RouterOS escaping:
-- `\"` for literal `"`
-- `\$` for literal `$`  
-- `\\` for literal `\`
+The database templates have CRLF (`\r\n`) line endings. `extractSourceBody` splits on `\n` but leaves trailing `\r` on each line. When served via `/tool fetch` → `/file get`, RouterOS interprets the `\r` as command separators, producing the `\;     \n` pattern in the stored source.
 
-`extractSourceBody` extracts the lines but returns them **still escaped**. When the installer does `/system script set source=$srcBody`, the content has `\"` and `\$` as literal characters instead of `"` and `$`.
+## Fix in `gen7post/index.ts` (line 3)
 
-Evidence from logs: `source=":log info \\\"NAVSPOT-SYNC: START\\\"\;     \n` — the stored source has `\"` instead of `"`.
-
-## Fix in gen7post/index.ts
-
-Update `extractSourceBody` to unescape after extraction:
+Add `line.replace(/\r$/, "")` to strip trailing `\r` from each line before processing. The `body.join("\n")` stays as real newline (not escaped) — the fetch-based approach relies on `/file get` delivering real newlines.
 
 ```typescript
-function extractSourceBody(script: string): string {
-  const lines = script.split("\n");
-  let inSource = false;
-  const body: string[] = [];
-  for (const line of lines) {
-    if (!inSource) {
-      if (line.endsWith('source="')) { inSource = true; continue; }
+function extractSourceBody(script:string):string{
+  const lines=script.split("\n");
+  let inSource=false;
+  const body:string[]=[];
+  for(const line of lines){
+    const cl=line.replace(/\r$/,"");
+    if(!inSource){
+      if(cl.endsWith('source="')){inSource=true;continue;}
       continue;
     }
-    if (line === '"') { break; }
-    body.push(line);
+    if(cl==='"'){break;}
+    body.push(cl);
   }
-  // Unescape from source="..." context to raw RouterOS script
   return body.join("\n")
-    .replace(/\\\\/g, '\x00')   // 1. placeholder for literal backslash
-    .replace(/\\"/g, '"')       // 2. escaped quote → real quote
-    .replace(/\\\$/g, '$')      // 3. escaped dollar → real dollar
-    .replace(/\x00/g, '\\');    // 4. restore literal backslashes
+    .replace(/\\\\/g,'\x00')
+    .replace(/\\"/g,'"')
+    .replace(/\\\$/g,'$')
+    .replace(/\x00/g,'\\');
 }
 ```
 
-Ordering is critical:
-- `\\\"` in template → `\"` in raw script (escaped quote inside a RouterOS string)
-- `\"` in template → `"` in raw script
-- `\$` in template → `$` in raw script
-
 ## Version bump
 
-`7.9.12` → `7.9.13`
+`7.9.13` → `7.9.14`
 
-## No other changes needed
-
-- Templates in database: unchanged
-- `replaceSourceWithFetch`: unchanged (installer logic is correct)
-- Only `extractSourceBody` needs the unescape step
+## No other changes
 
