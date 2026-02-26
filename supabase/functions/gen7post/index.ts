@@ -1,5 +1,5 @@
 const H={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type"};
-const V="7.9.15";
+const V="7.9.16";
 
 function replaceSourceWithImport(script:string,scriptName:string,rscType:string,scriptsUrl:string,syncToken:string):string{
   const lines=script.split("\n");const out:string[]=[];let inSource=false;
@@ -12,6 +12,7 @@ function replaceSourceWithImport(script:string,scriptName:string,rscType:string,
         out.push(`:do {`);
         out.push(`    /tool fetch url="${scriptsUrl}?type=${rscType}&token=${syncToken}" output=file dst-path="navspot-${scriptName}-dl.rsc"`);
         out.push(`    :delay 2s`);
+        out.push(`    :do { /system script remove [find name="navspot-${scriptName}"] } on-error={}`);
         out.push(`    /import navspot-${scriptName}-dl.rsc`);
         out.push(`    :do { /file remove "navspot-${scriptName}-dl.rsc" } on-error={}`);
         out.push(`    :log info "NAVSPOT-${label}-INSTALL: ${scriptName}.rsc importado com sucesso"`);
@@ -34,7 +35,7 @@ if(req.method==="OPTIONS")return new Response(null,{headers:H});
 
 const SU=Deno.env.get("SUPABASE_URL")!,SK=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,AK=Deno.env.get("SUPABASE_ANON_KEY")!;
 const rest=async(t:string,p:Record<string,string>)=>{const r=await fetch(SU+"/rest/v1/"+t+"?"+new URLSearchParams(p),{headers:{apikey:SK,Authorization:"Bearer "+SK,Accept:"application/vnd.pgrst.object+json"}});return r.ok?r.json():null};
-const tpl=async(id:string,v:Record<string,string>)=>{const t=await rest("script_templates",{id:"eq."+id,select:"content"});if(!t?.content)throw new Error("TPL:"+id);let c:string=t.content;for(const[k,val]of Object.entries(v))c=c.replaceAll(k,val);c=c.replace(/\r\n/g,"\n").replace(/\r/g,"\n");return c};
+const tpl=async(id:string,v:Record<string,string>)=>{const t=await rest("script_templates",{id:"eq."+id,select:"content"});if(!t?.content)throw new Error("TPL:"+id);let c:string=t.content;c=c.replace(/\r\n/g,"\n").replace(/\r/g,"\n");let inSrc=false;c=c.split("\n").map((l:string)=>{if(!inSrc)l=l.trimStart();if(l.includes('source="'))inSrc=true;if(inSrc&&l.trimStart()==='"')inSrc=false;return l}).join("\n");for(const[k,val]of Object.entries(v))c=c.replaceAll(k,val);return c};
 const vars=(h:any,e:any):Record<string,string>=>{const nb=(h.rede as string).split("/")[0].replace(/\.\d+$/,""),w=h.wan_interface||"ether1",ros=(!h.ros_version||h.ros_version==="auto")?"7":h.ros_version;return{"{{VERSION}}":V,"{{DEPLOYED_AT}}":new Date().toISOString(),"{{WAN_INTERFACE}}":w,"{{WAN_TYPE}}":h.wan_type||"dhcp","{{WAN_CONFIG}}":(h.wan_type||"dhcp")==="dhcp"?"/ip dhcp-client add interface="+w+" disabled=no":"","{{NETWORK_BASE}}":nb,"{{NETWORK_CIDR}}":(h.rede as string).includes("/")?h.rede:h.rede+"/24","{{GATEWAY}}":nb+".1","{{POOL_START}}":nb+".10","{{POOL_END}}":nb+".254","{{EMBARCACAO_NOME}}":e.nome,"{{MIGRATION_COMMANDS}}":"","{{SCRIPTS_URL}}":SU+"/functions/v1/gen7post","{{SYNC_TOKEN}}":h.sync_token,"{{SUPABASE_HOST}}":new URL(SU).hostname,"{{SYNC_URL}}":SU+"/functions/v1/mikrotik-sync","{{RECOVERY_URL}}":SU+"/functions/v1/navspot-recovery","{{API_BASE}}":SU+"/functions/v1","{{SYNC_INTERVAL}}":String(h.sync_interval_minutes||5),"{{ROS_VERSION}}":ros,"{{FETCH_DELAY}}":ros==="7"?"500":"2500","{{WRITE_DELAY}}":ros==="7"?"300":"1500","{{MAX_RETRIES}}":ros==="7"?"1":"3"}};
 
 const url=new URL(req.url);
