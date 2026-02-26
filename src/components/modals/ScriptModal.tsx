@@ -86,7 +86,7 @@ export function ScriptModal({
 
   const handleDownload = async () => {
     if (signedUrls?.bootstrap_url) {
-      window.open(signedUrls.bootstrap_url, '_blank');
+      await downloadFromSignedUrl(signedUrls.bootstrap_url, `navspot-bootstrap-v${scriptVersion}.rsc`);
       toast({ title: "Download iniciado", description: `Bootstrap v${scriptVersion} via URL assinada.` });
       return;
     }
