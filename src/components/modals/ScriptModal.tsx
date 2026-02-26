@@ -86,7 +86,7 @@ export function ScriptModal({
 
   const handleDownload = async () => {
     if (signedUrls?.bootstrap_url) {
-      await downloadFromSignedUrl(signedUrls.bootstrap_url, `navspot-bootstrap-v${scriptVersion}.rsc`);
+      window.open(signedUrls.bootstrap_url, '_blank');
       toast({ title: "Download iniciado", description: `Bootstrap v${scriptVersion} via URL assinada.` });
       return;
     }
@@ -95,10 +95,11 @@ export function ScriptModal({
     const a = document.createElement("a");
     a.href = url;
     a.download = `navspot-bootstrap-v${scriptVersion}.rsc`;
+    a.target = '_blank';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
     toast({ title: "Download iniciado", description: `Arquivo navspot-bootstrap-v${scriptVersion}.rsc baixado.` });
   };
 
