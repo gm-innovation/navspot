@@ -47,7 +47,7 @@ export async function downloadFromSignedUrl(url: string, filename: string) {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(blobUrl);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
   } catch (error) {
     window.open(url, '_blank');
   }
