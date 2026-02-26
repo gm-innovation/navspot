@@ -90,7 +90,7 @@ export function ScriptModal({
       toast({ title: "Download iniciado", description: `Bootstrap v${scriptVersion} via URL assinada.` });
       return;
     }
-    const blob = new Blob([bootstrapScript], { type: "text/plain" });
+    const blob = new Blob([bootstrapScript], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
