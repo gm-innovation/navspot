@@ -1,40 +1,36 @@
 
 
-# Fix: Strip `\r` from template lines in `extractSourceBody`
+# Fix: Download guardian.rsc not triggering save dialog
 
 ## Problem
 
-The database templates have CRLF (`\r\n`) line endings. `extractSourceBody` splits on `\n` but leaves trailing `\r` on each line. When served via `/tool fetch` → `/file get`, RouterOS interprets the `\r` as command separators, producing the `\;     \n` pattern in the stored source.
+The `downloadFromSignedUrl` function revokes the blob URL immediately after `a.click()`, before the browser has time to process the download. This is a race condition -- the toast fires ("Download iniciado") but the actual file save dialog never opens.
 
-## Fix in `gen7post/index.ts` (line 3)
+## Fix in `src/hooks/useModularScripts.ts`
 
-Add `line.replace(/\r$/, "")` to strip trailing `\r` from each line before processing. The `body.join("\n")` stays as real newline (not escaped) — the fetch-based approach relies on `/file get` delivering real newlines.
+Add a `setTimeout` before revoking the blob URL, giving the browser time to process the download:
 
 ```typescript
-function extractSourceBody(script:string):string{
-  const lines=script.split("\n");
-  let inSource=false;
-  const body:string[]=[];
-  for(const line of lines){
-    const cl=line.replace(/\r$/,"");
-    if(!inSource){
-      if(cl.endsWith('source="')){inSource=true;continue;}
-      continue;
-    }
-    if(cl==='"'){break;}
-    body.push(cl);
+export async function downloadFromSignedUrl(url: string, filename: string) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Delay revoke to let the browser process the download
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+  } catch (error) {
+    // Fallback: open in new tab
+    window.open(url, '_blank');
   }
-  return body.join("\n")
-    .replace(/\\\\/g,'\x00')
-    .replace(/\\"/g,'"')
-    .replace(/\\\$/g,'$')
-    .replace(/\x00/g,'\\');
 }
 ```
 
-## Version bump
-
-`7.9.13` → `7.9.14`
-
-## No other changes
+Single change: `URL.revokeObjectURL(blobUrl)` -> `setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)`
 
