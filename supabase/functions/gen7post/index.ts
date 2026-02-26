@@ -1,5 +1,5 @@
 const H={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type"};
-const V="7.9.17";
+const V="7.9.18";
 
 Deno.serve(async(req)=>{
 if(req.method==="OPTIONS")return new Response(null,{headers:H});
