@@ -40,15 +40,21 @@ export async function downloadFromSignedUrl(url: string, filename: string) {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const blob = await response.blob();
-    const blobUrl = URL.createObjectURL(blob);
+    // Force binary content type to prevent browser rendering as text
+    const downloadBlob = new Blob([blob], { type: 'application/octet-stream' });
+    const blobUrl = URL.createObjectURL(downloadBlob);
+    
+    // Try anchor click first
     const a = document.createElement('a');
     a.href = blobUrl;
     a.download = filename;
+    a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
   } catch (error) {
+    // Fallback: open signed URL directly
     window.open(url, '_blank');
   }
 }
