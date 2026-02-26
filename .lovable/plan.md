@@ -1,27 +1,13 @@
 
 
-# Fix: Separar `} on-error={...}` em linhas próprias no template `sync-standalone`
+# Atualizar template `sync-standalone` no banco
 
 ## Problema
-Linha 183 do template `sync-standalone`:
-```
-} on-error={ :log error \"NAVSPOT-SYNC: Falha no fetch (Rede ou Backend)\" }
-```
-O bloco `:do {` abre na linha 34 e se estende por ~150 linhas. O RouterOS 7 não aceita `} on-error={...}` na mesma linha quando o `do={` foi aberto em bloco multiline.
-
-## Fix
-Substituir essa linha por 3 linhas separadas:
-```
-} on-error={
-    :log error \"NAVSPOT-SYNC: Falha no fetch (Rede ou Backend)\"
-}
-```
+O template `sync-standalone` contém o body antigo (grande, com todos os handlers). O body novo e limpo existe no template `sync` mas não é usado pelo `gen7post`.
 
 ## Implementação
-- SQL UPDATE na tabela `script_templates` usando a ferramenta de inserção/update
-- Replace da string `} on-error={ :log error \"NAVSPOT-SYNC: Falha no fetch (Rede ou Backend)\" }` pela versão em 3 linhas
-- Bump da `version` do template para refletir a correção
+1. Executar UPDATE na tabela `script_templates` onde `id = 'sync-standalone'`, substituindo o `content` inteiro pelo novo installer com body limpo (handlers: `block_quota`, `unblock_quota`, `force_reg`, `create_user`)
+2. Atualizar `version` do template
 
-## Guardian
-O template `guardian-standalone` também usa `} on-error={...}` em linha única, mas seus blocos `:do {` são curtos (1-3 linhas) — RouterOS aceita isso. Não precisa de fix.
+O SQL fornecido pelo usuário será executado via insert tool.
 
