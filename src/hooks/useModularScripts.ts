@@ -36,6 +36,19 @@ export function useDownloadModularScript() {
  * Download a script from a signed URL (v7.8.0+)
  */
 export async function downloadFromSignedUrl(url: string, filename: string) {
-  // Signed URLs point directly to files — open in new tab to trigger download
-  window.open(url, '_blank');
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+  } catch (error) {
+    window.open(url, '_blank');
+  }
 }
