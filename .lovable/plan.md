@@ -1,37 +1,56 @@
 
 
-# gen7post v7.9.12 — Fetch-based script creation
+# Fix: extractSourceBody must unescape source="..." escaping
 
-## Problema resolvido
+## Root cause
 
-RouterOS 7 `/import` NAO interpreta escape sequences (`\n`, `\r\n`) dentro de `source="..."`. Qualquer tentativa de embutir scripts multi-linha no source resulta em caracteres literais, quebrando o script.
+The `sync-standalone` template stores the script body inside `source="..."` with RouterOS escaping:
+- `\"` for literal `"`
+- `\$` for literal `$`  
+- `\\` for literal `\`
 
-## Solucao implementada
+`extractSourceBody` extracts the lines but returns them **still escaped**. When the installer does `/system script set source=$srcBody`, the content has `\"` and `\$` as literal characters instead of `"` and `$`.
 
-### 1. `extractSourceBody(script)` — nova funcao
-Extrai o conteudo entre `source="` e `"` de um template standalone. Retorna apenas o body do script sem wrappers.
+Evidence from logs: `source=":log info \\\"NAVSPOT-SYNC: START\\\"\;     \n` — the stored source has `\"` instead of `"`.
 
-### 2. `replaceSourceWithFetch(script, ...)` — nova funcao
-Transforma o output do template: substitui o bloco `source="...body..."` por `source=""` + logica de fetch via `/tool fetch` + `/file get` + `/system script set`.
+## Fix in gen7post/index.ts
 
-### 3. Novos serve types: `sync-source`, `guardian-source`
-Retornam APENAS o body do script (text/plain) para o router baixar via fetch.
+Update `extractSourceBody` to unescape after extraction:
 
-### 4. Templates no banco — inalterados
-Os templates continuam com o `source="...body..."` original. O gen7post faz a transformacao em runtime:
-- Para `.rsc` files: `replaceSourceWithFetch` troca o source inline pelo fetch-based approach
-- Para `*-source` API: `extractSourceBody` extrai o body puro
-
-### 5. `collapseSourceBlocks` — removida
-Nao e mais necessaria.
-
-## Fluxo de instalacao
-
-```text
-1. /import infra.rsc       → Configura rede (sem source= blocks)
-2. /import sync.rsc         → Cria script vazio, faz fetch do body via API, seta source
-3. /import guardian.rsc      → Idem
-4. /import bootstrap.rsc    → Configura schedulers
+```typescript
+function extractSourceBody(script: string): string {
+  const lines = script.split("\n");
+  let inSource = false;
+  const body: string[] = [];
+  for (const line of lines) {
+    if (!inSource) {
+      if (line.endsWith('source="')) { inSource = true; continue; }
+      continue;
+    }
+    if (line === '"') { break; }
+    body.push(line);
+  }
+  // Unescape from source="..." context to raw RouterOS script
+  return body.join("\n")
+    .replace(/\\\\/g, '\x00')   // 1. placeholder for literal backslash
+    .replace(/\\"/g, '"')       // 2. escaped quote → real quote
+    .replace(/\\\$/g, '$')      // 3. escaped dollar → real dollar
+    .replace(/\x00/g, '\\');    // 4. restore literal backslashes
+}
 ```
 
-## Versao: 7.9.12
+Ordering is critical:
+- `\\\"` in template → `\"` in raw script (escaped quote inside a RouterOS string)
+- `\"` in template → `"` in raw script
+- `\$` in template → `$` in raw script
+
+## Version bump
+
+`7.9.12` → `7.9.13`
+
+## No other changes needed
+
+- Templates in database: unchanged
+- `replaceSourceWithFetch`: unchanged (installer logic is correct)
+- Only `extractSourceBody` needs the unescape step
+
