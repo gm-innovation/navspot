@@ -1,27 +1,32 @@
 
 
-# Templates v7.9.23 — WifiWave2 datapath nomeado + CSV fix ✅
+# Fix WiFi Security — Remover WPA para habilitar captive portal
 
-## Status: CONCLUÍDO
+## Diagnóstico
 
-### Correções aplicadas
+A infraestrutura está correta (bridge, datapath, hotspot, DHCP), mas os rádios WiFi ainda usam autenticação WPA2/WPA3 com passphrase. Isso permite que os clientes se conectem diretamente ao WiFi sem passar pelo captive portal do hotspot.
 
-#### 1. Template `infra` v7.9.23
-- **Datapath nomeado**: Criado objeto `dp-navspot` em `/interface wifi datapath` com bridge correta
-- **Bridge port removido**: Remove bridge ports manuais de wifi1/wifi2 que causavam INACTIVE
-- **Atribuição direta**: `/interface wifi set $w datapath=dp-navspot` em vez de bridge port
-- **Cookie eliminado**: `http-cookie-lifetime=0s` mantido
+Para que o hotspot intercepte o tráfego e exiba a tela de login, o WiFi precisa ser **aberto** (sem autenticação).
 
-#### 2. Template `sync` v7.9.23
-- **CSV corrigido**: `registered_users_csv` agora envia apenas usernames separados por vírgula
-- **Antes**: `$u . "," . $p . ";"` → `user,profile;user,profile;`
-- **Depois**: `$u . ","` → `user1,user2,`
+## Mudança
 
-#### 3. Template `sync-standalone` v7.9.23
-- Mesma correção do CSV com escaping triplo
+### Template `infra` — Adicionar reset de segurança WiFi
 
-### Próximos passos
-- Regenerar scripts via gen7post para o hotspot
-- Importar `infra.rsc` no router (corrige Wi-Fi INACTIVE)
-- Importar `sync-standalone.rsc` (corrige telemetria CSV)
-- Validar: Wi-Fi sem flag I, login obrigatório, consumo visível
+Após atribuir o datapath nomeado, adicionar comandos para:
+1. Remover autenticação WPA2/WPA3 das interfaces wifi1 e wifi2
+2. Definir SSID com o nome da embarcação (placeholder `{{EMBARCACAO_NOME}}`)
+
+```routeros
+# Dentro do foreach das interfaces wifi, após datapath e enable:
+:do { /interface wifi set $w security.authentication-types="" } on-error={}
+:do { /interface wifi set $w security.passphrase="" } on-error={}
+:do { /interface wifi set $w configuration.ssid="{{EMBARCACAO_NOME}}" } on-error={}
+```
+
+### Template `sync-standalone` — Mesma correção com escaping triplo
+
+### Arquivos modificados
+- SQL UPDATE no template `infra`
+- SQL UPDATE no template `sync-standalone` (rebuild do installer)
+- `.lovable/plan.md` atualizado
+
