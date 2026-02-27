@@ -1,32 +1,28 @@
 
 
-# Atualizar template `infra` para isolamento seguro (v7.9.21)
+# Template `infra` v7.9.21 — Isolamento seguro ✅
 
-## Problema
-O template `infra` atual (v7.7.1) usa `bridge1` genérica, não move interfaces Wi-Fi, e não protege explicitamente ether1 (WAN) e ether2 (gerência). Resultado: Hotspot numa bridge vazia, sem captive portal no Wi-Fi, risco de lockout.
+## Status: CONCLUÍDO
 
-## Regras de segurança (confirmadas pelo usuário)
-- **ether1**: entrada de internet (WAN) — NUNCA tocar
-- **ether2**: acesso de gerência ao router — NUNCA tocar
-- Apenas Wi-Fi (wifi1/wifi2) e portas ether3+ são migradas para a bridge do hotspot
+Template `infra` atualizado com modelo de isolamento seguro validado em hardware.
 
-## Mudanças
+### Regras de segurança aplicadas
+- **ether1** (WAN): NUNCA tocada — não referenciada como bridge port
+- **ether2** (gerência): NUNCA tocada — não referenciada como bridge port
+- Apenas Wi-Fi (wifi1/wifi2) migrados para `bridge-navspot`
 
-### 1. UPDATE template `infra` no banco (`script_templates`)
-Substituir conteúdo inteiro pelo modelo validado:
-
-- **Bridge isolada** `bridge-navspot` em vez de `bridge1`
-- **Cleanup por comment** `navspot-*` (idempotente, só remove o que o Navspot criou)
-- **Migração Wi-Fi**: move `wifi1`/`wifi2` para `bridge-navspot` + configura `datapath.bridge` (WifiWave2)
-- **Proteção explícita**: ether1 e ether2 nunca são referenciadas como slave/bridge port
-- **NAT com src-address** restrito à rede do hotspot + `out-interface={{WAN_INTERFACE}}`
+### Estrutura aplicada
+- **Bridge isolada** `bridge-navspot` (não usa `bridge1` genérica)
+- **Cleanup idempotente** por comment `navspot-*`
+- **Migração Wi-Fi**: move wifi1/wifi2 + configura `datapath.bridge` (WifiWave2/hAP ax²)
+- **NAT restrito**: `src-address={{NETWORK_CIDR}} out-interface={{WAN_INTERFACE}}`
 - **Sem cookie** no hotspot profile (força tela de login)
-- **Walled garden** com domínios essenciais (Supabase, Google CNA, CDN)
-- Placeholders: `{{VERSION}}`, `{{GATEWAY}}`, `{{NETWORK_CIDR}}`, `{{POOL_START}}`, `{{POOL_END}}`, `{{WAN_INTERFACE}}`, `{{SUPABASE_HOST}}`, `{{SYNC_TOKEN}}`
-- Version bump para `7.9.21`
+- **Walled garden**: Supabase, Google CNA, CDN, navspot.com.br + DNS UDP/TCP
 
-### 2. Atualizar `.lovable/plan.md`
+### Consistência com bootstrap
+O `bootstrap` já protege ether1/ether2 corretamente. Nenhuma alteração necessária.
 
-### 3. Nota sobre consistência com bootstrap
-O `bootstrap` já protege ether1/ether2 corretamente (remove WAN de bridges, firewall rules para gerência na ether2, `{{MIGRATION_COMMANDS}}` exclui ether1/ether2). Nenhuma alteração necessária no bootstrap.
-
+### Próximos passos
+- Testar com `gen7post` mode=serve type=infra
+- Validar em hardware real (reset + cole no terminal)
+- Re-adicionar handlers removidos do sync (create_user, configure_hotspot_profile)
