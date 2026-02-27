@@ -1,37 +1,20 @@
 
 
-# Atualizar template infra com correções estruturais testadas
+# Template Infra v7.9.27 — Ultra-Stable Structural Fix
 
-Sua versão está excelente. Incorpora todas as lições aprendidas. Há **um ponto crítico** a resolver antes de aplicar:
+## Padrões aplicados
 
-## Ponto de atenção: `login-url` ausente
+1. **Isolamento de placeholders**: Todos os `{{VAR}}` são atribuídos a `:local` no topo do script. Comandos usam apenas `$var`.
+2. **FastTrack**: Comando direto sem `:do {} on-error={}` wrapper.
+3. **Cleanup**: `[find]` sem `dynamic=no` para compatibilidade cross-version.
+4. **Pool**: Concatenação nativa `($poolStart . "-" . $poolEnd)`.
+5. **NAT**: `out-interface=$wanInterface` via variável local.
+6. **WiFi SSID**: `configuration.ssid=$embarcacao` em linha única.
+7. **login-by**: `http-chap,http-pap` (segurança + compatibilidade).
+8. **login-url**: Inline no `add` via `$lurl` — **nunca** usar `set [find]` com propriedades hifenizadas.
+9. **Walled Garden**: `$supabaseHost` via variável local + lista unificada.
+10. **Bridge host cleanup**: `[find]` sem filtro `dynamic=no`.
 
-Seu template **não inclui `login-url`** no hotspot profile. Sem isso, o captive portal redireciona para a página HTML local padrão do MikroTik em vez do NavSpot. Precisamos manter a `login-url` — mas usando o padrão de variável local que você propôs:
+## Regra de ouro
 
-```routeros
-:local lurl "https://navspot.lovable.app/hotspot-login?h={{HOTSPOT_ID}}&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)"
-/ip hotspot profile add name=$hspName login-by=http-chap,http-pap http-cookie-lifetime=0s hotspot-address=$lanIp html-directory=hotspot dns-name="portal.navspot.com.br" login-url=$lurl
-```
-
-A `login-url` é passada via `$lurl` (variável local) inline no `add` — sem `set [find]`, sem problemas de parse.
-
-## Diferenças entre o DB atual e a sua versão
-
-| # | Mudança | Ação |
-|---|---------|------|
-| 1 | Adicionar `:local poolStart/poolEnd/wanInterface/embarcacao/supabaseHost` | Aplicar |
-| 2 | FastTrack — remover `:do {} on-error={}` | Aplicar |
-| 3 | Cleanup — remover `dynamic=no` | Aplicar |
-| 4 | Pool — concatenação `($poolStart . "-" . $poolEnd)` | Aplicar |
-| 5 | NAT — usar `$wanInterface` | Aplicar |
-| 6 | WiFi SSID — usar `$embarcacao` (1 linha em vez de 2) | Aplicar |
-| 7 | `login-by=http-chap,http-pap` | Aplicar |
-| 8 | Walled Garden — `$supabaseHost` + lista unificada | Aplicar |
-| 9 | Bridge host — `[find]` sem `dynamic=no` | Aplicar |
-| 10 | **Adicionar `login-url=$lurl`** no profile add | **Crítico** |
-
-## Implementação
-
-1. **SQL UPDATE `script_templates` (id='infra')** — substituir conteúdo completo pelo template do usuário + `login-url=$lurl`
-2. **`.lovable/plan.md`** — documentar versão final estável
-
+> **NUNCA** usar `set [find]` ou `set $var` com propriedades que contêm hífen (`login-url`, `http-cookie-lifetime`, etc.) no RouterOS 7. O parser interpreta o hífen como operador de subtração após resolver a expressão `[find]`.
