@@ -25,4 +25,3 @@ Split into two commands — `add` with core properties, then `set` the `login-ur
 
 1. **SQL UPDATE `script_templates` (id='infra')** — split profile add into add + set
 2. **`.lovable/plan.md`** — document fix
-
