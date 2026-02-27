@@ -1,34 +1,31 @@
 
 
-# Fix real: linha 90 = hotspot profile `login-url`
+# Template Infra v7.9.27 — Regras de Ouro RouterOS 7
 
-## Diagnóstico
+## Regras de ouro
 
-O RSC renderizado mostra que a linha 90 é:
-```
-/ip hotspot profile add name=$hspName login-by=http-chap,http-pap http-cookie-lifetime=0s hotspot-address=$lanIp dns-name="portal.navspot.com.br" login-url=$lurl
-```
+> **NUNCA** usar `login-url` no comando `add` do hotspot profile. O parser do RouterOS 7 interpreta `login` como keyword e `-url` como subtração na coluna ~147. Sempre separar: `add` sem `login-url`, depois `find` para obter o ID, depois `set $id login-url=$var`.
 
-Contando caracteres: coluna 147 = início de `login-url`. O parser interpreta `login` como keyword e `-url` como subtração.
+> **NUNCA** usar variáveis (`$var`) dentro de listas inline `{$var;"literal";...}` no RouterOS 7. Usar `:toarray` com string CSV.
 
-## Correção
+> **NUNCA** usar `set [find]` com propriedades hifenizadas (`login-url`, `http-cookie-lifetime`). Resolver o ID primeiro com `:local idx [find ...]`, depois `set $idx prop=val`.
 
-Separar o `add` do `login-url`. Usar `set $profIdx` (com ID resolvido, sem `[find]` inline) para evitar a ambiguidade do parser:
+## Padrão Hotspot Profile (add + find + set)
 
 ```routeros
-# 7. Hotspot Profile
 /ip hotspot profile add name=$hspName login-by=http-chap,http-pap http-cookie-lifetime=0s hotspot-address=$lanIp dns-name="portal.navspot.com.br"
 :local profIdx [/ip hotspot profile find name=$hspName]
 /ip hotspot profile set $profIdx login-url=$lurl
 ```
 
-Isso funciona porque:
-- O `add` não tem `login-url` (evita o parser travar)
-- O `set $profIdx` usa o ID já resolvido (não `[find]` inline), então o parser processa `login-url` como property name sem ambiguidade
+## Padrão Walled Garden (`:toarray`)
 
-## Implementação
-
-1. **SQL UPDATE `script_templates` (id='infra')** — substituir a linha do hotspot profile add por 3 linhas (add + find + set)
-2. **`.lovable/plan.md`** — documentar que `login-url` especificamente causa parse error no `add` e deve ser definida via `set $id`
-3. **Testar** — renderizar via gen7post e validar que a linha 90 não existe mais como comando longo
-
+```routeros
+:local hosts "cdn.jsdelivr.net,*.gstatic.com,*.googleapis.com,connectivitycheck.gstatic.com,*.navspot.com.br"
+:if ([:len $supabaseHost] > 0) do={
+  :set hosts ($supabaseHost . "," . $hosts)
+}
+:foreach d in=[:toarray $hosts] do={
+  :do { /ip hotspot walled-garden add action=allow dst-host=$d comment="navspot" } on-error={}
+}
+```
