@@ -1,32 +1,28 @@
 
 
-# Fix WiFi Security — Remover WPA para habilitar captive portal
+# Templates v7.9.23 — WifiWave2 completo ✅
 
-## Diagnóstico
+## Status: CONCLUÍDO
 
-A infraestrutura está correta (bridge, datapath, hotspot, DHCP), mas os rádios WiFi ainda usam autenticação WPA2/WPA3 com passphrase. Isso permite que os clientes se conectem diretamente ao WiFi sem passar pelo captive portal do hotspot.
+### Correções aplicadas
 
-Para que o hotspot intercepte o tráfego e exiba a tela de login, o WiFi precisa ser **aberto** (sem autenticação).
+#### 1. Template `infra` v7.9.23
+- **Datapath nomeado**: Objeto `dp-navspot` em `/interface wifi datapath` com bridge correta
+- **Bridge port removido**: Remove bridge ports manuais de wifi1/wifi2 que causavam INACTIVE
+- **Atribuição direta**: `/interface wifi set $w datapath=dp-navspot`
+- **WiFi aberto**: Remove `security.authentication-types` e `security.passphrase` para permitir captive portal
+- **SSID configurado**: Define `configuration.ssid={{EMBARCACAO_NOME}}`
+- **Cookie eliminado**: `http-cookie-lifetime=0s`
 
-## Mudança
+#### 2. Template `sync` v7.9.23
+- **CSV corrigido**: `registered_users_csv` envia apenas usernames separados por vírgula
 
-### Template `infra` — Adicionar reset de segurança WiFi
+#### 3. Template `sync-standalone` v7.9.23
+- Mesma correção do CSV com escaping triplo
 
-Após atribuir o datapath nomeado, adicionar comandos para:
-1. Remover autenticação WPA2/WPA3 das interfaces wifi1 e wifi2
-2. Definir SSID com o nome da embarcação (placeholder `{{EMBARCACAO_NOME}}`)
-
-```routeros
-# Dentro do foreach das interfaces wifi, após datapath e enable:
-:do { /interface wifi set $w security.authentication-types="" } on-error={}
-:do { /interface wifi set $w security.passphrase="" } on-error={}
-:do { /interface wifi set $w configuration.ssid="{{EMBARCACAO_NOME}}" } on-error={}
-```
-
-### Template `sync-standalone` — Mesma correção com escaping triplo
-
-### Arquivos modificados
-- SQL UPDATE no template `infra`
-- SQL UPDATE no template `sync-standalone` (rebuild do installer)
-- `.lovable/plan.md` atualizado
-
+### Validação no router
+- `dp-navspot` criado ✅
+- wifi1/wifi2 com `datapath=dp-navspot` ✅
+- Sem bridge ports manuais de wifi ✅
+- Hotspot + DHCP na bridge correta ✅
+- **Pendente**: Reimportar infra.rsc para aplicar remoção de WPA
