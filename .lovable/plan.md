@@ -133,4 +133,3 @@ add chain=input protocol=tcp dst-port=53 in-interface=$bridgeHS action=accept co
 1. **SQL UPDATE `script_templates` (id='infra')** — template completo acima
 2. **`gen7post/index.ts`** — bump versão para `7.9.27`, remover `{{DRY_RUN}}`
 3. **`.lovable/plan.md`** — documentar v7.9.27
-
