@@ -1,34 +1,34 @@
 
 
-# Template Infra v7.9.27 — Ultra-Stable Structural Fix
+# Fix real: linha 90 = hotspot profile `login-url`
 
-## Padrões aplicados
+## Diagnóstico
 
-1. **Isolamento de placeholders**: Todos os `{{VAR}}` são atribuídos a `:local` no topo do script. Comandos usam apenas `$var`.
-2. **FastTrack**: Comando direto sem `:do {} on-error={}` wrapper.
-3. **Cleanup**: `[find]` sem `dynamic=no` para compatibilidade cross-version.
-4. **Pool**: Concatenação nativa `($poolStart . "-" . $poolEnd)`.
-5. **NAT**: `out-interface=$wanInterface` via variável local.
-6. **WiFi SSID**: `configuration.ssid=$embarcacao` em linha única.
-7. **login-by**: `http-chap,http-pap` (segurança + compatibilidade).
-8. **login-url**: Inline no `add` via `$lurl` — **nunca** usar `set [find]` com propriedades hifenizadas.
-9. **Walled Garden**: `:toarray` pattern — **nunca** usar variáveis dentro de listas inline `{$var;...}`.
-10. **Bridge host cleanup**: `[find]` sem filtro `dynamic=no`.
+O RSC renderizado mostra que a linha 90 é:
+```
+/ip hotspot profile add name=$hspName login-by=http-chap,http-pap http-cookie-lifetime=0s hotspot-address=$lanIp dns-name="portal.navspot.com.br" login-url=$lurl
+```
 
-## Regras de ouro
+Contando caracteres: coluna 147 = início de `login-url`. O parser interpreta `login` como keyword e `-url` como subtração.
 
-> **NUNCA** usar `set [find]` ou `set $var` com propriedades que contêm hífen (`login-url`, `http-cookie-lifetime`, etc.) no RouterOS 7. O parser interpreta o hífen como operador de subtração após resolver a expressão `[find]`.
+## Correção
 
-> **NUNCA** usar variáveis (`$var`) dentro de listas inline `{$var;"literal";...}` no RouterOS 7. O parser falha ao expandir a variável. Usar `:toarray` com string CSV separada por vírgulas.
-
-## Padrão Walled Garden (`:toarray`)
+Separar o `add` do `login-url`. Usar `set $profIdx` (com ID resolvido, sem `[find]` inline) para evitar a ambiguidade do parser:
 
 ```routeros
-:local hosts "cdn.jsdelivr.net,*.gstatic.com,*.googleapis.com,connectivitycheck.gstatic.com,*.navspot.com.br"
-:if ([:len $supabaseHost] > 0) do={
-  :set hosts ($supabaseHost . "," . $hosts)
-}
-:foreach d in=[:toarray $hosts] do={
-  :do { /ip hotspot walled-garden add action=allow dst-host=$d comment="navspot" } on-error={}
-}
+# 7. Hotspot Profile
+/ip hotspot profile add name=$hspName login-by=http-chap,http-pap http-cookie-lifetime=0s hotspot-address=$lanIp dns-name="portal.navspot.com.br"
+:local profIdx [/ip hotspot profile find name=$hspName]
+/ip hotspot profile set $profIdx login-url=$lurl
 ```
+
+Isso funciona porque:
+- O `add` não tem `login-url` (evita o parser travar)
+- O `set $profIdx` usa o ID já resolvido (não `[find]` inline), então o parser processa `login-url` como property name sem ambiguidade
+
+## Implementação
+
+1. **SQL UPDATE `script_templates` (id='infra')** — substituir a linha do hotspot profile add por 3 linhas (add + find + set)
+2. **`.lovable/plan.md`** — documentar que `login-url` especificamente causa parse error no `add` e deve ser definida via `set $id`
+3. **Testar** — renderizar via gen7post e validar que a linha 90 não existe mais como comando longo
+
