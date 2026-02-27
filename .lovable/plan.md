@@ -22,4 +22,3 @@ Remove the `:do {} on-error={}` wrapper. The profile was created on line 85 imme
 
 1. **SQL UPDATE `script_templates` (id='infra')** — remove `:do` wrapper from profile set line
 2. **`.lovable/plan.md`** — document fix
-
