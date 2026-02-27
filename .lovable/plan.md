@@ -1,20 +1,28 @@
 
 
-# Fix: Sync handler corrompe `login-by` — captive portal bypass (v7.9.27)
+# Fix: `expected end of command` on line 85 — hotspot profile add too many properties
 
-## Correções aplicadas
+## Root cause
 
-### 1. Template `sync-standalone` — handler `configure_hotspot_profile`
-- **Antes**: `login-by=$loginBy` → escrevia a URL no campo `login-by`, corrompendo a autenticação
-- **Depois**: `login-url=$loginUrl login-by=http-pap` → seta corretamente `login-url` e reforça `login-by`
+The `login-url` added to the `/ip hotspot profile add` command on line 85 causes two problems:
+1. **Property count**: 7 properties on a single `add` command exceeds the hAP ax2 parser limit (~5 properties per line)
+2. **Column 160**: The long URL with `\$(mac)` escape sequences hits the parser at that position
 
-### 2. Template `infra` — hotspot profile add
-- **Antes**: sem `login-url` → captive portal só funcionava após primeiro sync
-- **Depois**: `login-url` com `{{HOTSPOT_ID}}` hardcoded → portal funciona imediatamente após import
+## Fix (SQL UPDATE on `script_templates` id='infra')
 
-### 3. `gen7post/index.ts` — variável `{{HOTSPOT_ID}}`
-- Adicionado `"{{HOTSPOT_ID}}": h.id` ao mapa de variáveis
+Split into two commands — `add` with core properties, then `set` the `login-url` separately:
 
-## Fix anterior: "can not remove dynamic" (v7.9.27)
-- FastTrack disable: wrapped em `:do {} on-error={}`
-- Bridge host remove: adicionado `dynamic=no` + error handler
+```routeros
+# BEFORE (line 85):
+/ip hotspot profile add name=$hspName login-by=http-pap http-cookie-lifetime=0s hotspot-address=$lanIp html-directory=hotspot dns-name="portal.navspot.com.br" login-url="https://navspot.lovable.app/hotspot-login?h={{HOTSPOT_ID}}&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)"
+
+# AFTER (two commands):
+/ip hotspot profile add name=$hspName login-by=http-pap http-cookie-lifetime=0s hotspot-address=$lanIp html-directory=hotspot dns-name="portal.navspot.com.br"
+:do { /ip hotspot profile set [find name=$hspName] login-url="https://navspot.lovable.app/hotspot-login?h={{HOTSPOT_ID}}&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)" } on-error={}
+```
+
+## Files modified
+
+1. **SQL UPDATE `script_templates` (id='infra')** — split profile add into add + set
+2. **`.lovable/plan.md`** — document fix
+
