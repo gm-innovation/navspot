@@ -1,20 +1,34 @@
 
 
-# Template Infra v7.9.27 — Ultra-Stable Structural Fix
+# Fix linha 90: Walled Garden `foreach` com `:toarray`
 
-## Padrões aplicados
+## Erro confirmado
 
-1. **Isolamento de placeholders**: Todos os `{{VAR}}` são atribuídos a `:local` no topo do script. Comandos usam apenas `$var`.
-2. **FastTrack**: Comando direto sem `:do {} on-error={}` wrapper.
-3. **Cleanup**: `[find]` sem `dynamic=no` para compatibilidade cross-version.
-4. **Pool**: Concatenação nativa `($poolStart . "-" . $poolEnd)`.
-5. **NAT**: `out-interface=$wanInterface` via variável local.
-6. **WiFi SSID**: `configuration.ssid=$embarcacao` em linha única.
-7. **login-by**: `http-chap,http-pap` (segurança + compatibilidade).
-8. **login-url**: Inline no `add` via `$lurl` — **nunca** usar `set [find]` com propriedades hifenizadas.
-9. **Walled Garden**: `$supabaseHost` via variável local + lista unificada.
-10. **Bridge host cleanup**: `[find]` sem filtro `dynamic=no`.
+Linha 96 do template (linha 90 do RSC renderizado):
+```
+:foreach d in={$supabaseHost;"cdn.jsdelivr.net";...} do={
+```
+O parser falha na coluna 147 ao expandir `$supabaseHost` dentro da lista inline `{...}`.
 
-## Regra de ouro
+## Correção
 
-> **NUNCA** usar `set [find]` ou `set $var` com propriedades que contêm hífen (`login-url`, `http-cookie-lifetime`, etc.) no RouterOS 7. O parser interpreta o hífen como operador de subtração após resolver a expressão `[find]`.
+Substituir linhas 95-100 do template pelo trecho revisado do usuário:
+
+```routeros
+# 9. Walled Garden (toarray para evitar erro de parse na lista)
+:local hosts "cdn.jsdelivr.net,*.gstatic.com,*.googleapis.com,connectivitycheck.gstatic.com,*.navspot.com.br"
+:if ([:len $supabaseHost] > 0) do={
+  :set hosts ($supabaseHost . "," . $hosts)
+}
+:foreach d in=[:toarray $hosts] do={
+  :do { /ip hotspot walled-garden add action=allow dst-host=$d comment="navspot" } on-error={}
+}
+:do { /ip hotspot walled-garden ip add dst-port=53 protocol=udp action=accept comment="navspot" } on-error={}
+:do { /ip hotspot walled-garden ip add dst-port=53 protocol=tcp action=accept comment="navspot" } on-error={}
+```
+
+## Implementação
+
+1. **SQL UPDATE `script_templates` (id='infra')** — substituir seção 9 (linhas 95-100) pela versão `:toarray`
+2. **`.lovable/plan.md`** — adicionar padrão `:toarray` e regra de não usar variáveis dentro de listas inline `{...}`
+
