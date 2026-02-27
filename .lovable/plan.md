@@ -1,5 +1,6 @@
 
 
+
 # Fix: remaining "can not remove dynamic" errors in infra template
 
 ## Root cause
@@ -35,4 +36,3 @@ Both cause the import to abort because they're executed raw without error handli
 
 1. **SQL UPDATE `script_templates` (id='infra')** — wrap FastTrack disable + bridge host remove in error handlers, add `dynamic=no` to host cleanup
 2. **`.lovable/plan.md`** — document fix
-
