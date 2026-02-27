@@ -1,27 +1,25 @@
 
 
-# Fix: `expected end of command` on line 85 — hotspot profile add too many properties
+# Fix: line 86 column 52 — `:do` nesting too deep for profile set
 
 ## Root cause
 
-The `login-url` added to the `/ip hotspot profile add` command on line 85 causes two problems:
-1. **Property count**: 7 properties on a single `add` command exceeds the hAP ax2 parser limit (~5 properties per line)
-2. **Column 160**: The long URL with `\$(mac)` escape sequences hits the parser at that position
+The `:do { /ip hotspot profile set [find name=$hspName] login-url="..." } on-error={}` on line 86 creates nesting level L2 (`:do`) + L3 (`[find]`), which exceeds the hAP ax2 parser limit when combined with the long URL string containing `\$()` sequences. Column 52 is exactly where `login-url` starts after the `[find]` bracket closes.
 
-## Fix (SQL UPDATE on `script_templates` id='infra')
+## Fix
 
-Split into two commands — `add` with core properties, then `set` the `login-url` separately:
+Remove the `:do {} on-error={}` wrapper. The profile was created on line 85 immediately before, so `[find]` will always match — no error handling needed.
 
 ```routeros
-# BEFORE (line 85):
-/ip hotspot profile add name=$hspName login-by=http-pap http-cookie-lifetime=0s hotspot-address=$lanIp html-directory=hotspot dns-name="portal.navspot.com.br" login-url="https://navspot.lovable.app/hotspot-login?h={{HOTSPOT_ID}}&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)"
-
-# AFTER (two commands):
-/ip hotspot profile add name=$hspName login-by=http-pap http-cookie-lifetime=0s hotspot-address=$lanIp html-directory=hotspot dns-name="portal.navspot.com.br"
+# BEFORE (line 86):
 :do { /ip hotspot profile set [find name=$hspName] login-url="https://navspot.lovable.app/hotspot-login?h={{HOTSPOT_ID}}&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)" } on-error={}
+
+# AFTER:
+/ip hotspot profile set [find name=$hspName] login-url="https://navspot.lovable.app/hotspot-login?h={{HOTSPOT_ID}}&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)"
 ```
 
 ## Files modified
 
-1. **SQL UPDATE `script_templates` (id='infra')** — split profile add into add + set
+1. **SQL UPDATE `script_templates` (id='infra')** — remove `:do` wrapper from profile set line
 2. **`.lovable/plan.md`** — document fix
+
