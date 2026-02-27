@@ -1,28 +1,36 @@
 
 
-# Template `infra` v7.9.21 — Isolamento seguro ✅
+# Corrigir 3 templates: Wi-Fi Inactive, Login direto, Consumo zerado
 
-## Status: CONCLUÍDO
+## Mudanças
 
-Template `infra` atualizado com modelo de isolamento seguro validado em hardware.
+### 1. Template `infra` — Fix WifiWave2 datapath
+- Adicionar `/interface wifi datapath set [find name=$w] bridge=$bridgeHS` antes do fallback `set datapath.bridge`
+- Adicionar `/interface wifi enable [find name=$w]` para garantir rádio ativo
+- Adicionar `http-cookie-lifetime=0s` no hotspot profile
 
-### Regras de segurança aplicadas
-- **ether1** (WAN): NUNCA tocada — não referenciada como bridge port
-- **ether2** (gerência): NUNCA tocada — não referenciada como bridge port
-- Apenas Wi-Fi (wifi1/wifi2) migrados para `bridge-navspot`
+### 2. Template `sync` — Re-adicionar telemetria + 7 handlers
 
-### Estrutura aplicada
-- **Bridge isolada** `bridge-navspot` (não usa `bridge1` genérica)
-- **Cleanup idempotente** por comment `navspot-*`
-- **Migração Wi-Fi**: move wifi1/wifi2 + configura `datapath.bridge` (WifiWave2/hAP ax²)
-- **NAT restrito**: `src-address={{NETWORK_CIDR}} out-interface={{WAN_INTERFACE}}`
-- **Sem cookie** no hotspot profile (força tela de login)
-- **Walled garden**: Supabase, Google CNA, CDN, navspot.com.br + DNS UDP/TCP
+**Telemetria pré-fetch** (coleta antes do POST):
+- Loop em `/ip hotspot active` → `active_users_csv` (user,mac,bytes-in,bytes-out,uptime)
+- Loop em `/ip hotspot user` → `registered_users_csv`
+- Loop em `/ip hotspot user profile` → `registered_profiles_csv`
+- Leitura de `login-by` e `login-url` do profile `hsprof-navspot`
+- Envio no JSON body do fetch
 
-### Consistência com bootstrap
-O `bootstrap` já protege ether1/ether2 corretamente. Nenhuma alteração necessária.
+**Handlers flat pós-fetch** (adicionados aos 4 existentes):
+- `create_user` — find+add/set idempotente com user, password, profile
+- `configure_hotspot_profile` — set login-by, dns-name no profile
+- `create_blacklist_domain` — walled garden deny
 
-### Próximos passos
-- Testar com `gen7post` mode=serve type=infra
-- Validar em hardware real (reset + cole no terminal)
-- Re-adicionar handlers removidos do sync (create_user, configure_hotspot_profile)
+### 3. Template `sync-standalone` — Reconstruir com novo sync
+- Escaping triplo (`\$` → `\\$`, `"` → `\"`, `\"` → `\\\"`)
+- Cleanup + scheduler + delay 2s
+
+### 4. `.lovable/plan.md` — atualizar status
+
+### Arquivos modificados
+- SQL UPDATE nos 3 templates no banco `script_templates`
+- `.lovable/plan.md`
+- Sem alteração em edge functions
+
