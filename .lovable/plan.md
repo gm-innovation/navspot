@@ -2,108 +2,41 @@
 
 # Migração automática de portas AP + dry-run — v7.9.26
 
-## Mudanças
+## Problema resolvido
 
-### 1. SQL UPDATE `script_templates` (id='infra')
+APs externos conectados em portas físicas (ether3+) permaneciam na bridge padrão do RouterOS. Clientes WiFi via AP recebiam IP do DHCP defconf (192.168.88.x) em vez do dhcp-navspot (10.10.10.x), impedindo o captive portal.
 
-Inserir novo bloco **3b** entre a seção 3 (datapath WiFi) e seção 4 (IP/DHCP). O bloco:
+## Mudanças aplicadas
 
-- Itera todas as interfaces ethernet, pulando `ether1`, `ether2`, SFP, master-port e disabled
-- Verifica se a porta já está em `bridge-navspot` (idempotente)
-- Suporta `{{DRY_RUN}}` (`true` = só loga, `false` = aplica)
-- Loga cada decisão para auditoria
+### Template `infra` (v7.9.26)
 
-Atualizar **cleanup** (seção 1): trocar `comment="navspot"` no firewall filter para 3 comments específicos (`navspot-dhcp`, `navspot-dns-udp`, `navspot-dns-tcp`).
+1. **Seção 1 (cleanup)**: firewall filter com comments específicos (`navspot-dhcp`, `navspot-dns-udp`, `navspot-dns-tcp`)
+2. **Seção 3b (nova)**: migração automática de portas ether3+ para `bridge-navspot`
+   - Pula ether1 (WAN), ether2 (gerência), SFP, master-port, disabled
+   - Verifica se já está na bridge correta (idempotente)
+   - Suporta `{{DRY_RUN}}` (`true` = só loga, `false` = aplica)
+3. **Seção 6 (firewall)**: comments específicos por regra
+4. **Limpeza de hosts**: condicional (só se `dryRun=false`)
 
-Atualizar **seção 6** (firewall): usar comments específicos por regra.
+### `gen7post/index.ts`
 
-Adicionar **limpeza de hosts** condicional (só se `dryRun=false`) antes do log final.
+- Versão `7.9.26`
+- Variável `{{DRY_RUN}}` adicionada (default `false`)
 
-### 2. `gen7post/index.ts`
+## Rollback
 
-- Bump versão para `7.9.26`
-- Adicionar `{{DRY_RUN}}` ao mapa de variáveis (default `false`)
-
-### 3. `.lovable/plan.md`
-
-Documentar: migração ether3+, dry-run, rollback, checklist pós-deploy.
-
-## Template infra completo (seções modificadas)
-
-**Seção 1 cleanup** — substituir a linha de firewall filter:
 ```routeros
-:do { /ip firewall filter remove [find comment="navspot-dhcp"] } on-error={}
-:do { /ip firewall filter remove [find comment="navspot-dns-udp"] } on-error={}
-:do { /ip firewall filter remove [find comment="navspot-dns-tcp"] } on-error={}
-```
-
-**Nova seção 3b** (após WiFi datapath, antes de IP/DHCP):
-```routeros
-# 3b. Migrar portas fisicas (ether3+) para bridge-navspot - seguro e idempotente
-:local dryRun {{DRY_RUN}}
-:local ethList [/interface ethernet find]
-:foreach idx in=$ethList do={
-  :local ifname [/interface ethernet get $idx name]
-  :if (($ifname != "ether1") && ($ifname != "ether2")) do={
-    :if ([:find $ifname "sfp"] >= 0) do={
-      :log info ("NAVSPOT: Pulando " . $ifname . " (SFP)")
-    } else={
-      :local mport [/interface ethernet get $idx master-port]
-      :if ([:len $mport] > 0) do={
-        :log info ("NAVSPOT: Pulando " . $ifname . " (master-port: " . $mport . ")")
-      } else={
-        :if ([/interface ethernet get $idx disabled] = true) do={
-          :log info ("NAVSPOT: Pulando " . $ifname . " (disabled)")
-        } else={
-          :local bpId [/interface bridge port find interface=$ifname]
-          :if ([:len $bpId] = 0) do={
-            :if ($dryRun = true) do={
-              :log info ("NAVSPOT-DRYRUN: " . $ifname . " sem bridge - seria adicionada")
-            } else={
-              :do { /interface bridge port add interface=$ifname bridge=$bridgeHS comment="navspot-managed" } on-error={}
-              :log info ("NAVSPOT: " . $ifname . " adicionada a " . $bridgeHS)
-            }
-          } else={
-            :local curBridge [/interface bridge port get $bpId bridge]
-            :if ($curBridge = $bridgeHS) do={
-              :log info ("NAVSPOT: " . $ifname . " ja em " . $bridgeHS)
-            } else={
-              :if ($dryRun = true) do={
-                :log info ("NAVSPOT-DRYRUN: " . $ifname . " em " . $curBridge . " - seria movida")
-              } else={
-                :do { /interface bridge port remove $bpId } on-error={}
-                :do { /interface bridge port add interface=$ifname bridge=$bridgeHS comment="navspot-managed" } on-error={}
-                :log info ("NAVSPOT: " . $ifname . " movida de " . $curBridge . " para " . $bridgeHS)
-              }
-            }
-          }
-        }
-      }
-    }
-  }
+:foreach p in=[/interface bridge port find comment="navspot-managed"] do={
+  :local ifname [/interface bridge port get $p interface]
+  :do { /interface bridge port remove $p } on-error={}
+  :do { /interface bridge port add interface=$ifname bridge=bridge comment="restored" } on-error={}
 }
 ```
 
-**Seção 6** — firewall com comments específicos:
-```routeros
-/ip firewall filter
-add chain=input protocol=udp dst-port=67 in-interface=bridge-navspot action=accept comment="navspot-dhcp" place-before=0
-add chain=input protocol=udp dst-port=53 in-interface=bridge-navspot action=accept comment="navspot-dns-udp" place-before=0
-add chain=input protocol=tcp dst-port=53 in-interface=bridge-navspot action=accept comment="navspot-dns-tcp" place-before=0
-```
+## Checklist pós-deploy
 
-**Antes do log final** — limpeza condicional de hosts:
-```routeros
-:if ($dryRun = false) do={
-  :do { /interface bridge host remove [find] } on-error={}
-  :log info "NAVSPOT: tabela de hosts limpa"
-}
-```
-
-## gen7post vars
-
-Adicionar ao mapa de variáveis:
-```typescript
-"{{DRY_RUN}}": "false"
-```
-
+1. `/interface bridge port print` — verificar portas com comment `navspot-managed`
+2. `/ip dhcp-server lease print where address~"10.10.10."` — verificar leases
+3. `/interface bridge host print where bridge=bridge-navspot` — verificar hosts
+4. `/ip hotspot active print` — verificar sessões
+5. `/log print where message~"NAVSPOT"` — verificar logs de migração
