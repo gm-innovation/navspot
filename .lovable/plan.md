@@ -1,22 +1,39 @@
 
 
-# Templates v7.9.24 — WiFi cycle + defconf disabled
+# Fix Firewall DHCP/DNS — v7.9.25
 
-## Correções v7.9.24
+## Diagnóstico confirmado
 
-### 1. WiFi disable/enable cycle no foreach
-- `disable $w` → `:delay 2s` → `set datapath/security/ssid` → `enable $w`
-- Força re-associação dos clientes na bridge-navspot no WifiWave2
+Template infra atual **não tem regras de firewall** para permitir DHCP/DNS na `bridge-navspot`. O firewall `defconf` do RouterOS descarta esses pacotes na chain `input`, impedindo clientes de receberem IP.
 
-### 2. Desabilitar DHCP defconf
-- `/ip dhcp-server disable [find name="defconf"]`
-- Impede que clientes recebam IP 192.168.88.x da bridge padrão
+## Mudanças
 
-### Arquivos modificados
-- `script_templates.infra` — SQL UPDATE com cycle + defconf disable
-- `gen7post/index.ts` — versão bumped para 7.9.24
+### 1. SQL UPDATE no template `infra`
 
-### Próximos passos
-- Regenerar scripts e reimportar infra.rsc no router
-- Verificar que wifi1/wifi2 ficam em bridge-navspot após cycle
-- Confirmar que moto-g14 recebe IP 10.10.10.x
+Adicionar **dois blocos** ao template existente:
+
+**No bloco de cleanup (seção 1)**, adicionar:
+```routeros
+:do { /ip firewall filter remove [find comment="navspot"] } on-error={}
+```
+
+**Após o bloco de NAT (seção 5)**, antes do Hotspot Profile, adicionar:
+```routeros
+# Firewall: permitir DHCP e DNS na bridge-navspot
+/ip firewall filter
+add chain=input protocol=udp dst-port=67 in-interface=bridge-navspot action=accept comment="navspot" place-before=0
+add chain=input protocol=udp dst-port=53 in-interface=bridge-navspot action=accept comment="navspot" place-before=0
+add chain=input protocol=tcp dst-port=53 in-interface=bridge-navspot action=accept comment="navspot" place-before=0
+```
+
+### 2. `gen7post/index.ts` — bump versão para `7.9.25`
+
+### 3. `.lovable/plan.md` — documentar correção
+
+## Nota sobre `place-before=0`
+
+A memória do projeto recomenda evitar `place-before=0` para idempotência em tabelas vazias. Neste caso é seguro porque:
+- O cleanup remove regras `navspot` anteriores antes de inserir
+- O firewall `defconf` sempre tem regras, então posição 0 existe
+- É necessário inserir **antes** das regras de drop do defconf
+
