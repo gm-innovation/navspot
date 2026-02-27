@@ -1,28 +1,44 @@
 
 
-# Templates v7.9.23 — WifiWave2 completo ✅
+# Diagnóstico: WiFi datapath não efetivou — phone ainda no defconf
 
-## Status: CONCLUÍDO
+## Evidências
 
-### Correções aplicadas
+Os logs confirmam:
+- **infra v7.9.23 aplicado**: datapath=dp-navspot, WPA removido, SSID configurado
+- **Sync v7.9.23 funcionando**: CSV corrigido (`default-trial,alexandre.silva,`)
+- **Porém**: `active_users_csv` continua vazio
+- **Log linha 769-770**: `defconf deassigned/assigned 192.168.88.252 for moto-g14` — o telefone CONTINUA recebendo IP do DHCP `defconf` (bridge padrão), não do `dhcp-navspot` (bridge-navspot)
 
-#### 1. Template `infra` v7.9.23
-- **Datapath nomeado**: Objeto `dp-navspot` em `/interface wifi datapath` com bridge correta
-- **Bridge port removido**: Remove bridge ports manuais de wifi1/wifi2 que causavam INACTIVE
-- **Atribuição direta**: `/interface wifi set $w datapath=dp-navspot`
-- **WiFi aberto**: Remove `security.authentication-types` e `security.passphrase` para permitir captive portal
-- **SSID configurado**: Define `configuration.ssid={{EMBARCACAO_NOME}}`
-- **Cookie eliminado**: `http-cookie-lifetime=0s`
+## Causa raiz
 
-#### 2. Template `sync` v7.9.23
-- **CSV corrigido**: `registered_users_csv` envia apenas usernames separados por vírgula
+Duas falhas combinadas:
 
-#### 3. Template `sync-standalone` v7.9.23
-- Mesma correção do CSV com escaping triplo
+1. **Datapath sem restart do rádio**: No WifiWave2, alterar o `datapath` de uma interface wifi que já está ativa **não toma efeito imediato**. É necessário `disable` → `delay` → `enable` para forçar a re-associação dos clientes na nova bridge.
 
-### Validação no router
-- `dp-navspot` criado ✅
-- wifi1/wifi2 com `datapath=dp-navspot` ✅
-- Sem bridge ports manuais de wifi ✅
-- Hotspot + DHCP na bridge correta ✅
-- **Pendente**: Reimportar infra.rsc para aplicar remoção de WPA
+2. **DHCP defconf ativo**: O DHCP server `defconf` na `bridge` padrão continua rodando e atribuindo IPs 192.168.88.x. Mesmo quando o wifi eventualmente migra para bridge-navspot, o defconf cria confusão — deve ser desabilitado.
+
+## Correção no template `infra`
+
+### Mudança 1: Reiniciar wifi após mudar datapath
+```routeros
+# Dentro do foreach wifi:
+:do { /interface wifi disable $w } on-error={}
+:delay 2s
+:do { /interface wifi set $w datapath=dp-navspot } on-error={}
+:do { /interface wifi set $w security.authentication-types="" } on-error={}
+:do { /interface wifi set $w security.passphrase="" } on-error={}
+:do { /interface wifi set $w configuration.ssid="{{EMBARCACAO_NOME}}" } on-error={}
+:do { /interface wifi enable $w } on-error={}
+```
+
+### Mudança 2: Desabilitar DHCP defconf
+```routeros
+# Após configurar rede navspot, desabilitar defconf DHCP
+:do { /ip dhcp-server disable [find name="defconf"] } on-error={}
+```
+
+### Arquivos modificados
+- SQL UPDATE no template `infra` — disable/enable cycle + desabilitar defconf DHCP
+- `.lovable/plan.md` atualizado
+
