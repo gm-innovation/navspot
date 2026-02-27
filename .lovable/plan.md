@@ -1,24 +1,38 @@
 
 
-# Fix applied: "can not remove dynamic" error in infra template
+# Fix: remaining "can not remove dynamic" errors in infra template
 
-## Problem
+## Root cause
 
-The cleanup section used `comment~"navspot"` wildcard which matched **dynamic** firewall rules auto-created by the Hotspot server. RouterOS does not allow removing dynamic rules manually.
+The previous fix added `dynamic=no` to 4 cleanup lines, but TWO other commands are not wrapped in `:do {} on-error={}`:
 
-## Fix (applied)
+1. `/interface bridge host remove [find]` — at the bottom, bridge MAC table entries are dynamic and cannot be removed manually
+2. `/ip firewall filter disable [find action=fasttrack-connection]` — at the top, fails if no fasttrack rule exists
 
-Added `dynamic=no` filter to 4 cleanup `find` commands:
+Both cause the import to abort because they're executed raw without error handling.
 
+## Fix (SQL UPDATE on `script_templates` id='infra')
+
+### Line at top (FastTrack):
 ```routeros
-:do { /ip firewall nat remove [find comment~"navspot" dynamic=no] } on-error={}
-:do { /ip firewall filter remove [find comment~"navspot" dynamic=no] } on-error={}
-:do { /ip hotspot walled-garden remove [find comment="navspot" dynamic=no] } on-error={}
-:do { /ip hotspot walled-garden ip remove [find comment="navspot" dynamic=no] } on-error={}
+# Before:
+/ip firewall filter disable [find action=fasttrack-connection]
+
+# After:
+:do { /ip firewall filter disable [find action=fasttrack-connection] } on-error={}
+```
+
+### Line at bottom (bridge hosts):
+```routeros
+# Before:
+/interface bridge host remove [find]
+
+# After:
+:do { /interface bridge host remove [find dynamic=no] } on-error={}
 ```
 
 ## Files modified
 
-1. **SQL UPDATE `script_templates` (id='infra')** — added `dynamic=no` to 4 cleanup lines
-2. **`gen7post/index.ts`** — no change needed (version stays 7.9.27)
-3. **`.lovable/plan.md`** — documented fix
+1. **SQL UPDATE `script_templates` (id='infra')** — wrap FastTrack disable + bridge host remove in error handlers, add `dynamic=no` to host cleanup
+2. **`.lovable/plan.md`** — document fix
+
