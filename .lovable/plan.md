@@ -1,26 +1,68 @@
 
 
-# Templates v7.9.22 — Wi-Fi Inactive + Login direto + Consumo zerado ✅
+# Fix WifiWave2 datapath nomeado + CSV format — v7.9.23
 
-## Status: CONCLUÍDO
+## Bugs confirmados no banco
 
-### Correções aplicadas
+### Bug 1: Wi-Fi INACTIVE (template `infra`)
+**Atual** (linhas do template):
+```routeros
+:do { /interface bridge port add interface=$w bridge=$bridgeHS comment="navspot-managed" } on-error={}
+:do { /interface wifi datapath set [find name=$w] bridge=$bridgeHS } on-error={}
+:do { /interface wifi set [find name=$w] datapath.bridge=$bridgeHS } on-error={}
+```
+No WifiWave2, adicionar wifi como bridge port manual cria flag INACTIVE. Precisa de **datapath object nomeado**.
 
-#### 1. Template `infra` v7.9.22
-- **WifiWave2 datapath**: Adicionado `/interface wifi datapath set [find name=$w] bridge=$bridgeHS` antes do fallback `set datapath.bridge`
-- **Rádio enable**: Adicionado `/interface wifi enable [find name=$w]` para garantir rádio ativo
-- **Cookie eliminado**: `http-cookie-lifetime=0s` no hotspot profile para forçar tela de login
+**Correção**: Substituir seção 3 do infra por:
+```routeros
+# 3. DATAPATH NOMEADO para WifiWave2 (hAP ax2)
+/interface wifi datapath
+:if ([:len [find name="dp-navspot"]] = 0) do={
+    add name="dp-navspot" bridge=$bridgeHS
+} else={
+    set [find name="dp-navspot"] bridge=$bridgeHS
+}
 
-#### 2. Template `sync` v7.9.22
-- **Telemetria completa**: `active_users_csv` (user,mac,bytes-in,bytes-out,uptime), `registered_users_csv`, `registered_profiles_csv`, `hotspot_login_by`, `hotspot_login_url`
-- **7 handlers flat**: create_whitelist_domain, create_blacklist_domain, create_profile, create_user (idempotente), configure_hotspot_profile, block_quota, unblock_quota
+# Remover bridge ports manuais de wifi (causa INACTIVE)
+:do { /interface bridge port remove [find interface=wifi1] } on-error={}
+:do { /interface bridge port remove [find interface=wifi2] } on-error={}
 
-#### 3. Template `sync-standalone` v7.9.22
-- Reconstruído com escaping triplo para novo sync
-- Cleanup + scheduler + delay 2s + run imediato
+# Atribuir datapath nomeado e habilitar
+:foreach w in={"wifi1";"wifi2"} do={
+    :if ([:len [/interface wifi find name=$w]] > 0) do={
+        :do { /interface wifi set $w datapath=dp-navspot } on-error={}
+        :do { /interface wifi enable $w } on-error={}
+    }
+}
+```
 
-### Próximos passos
-- Regenerar scripts via gen7post para o hotspot
-- Importar infra.rsc no router (reset + cole)
-- Importar sync.rsc ou sync-standalone via Winbox
-- Validar: login deve exigir autenticação, consumo deve aparecer após sync
+### Bug 2: registered_users_csv formato errado (template `sync`)
+**Atual** (linha 29 do sync):
+```routeros
+:set regUsersCSV ($regUsersCSV . $u . "," . $p . ";")
+```
+Produz: `default-trial,;alexandre.silva,tripulacao-googlemarine;`
+
+Backend faz `.split(',')` (linha 378 do mikrotik-sync) esperando: `default-trial,alexandre.silva,`
+
+**Correção**: Enviar apenas usernames separados por vírgula:
+```routeros
+:set regUsersCSV ($regUsersCSV . $u . ",")
+```
+
+### Bug 2b: mesmo bug no `sync-standalone` (linha 40)
+```routeros
+# Atual (com escaping):
+:set regUsersCSV (\$regUsersCSV . \$u . \",\" . \$p . \";\")
+# Corrigido:
+:set regUsersCSV (\$regUsersCSV . \$u . \",\")
+```
+
+## Mudanças
+
+1. **SQL UPDATE `infra`** — substituir seção 3 (bridge port + datapath set/fallback) por datapath nomeado `dp-navspot`
+2. **SQL UPDATE `sync`** — linha 29: remover `. "," . $p . ";"` → `. ","` 
+3. **SQL UPDATE `sync-standalone`** — linha 40: mesma correção com escaping
+4. **`gen7post`** — bump version para `7.9.23`
+5. **`.lovable/plan.md`** — atualizar
+
