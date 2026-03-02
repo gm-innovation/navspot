@@ -1,31 +1,30 @@
 
 
-# Template Infra v7.9.27 — Regras de Ouro RouterOS 7
+# Fix linha 92: `login-url` em `set` também falha com full path
 
-## Regras de ouro
+## Diagnóstico
 
-> **NUNCA** usar `login-url` no comando `add` do hotspot profile. O parser do RouterOS 7 interpreta `login` como keyword e `-url` como subtração na coluna ~147. Sempre separar: `add` sem `login-url`, depois `find` para obter o ID, depois `set $id login-url=$var`.
-
-> **NUNCA** usar variáveis (`$var`) dentro de listas inline `{$var;"literal";...}` no RouterOS 7. Usar `:toarray` com string CSV.
-
-> **NUNCA** usar `set [find]` com propriedades hifenizadas (`login-url`, `http-cookie-lifetime`). Resolver o ID primeiro com `:local idx [find ...]`, depois `set $idx prop=val`.
-
-## Padrão Hotspot Profile (add + find + set)
-
-```routeros
-/ip hotspot profile add name=$hspName login-by=http-chap,http-pap http-cookie-lifetime=0s hotspot-address=$lanIp dns-name="portal.navspot.com.br"
-:local profIdx [/ip hotspot profile find name=$hspName]
+RSC renderizado, linha 92 (contando do início do conteúdo):
+```
 /ip hotspot profile set $profIdx login-url=$lurl
 ```
+Coluna 34 = `login-url`. O parser do RouterOS interpreta `login` como keyword mesmo no `set` com caminho completo.
 
-## Padrão Walled Garden (`:toarray`)
+## Correção
+
+Usar **menu context** — entrar no submenu `/ip hotspot profile` antes do `set`. Dentro do contexto do submenu, `login-url` é reconhecido como propriedade sem ambiguidade:
 
 ```routeros
-:local hosts "cdn.jsdelivr.net,*.gstatic.com,*.googleapis.com,connectivitycheck.gstatic.com,*.navspot.com.br"
-:if ([:len $supabaseHost] > 0) do={
-  :set hosts ($supabaseHost . "," . $hosts)
-}
-:foreach d in=[:toarray $hosts] do={
-  :do { /ip hotspot walled-garden add action=allow dst-host=$d comment="navspot" } on-error={}
-}
+# 7. Hotspot Profile (add + set em menu context para evitar parse error com login-url)
+/ip hotspot profile add name=$hspName login-by=http-chap,http-pap http-cookie-lifetime=0s hotspot-address=$lanIp dns-name="portal.navspot.com.br"
+/ip hotspot profile
+:local profIdx [find name=$hspName]
+set $profIdx login-url=$lurl
 ```
+
+## Implementação
+
+1. **SQL UPDATE `script_templates` (id='infra')** — substituir as 3 linhas do hotspot profile (add + find + set) por 4 linhas usando menu context
+2. **`.lovable/plan.md`** — atualizar regra de ouro: usar menu context (`/ip hotspot profile` + `set` separado) em vez de full-path `set`
+3. **Renderizar via gen7post** — validar que a linha problemática não existe mais
+
