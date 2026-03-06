@@ -213,8 +213,7 @@ function generateRecoveryScript(scriptsUrl: string, syncToken: string): string {
 :log info "NAVSPOT-RECOVERY v${VERSION}: REPARACAO CONCLUIDA!"
 :log info "Arquitetura: Fetch + Import (sem source={} embutido)"
 :log info "NOTE: initial_config_sent resetado no servidor"
-:log info "NOTE: login-by=cookie,http-pap,http-chap aplicado localmente"
-:log info "NOTE: Sync ira injetar login-url + walled-garden"
+:log info "NOTE: File override architecture (no login-url)"
 :log info "=========================================="
 `
 }
