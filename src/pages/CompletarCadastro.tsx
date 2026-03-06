@@ -173,10 +173,22 @@ export default function CompletarCadastro() {
             }
           );
 
+          const contentType = loginResponse.headers.get("content-type") || "";
+          
+          if (contentType.includes("text/html")) {
+            // Active user: edge function returns HTML auto-post form
+            const html = await loginResponse.text();
+            setTimeout(() => {
+              document.open();
+              document.write(html);
+              document.close();
+            }, 1500);
+            return;
+          }
+          
           const loginData = await loginResponse.json();
           
           if (loginData.success && loginData.redirect_url) {
-            // Redirect to MikroTik for authorization
             setTimeout(() => {
               window.location.href = loginData.redirect_url;
             }, 1500);

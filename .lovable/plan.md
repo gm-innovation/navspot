@@ -1,63 +1,57 @@
 
 
-# Atualização dos Templates RSC (Gabarito Final) + Fix CompletarCadastro
+# Template Infra v8.0.0 — Regras de Ouro RouterOS 7 (Antigravity)
 
-## Contexto
+## Regras de ouro
 
-Os três arquivos RSC enviados representam scripts testados e validados no hardware. A mudança arquitetural principal: o **infra** abandona completamente `login-url` (que não existe no RouterOS 7) e usa **override de `/file set flash/hotspot/login.html`** com meta-refresh para redirecionar ao portal externo.
+> **NUNCA** usar `login-url` no RouterOS 7. Esta propriedade **não existe** como campo utilizável — o parser interpreta `login` como keyword e `-url` como subtração. O redirecionamento ao portal externo é feito via **file override** do `flash/hotspot/login.html` com meta-refresh.
 
-## Mudanças
+> **NUNCA** usar variáveis (`$var`) dentro de listas inline `{$var;"literal";...}` no RouterOS 7. Usar `:toarray` com string CSV.
 
-### 1. Atualizar template `infra` no banco
+> **NUNCA** usar `set [find]` com propriedades hifenizadas (`http-cookie-lifetime`). Resolver o ID primeiro com `:local idx [find ...]`, depois `set $idx prop=val`.
 
-Converter o gabarito `navspot-infra-antigravity-v3.rsc` em template com placeholders:
+## Padrão de Redirecionamento (File Override)
 
-- `10.10.10.1` → `{{GATEWAY}}`
-- `10.10.10.0/24` → `{{NETWORK_CIDR}}`
-- `10.10.10.10-10.10.10.254` → `{{POOL_START}}-{{POOL_END}}`
-- `27a1e1be-...` → `{{HOTSPOT_ID}}`
-- `"Teste Navspot"` → `{{EMBARCACAO_NOME}}`
-- `focqrhkozhdefohroqyi.supabase.co` → `{{SUPABASE_HOST}}`
-- Remover completamente `login-url` — usar `/file set` para override do `login.html`, `status.html` e `logout.html`
-- WiFi config: manter aberto (sem passphrase) pois hotspot já controla acesso, ou parametrizar
+```routeros
+# Aguardar hotspot daemon criar os arquivos no flash
+:delay 4s
 
-### 2. Atualizar template `sync-standalone` no banco
+# Override dos arquivos HTML do hotspot com meta-refresh
+/file set [find name="flash/hotspot/login.html"] contents="<html><head><meta http-equiv=\"refresh\" content=\"0; url=https://navspot.lovable.app/hotspot-login?h={{HOTSPOT_ID}}&mac=\$(mac)&ip=\$(ip)&link-login-only=\$(link-login-only)\"></head><body>Redirecting...</body></html>"
+/file set [find name="flash/hotspot/status.html"] contents="<html><head><meta http-equiv=\"refresh\" content=\"0; url=https://navspot.lovable.app/hotspot-success?mac=\$(mac)&username=\$(username)\"></head><body>Redirecting...</body></html>"
+/file set [find name="flash/hotspot/logout.html"] contents="<html><head><meta http-equiv=\"refresh\" content=\"0; url=https://navspot.lovable.app/hotspot-logout\"></head><body>Logging out...</body></html>"
+```
 
-Converter `navspot-sync-antigravity-v3.rsc`:
+## Fluxo do Tripulante (sem QR Code)
 
-- `bba989...` → `{{SYNC_TOKEN}}`
-- `focqrhkozhdefohroqyi.supabase.co` → `{{SUPABASE_HOST}}`
-- Novos handlers: `set_profile`, `block_device`, `enable_social_block`, `enable_streaming_block`, `disable_blocks`
-- Remover telemetria CSV (simplificado) — o gabarito envia apenas token+identity
+```text
+1. Tripulante conecta na rede WiFi da embarcação
+2. MikroTik intercepta e exibe login.html (meta-refresh → portal externo)
+3. Portal /hotspot-login: tripulante insere login + senha
+4. Edge function hotspot-login verifica status:
+   - pendente_cadastro → JSON com redirect_url para /completar-cadastro
+   - ativo → HTML auto-post para gateway MikroTik (libera navegação)
+5. Em /completar-cadastro: tripulante preenche dados pessoais (uma única vez)
+6. Após cadastro: auto-login silencioso (trata HTML auto-post via document.write)
+```
 
-### 3. Atualizar template `guardian-standalone` no banco
+## Padrão Walled Garden (`:toarray`)
 
-Converter `navspot-guardian-antigravity-v2.rsc`:
+```routeros
+:local hosts "cdn.jsdelivr.net,*.gstatic.com,*.googleapis.com,connectivitycheck.gstatic.com,*.navspot.com.br"
+:if ([:len $supabaseHost] > 0) do={
+  :set hosts ($supabaseHost . "," . $hosts)
+}
+:foreach d in=[:toarray $hosts] do={
+  :do { /ip hotspot walled-garden add action=allow dst-host=$d comment="navspot" } on-error={}
+}
+```
 
-- `bba989...` → `{{SYNC_TOKEN}}`
-- `focqrhkozhdefohroqyi.supabase.co` → `{{SUPABASE_HOST}}`
-- Verificações: sync script, hotspot profile, firewall rules (sem verificar login-url)
-- Recovery via `{{RECOVERY_URL}}`
+## Handlers do Sync (v8.0.0)
 
-### 4. Fix `CompletarCadastro.tsx` — tratar resposta HTML do auto-login
-
-Após o self-register, o componente chama `hotspot-login` para auto-login. Para usuários `ativo`, a edge function retorna HTML (auto-post). Alterar para verificar `content-type` e usar `document.write()` para renderizar o HTML, igual ao `HotspotLogin.tsx` já faz.
-
-### 5. Atualizar `navspot-recovery/index.ts`
-
-Remover a seção "CORRIGIR LOGIN-BY" (linhas 206-215) que tenta setar `login-url` — não é mais necessário com a nova abordagem de file override.
-
-### 6. Atualizar `.lovable/plan.md`
-
-Documentar a nova arquitetura:
-- Regra de ouro: `login-url` **não existe** como propriedade utilizável no RouterOS 7 — usar override de `flash/hotspot/login.html` via `/file set`
-- Padrão de redirecionamento: meta-refresh no login.html
-
-### 7. Atualizar versão no `gen7post`
-
-Bump version para refletir a nova arquitetura.
-
-## Decisão necessária
-
-O gabarito infra usa WiFi com WPA2-PSK (`passphrase="123456789"`). O template atual usa rede aberta (o hotspot controla o acesso). Qual abordagem manter no template?
-
+- `remove_user` — Remove usuário do hotspot
+- `set_profile` — Cria/atualiza perfil com rate-limit
+- `block_device` — Bloqueia MAC via ip-binding
+- `enable_social_block` — Vincula address-list de bloqueio social ao perfil
+- `enable_streaming_block` — Vincula address-list de bloqueio streaming ao perfil
+- `disable_blocks` — Remove address-list do perfil
