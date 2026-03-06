@@ -3,7 +3,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const VERSION = "7.2.0"
+const VERSION = "8.0.0"
 const DEPLOYED_AT = new Date().toISOString()
 const FN = "navspot-recovery"
 
