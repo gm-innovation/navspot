@@ -48,3 +48,7 @@ verify_jwt = false
 
 [functions.hotspot-login]
 verify_jwt = false
+
+[functions.expose-context]
+verify_jwt = false
+
